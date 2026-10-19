@@ -322,6 +322,56 @@ mod write_to_directory {
         Ok(())
     }
 
+    /// A pack without objects consists of its header and trailer. No entry reads the trailer, which is still read
+    /// and verified, so that bytes after it remain in the input and a damaged trailer is refused.
+    #[test]
+    fn reads_and_verifies_the_trailer_of_an_empty_pack() -> gix_testtools::TestResult {
+        let object_hash = gix_hash::Kind::Sha1;
+        let mut pack_data = pack::data::header::encode(pack::data::Version::V2, 0).to_vec();
+        let mut hasher = gix_hash::hasher(object_hash);
+        hasher.update(&pack_data);
+        pack_data.extend_from_slice(hasher.try_finalize()?.as_slice());
+        let mut damaged = pack_data.clone();
+        *damaged.last_mut().expect("the trailer") ^= 1;
+
+        for with_lookup in [false, true] {
+            let lookup = || with_lookup.then_some(gix_object::find::Never);
+            let mut input = Cursor::new([pack_data.as_slice(), b"bytes after the pack".as_slice()].concat());
+            let outcome = pack::Bundle::write_to_directory(
+                &mut input,
+                Some(TempDir::new()?.as_ref()),
+                &mut progress::Discard,
+                &AtomicBool::new(false),
+                lookup(),
+                object_hash,
+                Default::default(),
+            )?;
+            assert_eq!(outcome.index.num_objects, 0, "the index lists no objects");
+            assert_eq!(outcome.data_path, None, "a pack without objects isn't written");
+            assert_eq!(
+                input.position(),
+                pack_data.len() as u64,
+                "the input is read up to the end of the pack's trailer"
+            );
+
+            let err = pack::Bundle::write_to_directory(
+                &mut Cursor::new(damaged.clone()),
+                None,
+                &mut progress::Discard,
+                &AtomicBool::new(false),
+                lookup(),
+                object_hash,
+                Default::default(),
+            )
+            .expect_err("the trailer doesn't match the header");
+            assert!(
+                err.is_corrupted(),
+                "a damaged trailer is refused as corruption: {err:?}"
+            );
+        }
+        Ok(())
+    }
+
     /// The eager variant reads `pack` through a buffer of its own, so bytes after the trailer may be read,
     /// but they never become part of the written pack.
     #[test]

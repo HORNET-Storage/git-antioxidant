@@ -47,6 +47,8 @@ where
     /// `object_hash` specifies which hash is used for objects in ref-delta entries.
     ///
     /// Note that `read` is expected at the beginning of a valid pack data file with a header, entries and a trailer.
+    /// The last entry reads the trailer, so for a pack without entries it is read here, and verified unless `mode` is
+    /// [`AsIs`](input::Mode::AsIs). Either way, `read` is left right after the pack.
     pub fn new_from_header(
         mut read: BR,
         mode: input::Mode,
@@ -57,7 +59,7 @@ where
         read.read_exact(&mut header_data).map_err(io_error)?;
 
         let (version, num_objects) = crate::data::header::decode(&header_data)?;
-        Ok(BytesToEntriesIter {
+        let mut iter = BytesToEntriesIter {
             read,
             decompressor: Decompress::new(),
             compressed,
@@ -74,7 +76,11 @@ where
             compressed_buf: None,
             hash_len: object_hash.len_in_bytes(),
             object_hash,
-        })
+        };
+        if num_objects == 0 {
+            iter.try_read_trailer()?;
+        }
+        Ok(iter)
     }
 
     fn next_inner(&mut self) -> Result<input::Entry> {
