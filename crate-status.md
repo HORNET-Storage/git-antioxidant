@@ -990,6 +990,7 @@ See its [README.md](https://github.com/GitoxideLabs/gitoxide/blob/main/gix-lock/
 ### gix-fsck
 * [x] validate connectivity and find missing objects starting from…
     - [x] commits
+    - [x] trees
     - [ ] tags
     - [ ] tree-cache in the `index` or any entry within
 * [ ] validate object hashes during connectivity traversal

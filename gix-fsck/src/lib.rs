@@ -45,8 +45,8 @@ where
     ///
     /// Walk the trees and blobs referenced by the commit and verify they exist in the ODB.
     /// Any objects previously encountered by this instance will be skipped silently.
-    /// Any referenced blobs that are not present in the ODB will result in a call to the  `missing_cb`.
-    /// Missing commits or trees will cause an error to be returned.
+    /// Any referenced trees and blobs that are not present in the ODB will result in a call to the `missing_cb`.
+    /// A missing commit will cause an error to be returned.
     ///     - TODO: consider how to handle a missing commit (invoke `missing_cb`, or possibly return a Result?)
     pub fn check_commit(&mut self, oid: &ObjectId) -> Result {
         // Attempt to insert the commit ID in the set, and if already present, return immediately
@@ -58,20 +58,28 @@ where
             let commit = self.db.find_commit(oid, &mut self.buf)?;
             commit.tree()
         };
+        self.check_tree(&tree_id);
+        Ok(())
+    }
 
-        let mut tree_ids = VecDeque::from_iter(Some(tree_id));
+    /// Run the connectivity check on the tree `tree_id` as [`check_commit()`](Self::check_commit()) does for the
+    /// tree of a commit, for instance for a tree that a tag or a reference points to.
+    ///
+    /// Walk the tree and the trees it contains and verify that they and the blobs they reference exist in the ODB.
+    /// Any objects previously encountered by this instance will be skipped silently.
+    /// Missing trees and blobs result in a call to the `missing_cb`.
+    pub fn check_tree(&mut self, tree_id: &ObjectId) {
+        let mut tree_ids = VecDeque::from_iter(Some(*tree_id));
         while let Some(tree_id) = tree_ids.pop_front() {
             if self.seen.insert(tree_id) {
-                self.check_tree(&tree_id, &mut tree_ids);
+                self.check_tree_entries(&tree_id, &mut tree_ids);
             }
         }
-
-        Ok(())
     }
 
     /// Blobs are checked right away, trees are stored in `tree_ids` for the parent to iterate them, and only
     /// if they have not been `seen` yet.
-    fn check_tree(&mut self, oid: &ObjectId, tree_ids: &mut VecDeque<ObjectId>) {
+    fn check_tree_entries(&mut self, oid: &ObjectId, tree_ids: &mut VecDeque<ObjectId>) {
         let Ok(tree) = self.db.find_tree(oid, &mut self.buf) else {
             (self.missing_cb)(oid, Kind::Tree);
             return;

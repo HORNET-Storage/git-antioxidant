@@ -1,31 +1,54 @@
 use gix_fsck::Connectivity;
 use gix_hash::ObjectId;
 use gix_hashtable::HashMap;
-use gix_object::Kind;
+use gix_object::{FindExt, Kind};
 use std::sync::LazyLock;
 
 use crate::hex_to_id;
 
-fn check_missing<'a>(repo_name: &str, commits: impl IntoIterator<Item = &'a ObjectId>) -> HashMap<ObjectId, Kind> {
-    let db = {
-        let fixture_path = gix_testtools::scripted_fixture_read_only("make_test_repos.sh")
-            .expect("fixture path")
-            .join(repo_name)
-            .join(".git")
-            .join("objects");
-        let mut db = gix_odb::at(fixture_path, gix_testtools::object_hash()).expect("valid odb");
-        db.refresh_never();
-        db
-    };
+fn objects(repo_name: &str) -> gix_odb::Handle {
+    let fixture_path = gix_testtools::scripted_fixture_read_only("make_test_repos.sh")
+        .expect("fixture path")
+        .join(repo_name)
+        .join(".git")
+        .join("objects");
+    let mut db = gix_odb::at(fixture_path, gix_testtools::object_hash()).expect("valid odb");
+    db.refresh_never();
+    db
+}
 
+fn check_missing<'a>(repo_name: &str, commits: impl IntoIterator<Item = &'a ObjectId>) -> HashMap<ObjectId, Kind> {
     let mut missing: HashMap<ObjectId, Kind> = HashMap::default();
     let record_missing_and_assert_no_duplicate = |oid: &ObjectId, kind: Kind| {
         missing.try_insert(*oid, kind).expect("no duplicate oid");
     };
 
-    let mut check = Connectivity::new(db, record_missing_and_assert_no_duplicate);
+    let mut check = Connectivity::new(objects(repo_name), record_missing_and_assert_no_duplicate);
     for commit in commits.into_iter() {
         check.check_commit(commit).expect("commit is present");
+    }
+    missing
+}
+
+/// Like [`check_missing()`], but check the trees of `commits` without the commits themselves.
+fn check_missing_in_trees_of<'a>(
+    repo_name: &str,
+    commits: impl IntoIterator<Item = &'a ObjectId>,
+) -> HashMap<ObjectId, Kind> {
+    let db = objects(repo_name);
+    let mut buf = Vec::new();
+    let tree_ids: Vec<_> = commits
+        .into_iter()
+        .map(|commit_id| db.find_commit(commit_id, &mut buf).expect("commit is present").tree())
+        .collect();
+
+    let mut missing: HashMap<ObjectId, Kind> = HashMap::default();
+    let record_missing_and_assert_no_duplicate = |oid: &ObjectId, kind: Kind| {
+        missing.try_insert(*oid, kind).expect("no duplicate oid");
+    };
+    let mut check = Connectivity::new(db, record_missing_and_assert_no_duplicate);
+    for tree_id in &tree_ids {
+        check.check_tree(tree_id);
     }
     missing
 }
@@ -81,4 +104,15 @@ fn missing_trees() {
         Kind::Tree,
     );
     assert_eq!(check_missing("treeless", all_commits()), expected);
+}
+
+#[test]
+fn trees_are_checked_like_the_trees_of_commits() {
+    for repo_name in ["base", "blobless", "treeless"] {
+        assert_eq!(
+            check_missing_in_trees_of(repo_name, all_commits()),
+            check_missing(repo_name, all_commits()),
+            "checking the trees of all commits in {repo_name:?} finds the objects that checking the commits finds"
+        );
+    }
 }
