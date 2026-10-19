@@ -176,6 +176,31 @@ mod at_path {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn persistence_replaces_readonly_files_at_paths_longer_than_max_path() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let directory = dir.path().join("a".repeat(120)).join("b".repeat(120));
+        std::fs::create_dir_all(&directory)?;
+        let tempfile_path = directory.join("file.lock");
+        let destination = directory.join("file");
+        assert!(
+            destination.as_os_str().len() > 260,
+            "the destination is longer than MAX_PATH"
+        );
+        std::fs::write(&destination, b"old")?;
+        let mut destination_permissions = std::fs::metadata(&destination)?.permissions();
+        destination_permissions.set_readonly(true);
+        std::fs::set_permissions(&destination, destination_permissions)?;
+
+        let mut handle = gix_tempfile::writable_at(&tempfile_path, ContainingDirectory::Exists, AutoRemove::Tempfile)?;
+        handle.with_mut(|file| file.write_all(b"new"))??;
+        drop(handle.persist(&destination)?);
+        assert_eq!(std::fs::read(&destination)?, b"new", "the destination was replaced");
+        assert!(!tempfile_path.exists(), "the tempfile was moved");
+        Ok(())
+    }
+
+    #[test]
     fn it_can_create_the_containing_directory_and_remove_it_on_drop() -> TestResult {
         let dir = tempfile::tempdir()?;
         let first_dir = "dir";

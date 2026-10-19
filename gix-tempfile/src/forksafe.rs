@@ -10,7 +10,8 @@ use crate::{AutoRemove, handle};
 /// implementation changes all attributes to `FILE_ATTRIBUTE_NORMAL` before moving the file, which also discards
 /// attributes deliberately applied after creation, notably `FILE_ATTRIBUTE_READONLY`. `MoveFileExW()` additionally
 /// refuses to replace a read-only destination. This function handles both constraints while keeping `source`
-/// recoverable for a retry when the move fails.
+/// recoverable for a retry when the move fails. Like the file system functions of the standard library, it makes
+/// a path that `MAX_PATH` would limit absolute and gives it the `\\?\` prefix, which lifts that limit.
 ///
 /// # I/O per attempt
 ///
@@ -35,15 +36,48 @@ use crate::{AutoRemove, handle};
 /// the wrapper can't act on the stale source path.
 #[cfg(windows)]
 fn persist_windows(source: &mut TempfileOrTemppath, destination: &Path) -> std::io::Result<()> {
-    use std::{iter, os::windows::ffi::OsStrExt};
+    use std::os::windows::ffi::OsStrExt;
 
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_TEMPORARY, GetFileAttributesW,
         INVALID_FILE_ATTRIBUTES, MOVEFILE_REPLACE_EXISTING, MoveFileExW, SetFileAttributesW,
     };
 
-    fn wide(path: &Path) -> Vec<u16> {
-        path.as_os_str().encode_wide().chain(iter::once(0)).collect()
+    /// Encode `path` as a NUL-terminated UTF-16 string, made absolute and given the `\\?\` prefix if `MAX_PATH` would
+    /// limit it, as the standard library does.
+    fn wide(path: &Path) -> std::io::Result<Vec<u16>> {
+        /// The limit that the standard library applies to every path, that of `CreateDirectoryW()`.
+        const LEGACY_MAX_PATH: usize = 248;
+        const SEP: u16 = b'\\' as u16;
+        const QUERY: u16 = b'?' as u16;
+        const COLON: u16 = b':' as u16;
+        const DOT: u16 = b'.' as u16;
+        const NO_PREFIX: &[u16] = &[];
+        const VERBATIM_PREFIX: &[u16] = &[SEP, SEP, QUERY, SEP];
+        const NT_PREFIX: &[u16] = &[SEP, QUERY, QUERY, SEP];
+        const UNC_PREFIX: &[u16] = &[SEP, SEP, QUERY, SEP, b'U' as u16, b'N' as u16, b'C' as u16, SEP];
+
+        let fits = |path: &[u16]| path.len() + 1 < LEGACY_MAX_PATH;
+        let mut encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if !(encoded.starts_with(VERBATIM_PREFIX)
+            || encoded.starts_with(NT_PREFIX)
+            || (path.is_absolute() && fits(&encoded)))
+        {
+            let absolute: Vec<u16> = std::path::absolute(path)?.as_os_str().encode_wide().collect();
+            encoded = if fits(&absolute) {
+                absolute
+            } else {
+                let (prefix, rest) = match absolute.as_slice() {
+                    [_, COLON, SEP, ..] => (VERBATIM_PREFIX, absolute.as_slice()),
+                    [SEP, SEP, DOT, SEP, rest @ ..] => (VERBATIM_PREFIX, rest),
+                    [SEP, SEP, rest @ ..] => (UNC_PREFIX, rest),
+                    _ => (NO_PREFIX, absolute.as_slice()),
+                };
+                prefix.iter().chain(rest).copied().collect()
+            };
+        }
+        encoded.push(0);
+        Ok(encoded)
     }
 
     fn usable_attributes(attributes: u32) -> u32 {
@@ -57,8 +91,8 @@ fn persist_windows(source: &mut TempfileOrTemppath, destination: &Path) -> std::
     let source_path = wide(match &*source {
         TempfileOrTemppath::Tempfile(file) => file.path(),
         TempfileOrTemppath::Temppath(path) => path,
-    });
-    let destination_path = wide(destination);
+    })?;
+    let destination_path = wide(destination)?;
     // SAFETY: Both paths are encoded as NUL-terminated UTF-16 strings and remain alive for all calls.
     #[expect(unsafe_code)]
     unsafe {
