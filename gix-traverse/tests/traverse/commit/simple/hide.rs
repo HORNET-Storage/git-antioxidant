@@ -204,6 +204,47 @@ fn interesting_tip_with_longer_path_to_shared_ancestor() -> gix_testtools::TestR
     Ok(())
 }
 
+/// Traverse the repository `name` of `make_repos_with_tips_in_hidden_history.sh` from `tip` and `old` while hiding
+/// `hidden`, which reaches `old` only through commits that `tip` reaches as well.
+fn assert_tip_in_hidden_history_is_hidden(name: &str) -> gix_testtools::TestResult {
+    // Graph:
+    //   tip --> hidden --> ... --> old
+    //
+    // Expected: only `tip` is returned (`old` is reachable from `hidden`)
+    let (repo_path, odb) = named_fixture("make_repos_with_tips_in_hidden_history.sh", name)?;
+    let commits = parse_commit_names(&repo_path)?;
+    let (tip, old, hidden) = (commits["tip"], commits["old"], commits["hidden"]);
+    assert!(
+        git_rev_list(&repo_path, &["hidden"])?.contains(&old),
+        "`old` is in the history of `hidden`"
+    );
+    let expected = vec![tip];
+    assert_eq!(
+        git_rev_list(&repo_path, &["tip", "old", "--not", "hidden"])?,
+        expected,
+        "git rev-list returns `tip` alone"
+    );
+
+    for sorting in all_sortings() {
+        let result = traverse_both([tip, old], &odb, sorting, Parents::All, [hidden])?;
+        assert_eq!(
+            result, expected,
+            "sorting = {sorting:?}: `old` ({old}) is not returned because `hidden` reaches it"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn interesting_tip_in_hidden_history_with_equal_commit_times() -> gix_testtools::TestResult {
+    assert_tip_in_hidden_history_is_hidden("same_time")
+}
+
+#[test]
+fn interesting_tip_in_hidden_history_newer_than_its_descendants() -> gix_testtools::TestResult {
+    assert_tip_in_hidden_history_is_hidden("newer_old")
+}
+
 #[test]
 fn without_commit_graph_still_hides_single_visible_tip_correctly() -> gix_testtools::TestResult {
     let (repo_dir, odb) = named_fixture("make_repos.sh", "simple")?;

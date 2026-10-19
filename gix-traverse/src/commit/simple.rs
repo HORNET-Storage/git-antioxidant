@@ -152,6 +152,11 @@ fn to_queue_key(i: i64, order: CommitTimeOrder) -> QueueKey<i64> {
     }
 }
 
+/// The number of commits that `compute_hidden_frontier()` takes from its queue after the queued commits became older
+/// than every commit that was only `VISIBLE` when it was taken, as many as git's `limit_list()` takes. With them, it
+/// can reach a commit that is newer than a few of the commits through which the hidden tips reach it.
+const EXTRA_COMMITS: usize = 4;
+
 /// Compute the boundary at which the visible walk must stop because commits become reachable from
 /// both the visible tips and the hidden tips.
 ///
@@ -160,6 +165,13 @@ fn to_queue_key(i: i64, order: CommitTimeOrder) -> QueueKey<i64> {
 /// propagated to parents in generation/time order. Once a commit carries both flags, it is part
 /// of the overlap between the two histories and is marked `STALE` so older ancestors no longer
 /// need to keep re-propagating the same combined state.
+///
+/// Painting ends when every queued commit is `STALE`, unless a queued commit may still reach a commit that was only
+/// `VISIBLE` when it was taken from the queue. Without generation numbers, commits are taken in the order of their
+/// commit times, so a commit is taken before its descendants if they are as old as it or older, and `HIDDEN` is
+/// propagated to it only afterwards. Like git's `limit_list()`, painting therefore continues while the newest queued
+/// commit is at least as new as the oldest commit that was taken while only `VISIBLE`, and then for `EXTRA_COMMITS`
+/// more commits.
 ///
 /// The returned set is not all commits reachable from hidden tips. It is only the overlap frontier
 /// where the visible traversal must stop. The actual `Simple` walk then skips these commits and
@@ -186,17 +198,31 @@ fn compute_hidden_frontier(
         })?;
     }
 
-    while queue.iter_unordered().any(|id| {
-        graph
-            .get(id)
-            .is_some_and(|commit| !commit.data.contains(PaintFlags::STALE))
-    }) {
-        let (_info, commit_id) = match queue.pop() {
-            Some(v) => v,
-            None => break,
+    let mut oldest_visible: Option<GenThenTime> = None;
+    let mut extra_commits = EXTRA_COMMITS;
+    loop {
+        let all_stale = !queue.iter_unordered().any(|id| {
+            graph
+                .get(id)
+                .is_some_and(|commit| !commit.data.contains(PaintFlags::STALE))
+        });
+        if all_stale {
+            match (queue.peek(), oldest_visible) {
+                (Some((newest, _)), Some(oldest)) if *newest >= oldest => extra_commits = EXTRA_COMMITS,
+                (Some(_), Some(_)) if extra_commits > 0 => extra_commits -= 1,
+                _ => break,
+            }
+        } else {
+            extra_commits = EXTRA_COMMITS;
+        }
+        let Some((key, commit_id)) = queue.pop() else {
+            break;
         };
         let commit = graph.get_mut(&commit_id).expect("queued commits are in the graph");
         let mut flags = commit.data;
+        if flags == PaintFlags::VISIBLE {
+            oldest_visible = Some(oldest_visible.map_or(key, |oldest| oldest.min(key)));
+        }
         if flags == (PaintFlags::VISIBLE | PaintFlags::HIDDEN) {
             flags |= PaintFlags::STALE;
         }
@@ -322,6 +348,10 @@ mod init {
 
         /// Hide the given `tips`, along with all commits reachable by them so that they will not be returned
         /// by the traversal.
+        ///
+        /// Without the generation numbers of a commit-graph, commits are inspected in the order of their commit times.
+        /// Like `git rev-list`, the traversal may then return a commit that the hidden tips reach only through more
+        /// than a few commits that are older than it.
         pub fn hide(mut self, tips: impl IntoIterator<Item = ObjectId>) -> Result<Self> {
             self.state.hidden_tips = tips.into_iter().collect();
             Ok(self)
