@@ -1,7 +1,17 @@
 use gix_error::Result;
-use std::{hash::Hash, io, io::SeekFrom, path::PathBuf, sync::Arc};
+use std::{
+    hash::Hash,
+    io,
+    io::{SeekFrom, Write},
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use gix_tempfile::handle::Writable;
+use gix_utils::progress::Progress;
 
 /// Configuration for [`write_to_directory`][crate::Bundle::write_to_directory()] or
 /// [`write_to_directory_eagerly`][crate::Bundle::write_to_directory_eagerly()]
@@ -74,34 +84,91 @@ impl Outcome {
 
 pub(crate) type SharedTempFile = Arc<parking_lot::Mutex<std::io::BufWriter<gix_tempfile::Handle<Writable>>>>;
 
-pub(crate) struct PassThrough<R> {
-    pub reader: R,
-    pub writer: Option<SharedTempFile>,
+/// Feeds the pack parser from `inner` without reading ahead of what it consumes, so bytes after the pack stay in `inner`.
+///
+/// Consumed bytes are counted in `progress` and, if `writer` is set, appended to the pack data file.
+/// A write that fails in [`consume()`](io::BufRead::consume()) can't be returned from there, so it fails the next read:
+/// the parser reads the pack trailer after the data of the last entry, so such a failure always reaches it.
+pub(crate) struct PackRead<'a, R, P> {
+    inner: R,
+    progress: P,
+    should_interrupt: &'a AtomicBool,
+    writer: Option<SharedTempFile>,
+    /// The buffer returned by the last `fill_buf()` wasn't consumed yet. Filling it again must not fail then,
+    /// as the parser does so to inspect the bytes it is about to consume.
+    pending: bool,
+    write_error: Option<io::Error>,
 }
 
-impl<R> io::Read for PassThrough<R>
+impl<'a, R, P> PackRead<'a, R, P> {
+    pub(crate) fn new(inner: R, progress: P, should_interrupt: &'a AtomicBool, writer: Option<SharedTempFile>) -> Self {
+        PackRead {
+            inner,
+            progress,
+            should_interrupt,
+            writer,
+            pending: false,
+            write_error: None,
+        }
+    }
+
+    fn check(&mut self) -> io::Result<()> {
+        if let Some(err) = self.write_error.take() {
+            return Err(err);
+        }
+        if self.should_interrupt.load(Ordering::Relaxed) {
+            return Err(io::Error::other(gix_error::cancelled("Interrupted")));
+        }
+        Ok(())
+    }
+}
+
+impl<R, P> io::Read for PackRead<'_, R, P>
 where
     R: io::Read,
+    P: Progress,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let bytes_read = self.reader.read(buf)?;
-        if let Some(writer) = self.writer.as_mut() {
-            use std::io::Write;
+        self.pending = false;
+        self.check()?;
+        let bytes_read = self.inner.read(buf)?;
+        if let Some(writer) = &self.writer {
             writer.lock().write_all(&buf[..bytes_read])?;
         }
+        self.progress.inc_by(bytes_read);
         Ok(bytes_read)
     }
 }
-impl<R> io::BufRead for PassThrough<R>
+
+impl<R, P> io::BufRead for PackRead<'_, R, P>
 where
     R: io::BufRead,
+    P: Progress,
 {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
-        self.reader.fill_buf()
+        if !self.pending {
+            self.check()?;
+        }
+        let buf = self.inner.fill_buf()?;
+        self.pending = true;
+        Ok(buf)
     }
 
     fn consume(&mut self, amt: usize) {
-        self.reader.consume(amt);
+        self.pending = false;
+        if let Some(writer) = &self.writer
+            && self.write_error.is_none()
+        {
+            let written = self.inner.fill_buf().and_then(|buf| {
+                let consumed = buf
+                    .get(..amt)
+                    .ok_or_else(|| io::Error::other("more bytes were consumed than were buffered"))?;
+                writer.lock().write_all(consumed)
+            });
+            self.write_error = written.err();
+        }
+        self.progress.inc_by(amt);
+        self.inner.consume(amt);
     }
 }
 

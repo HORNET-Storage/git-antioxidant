@@ -9,7 +9,6 @@ use std::{
 
 use gix_error::{ResultExt, message};
 use gix_tempfile::{AutoRemove, ContainingDirectory};
-use gix_utils::interrupt;
 use gix_utils::progress;
 use gix_utils::progress::Progress;
 
@@ -18,7 +17,7 @@ use crate::data;
 use gix_utils::progress::prodash::DynNestedProgress;
 
 mod types;
-use types::{LockWriter, PassThrough};
+use types::{LockWriter, PackRead};
 pub use types::{Options, Outcome};
 
 use crate::bundle::write::types::SharedTempFile;
@@ -58,6 +57,9 @@ impl crate::Bundle {
     /// * `object_hash` specifies the hash to use for writing the bundle.
     /// * `options` further configure how the task is performed.
     ///
+    /// Only the pack is read from `pack`: bytes after its trailer remain unread, so a caller can detect and refuse them,
+    /// as `git index-pack` does for a file that continues after its pack.
+    ///
     /// # Note
     ///
     /// * the resulting pack may be empty, that is, contains zero objects in some situations. This is a valid reply by a server and should
@@ -75,10 +77,7 @@ impl crate::Bundle {
         let _span = gix_trace::coarse!("gix_pack::Bundle::write_to_directory()");
         let mut read_progress = progress.add_child_with_id("read pack".into(), ProgressId::ReadPackBytes.into());
         read_progress.init(None, progress::bytes());
-        let pack = progress::Read {
-            inner: pack,
-            progress: progress::ThroughputOnDrop::new(read_progress),
-        };
+        let read_progress = progress::ThroughputOnDrop::new(read_progress);
 
         let data_file = Arc::new(parking_lot::Mutex::new(io::BufWriter::with_capacity(
             64 * 1024,
@@ -92,14 +91,10 @@ impl crate::Bundle {
         let (pack_entries_iter, pack_version): (Box<dyn Iterator<Item = Result<data::input::Entry>>>, _) =
             match thin_pack_base_object_lookup {
                 Some(thin_pack_lookup) => {
-                    let pack = interrupt::Read {
-                        inner: pack,
-                        should_interrupt,
-                    };
-                    let buffered_pack = io::BufReader::new(pack);
+                    let pack = PackRead::new(pack, read_progress, should_interrupt, None);
                     let pack_entries_iter = data::input::LookupRefDeltaObjectsIter::new(
                         data::input::BytesToEntriesIter::new_from_header(
-                            buffered_pack,
+                            pack,
                             options.iteration_mode,
                             data::input::EntryDataMode::KeepAndCrc32,
                             object_hash,
@@ -119,20 +114,9 @@ impl crate::Bundle {
                     (Box::new(pack_entries_iter), pack_version)
                 }
                 None => {
-                    let pack = PassThrough {
-                        reader: interrupt::Read {
-                            inner: pack,
-                            should_interrupt,
-                        },
-                        writer: Some(data_file.clone()),
-                    };
-                    // This buf-reader is required to assure we call 'read()' in order to fill the (extra) buffer. Otherwise all the counting
-                    // we do with the wrapped pack reader doesn't work as it does not expect anyone to call BufRead functions directly.
-                    // However, this is exactly what's happening in the ZipReader implementation that is eventually used.
-                    // The performance impact of this is probably negligible, compared to all the other work that is done anyway :D.
-                    let buffered_pack = io::BufReader::new(pack);
+                    let pack = PackRead::new(pack, read_progress, should_interrupt, Some(data_file.clone()));
                     let pack_entries_iter = data::input::BytesToEntriesIter::new_from_header(
-                        buffered_pack,
+                        pack,
                         options.iteration_mode,
                         data::input::EntryDataMode::Crc32,
                         object_hash,
@@ -174,6 +158,9 @@ impl crate::Bundle {
     /// As it sends portions of the input to a thread it requires the 'static lifetime for the interrupt flags. This can only
     /// be satisfied by a static `AtomicBool` which is only suitable for programs that only run one of these operations at a time
     /// or don't mind that all of them abort when the flag is set.
+    ///
+    /// As `pack` is read through a buffer, bytes after the pack's trailer may be read from it as well. They are discarded
+    /// and never written into the pack.
     #[expect(clippy::too_many_arguments)]
     pub fn write_to_directory_eagerly(
         pack: Box<dyn io::Read + Send + 'static>,
@@ -188,10 +175,7 @@ impl crate::Bundle {
         let _span = gix_trace::coarse!("gix_pack::Bundle::write_to_directory_eagerly()");
         let mut read_progress = progress.add_child_with_id("read pack".into(), ProgressId::ReadPackBytes.into()); /* Bundle Write Read pack Bytes*/
         read_progress.init(pack_size.map(|s| s as usize), progress::bytes());
-        let pack = progress::Read {
-            inner: pack,
-            progress: progress::ThroughputOnDrop::new(read_progress),
-        };
+        let read_progress = progress::ThroughputOnDrop::new(read_progress);
 
         let data_file = Arc::new(parking_lot::Mutex::new(io::BufWriter::new(match directory.as_ref() {
             Some(directory) => gix_tempfile::new(directory, ContainingDirectory::Exists, AutoRemove::Tempfile)
@@ -200,19 +184,16 @@ impl crate::Bundle {
                 .or_raise(|| message("Could not create temporary pack file"))?,
         })));
         let eight_pages = 4096 * 8;
+        let buffered_pack = io::BufReader::with_capacity(eight_pages, pack);
         let (pack_entries_iter, pack_version): (
             Box<dyn Iterator<Item = Result<data::input::Entry>> + Send + 'static>,
             _,
         ) = match thin_pack_base_object_lookup {
             Some(thin_pack_lookup) => {
-                let pack = interrupt::Read {
-                    inner: pack,
-                    should_interrupt,
-                };
-                let buffered_pack = io::BufReader::with_capacity(eight_pages, pack);
+                let pack = PackRead::new(buffered_pack, read_progress, should_interrupt, None);
                 let pack_entries_iter = data::input::LookupRefDeltaObjectsIter::new(
                     data::input::BytesToEntriesIter::new_from_header(
-                        buffered_pack,
+                        pack,
                         options.iteration_mode,
                         data::input::EntryDataMode::KeepAndCrc32,
                         object_hash,
@@ -224,16 +205,9 @@ impl crate::Bundle {
                 (Box::new(pack_entries_iter), pack_kind)
             }
             None => {
-                let pack = PassThrough {
-                    reader: interrupt::Read {
-                        inner: pack,
-                        should_interrupt,
-                    },
-                    writer: Some(data_file.clone()),
-                };
-                let buffered_pack = io::BufReader::with_capacity(eight_pages, pack);
+                let pack = PackRead::new(buffered_pack, read_progress, should_interrupt, Some(data_file.clone()));
                 let pack_entries_iter = data::input::BytesToEntriesIter::new_from_header(
-                    buffered_pack,
+                    pack,
                     options.iteration_mode,
                     data::input::EntryDataMode::Crc32,
                     object_hash,

@@ -282,6 +282,78 @@ mod write_to_directory {
         Ok(())
     }
 
+    /// `git index-pack` refuses a regular file that continues after the pack's trailer, such as a bundle
+    /// with bytes appended. Reading only the pack leaves those bytes in the input for the caller to refuse,
+    /// and keeps them out of the written pack, whose trailer must be its last bytes.
+    #[test]
+    fn reads_only_the_pack_from_its_input() -> gix_testtools::TestResult {
+        let object_hash = gix_hash::Kind::Sha1;
+        let pack_data = ref_delta_pack(
+            object_hash,
+            &[b"A".as_slice(), b"B".as_slice()],
+            pack::data::Version::V2,
+        )?;
+        let trailing = b"bytes after the pack".as_slice();
+        for lookup in [None, Some(gix_object::find::Never)] {
+            let dir = TempDir::new()?;
+            let mut input = Cursor::new([pack_data.as_slice(), trailing].concat());
+            let outcome = pack::Bundle::write_to_directory(
+                &mut input,
+                Some(dir.as_ref()),
+                &mut progress::Discard,
+                &AtomicBool::new(false),
+                lookup,
+                object_hash,
+                Default::default(),
+            )?;
+            let bundle = outcome
+                .to_bundle()
+                .transpose()?
+                .expect("writing to a directory creates a bundle");
+            bundle
+                .pack
+                .verify_checksum(&mut progress::Discard, &AtomicBool::new(false))?;
+            assert_eq!(
+                input.position(),
+                pack_data.len() as u64,
+                "the input is read up to the end of the pack's trailer"
+            );
+        }
+        Ok(())
+    }
+
+    /// The eager variant reads `pack` through a buffer of its own, so bytes after the trailer may be read,
+    /// but they never become part of the written pack.
+    #[test]
+    fn eagerly_writes_only_the_pack() -> gix_testtools::TestResult {
+        static SHOULD_INTERRUPT: AtomicBool = AtomicBool::new(false);
+        let object_hash = gix_hash::Kind::Sha1;
+        let pack_data = ref_delta_pack(
+            object_hash,
+            &[b"A".as_slice(), b"B".as_slice()],
+            pack::data::Version::V2,
+        )?;
+        let trailing = b"bytes after the pack".as_slice();
+        let dir = TempDir::new()?;
+        let outcome = pack::Bundle::write_to_directory_eagerly(
+            Box::new(Cursor::new([pack_data.as_slice(), trailing].concat())),
+            None,
+            Some(&dir),
+            &mut progress::Discard,
+            &SHOULD_INTERRUPT,
+            None::<gix_object::find::Never>,
+            object_hash,
+            Default::default(),
+        )?;
+        let data_path = outcome.data_path.expect("objects were written");
+        assert_eq!(
+            fs::read(data_path)?,
+            pack_data,
+            "the written pack holds exactly the pack from the input"
+        );
+        Ok(())
+    }
+
     #[test]
     fn respects_alloc_limit_bytes() -> gix_testtools::TestResult {
         let pack_file = fs::File::open(fixture_path(SMALL_PACK))?;
