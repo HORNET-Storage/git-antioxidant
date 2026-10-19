@@ -293,6 +293,7 @@ members = [
     "gix-worktree-stream",
     "gix-revwalk",
     "gix-fsck",
+    "gix-bundle",
     "tests/tools",
     "tests/it",
     "gix-shallow"

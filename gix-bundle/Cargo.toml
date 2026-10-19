@@ -1,0 +1,42 @@
+lints.workspace = true
+
+[package]
+name = "gix-bundle"
+version = "0.0.0"
+repository = "https://github.com/GitoxideLabs/gitoxide"
+license = "MIT OR Apache-2.0"
+description = "A crate of the gitoxide project to read, write, verify and unbundle git bundles"
+authors = ["Colby Serpa", "Sebastian Thiel <sebastian.thiel@icloud.com>"]
+edition = "2024"
+include = ["/src/**/*", "/LICENSE-*"]
+rust-version = "1.88"
+
+[lib]
+doctest = false
+
+[features]
+## Enable support for the SHA-1 hash by forwarding the feature to dependencies.
+sha1 = ["gix-hash/sha1"]
+## Enable support for the SHA-256 hash by forwarding the feature to dependencies.
+sha256 = ["gix-hash/sha256"]
+
+[dependencies]
+gix-error = { version = "^0.5.1", path = "../gix-error" }
+gix-fsck = { version = "^0.27.0", path = "../gix-fsck" }
+gix-hash = { version = "^0.28.0", path = "../gix-hash" }
+gix-object = { version = "^0.66.0", path = "../gix-object" }
+gix-hashtable = { version = "^0.18.0", path = "../gix-hashtable" }
+gix-pack = { version = "^0.76.0", path = "../gix-pack", default-features = false, features = ["generate", "streaming-input"] }
+gix-parallel = { version = "^0.50.0", path = "../gix-parallel" }
+gix-traverse = { version = "^0.63.0", path = "../gix-traverse" }
+gix-utils = { version = "^0.5.1", path = "../gix-utils", features = ["progress"] }
+gix-zlib = { version = "^0.3.0", path = "../gix-zlib" }
+
+bstr = { version = "1.12.0", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+gix-odb = { path = "../gix-odb", features = ["sha1", "sha256"] }
+gix-testtools = { path = "../tests/tools" }
+
+[package.metadata.docs.rs]
+features = ["sha1"]

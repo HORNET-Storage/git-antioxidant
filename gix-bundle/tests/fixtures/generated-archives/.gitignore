@@ -1,0 +1,8 @@
+# The fixtures record what the installed `git` does with bundles: the bundles that `git bundle create` writes, the
+# references of `git bundle list-heads`, the objects of `git rev-list --objects`, and whether `git bundle verify` and
+# `git fetch` accept each bundle. The tests compare `gix-bundle` with these results and run the same `git` on the
+# bundles that `gix-bundle` writes, so the fixtures are regenerated with that `git` instead of being archived.
+make_bundles.tar
+make_bundles_sha256.tar
+make_history.tar
+make_history_sha256.tar

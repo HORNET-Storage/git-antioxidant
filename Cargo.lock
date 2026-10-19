@@ -1690,6 +1690,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "gix-bundle"
+version = "0.0.0"
+dependencies = [
+ "bstr",
+ "gix-error",
+ "gix-fsck",
+ "gix-hash",
+ "gix-hashtable",
+ "gix-object",
+ "gix-odb",
+ "gix-pack",
+ "gix-parallel",
+ "gix-testtools",
+ "gix-traverse",
+ "gix-utils",
+ "gix-zlib",
+]
+
+[[package]]
 name = "gix-chunk"
 version = "0.10.0"
 dependencies = [

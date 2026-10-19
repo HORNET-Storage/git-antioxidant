@@ -975,11 +975,21 @@ See its [README.md](https://github.com/GitoxideLabs/gitoxide/blob/main/gix-lock/
     * [ ] Some examples
 
 ### gix-bundle
+* [x] read and write v2 and v3 headers, with the `object-format` and `filter` capabilities
+* [x] verify that a repository has the prerequisites and all objects reachable from them, as `git bundle verify` does
+* [ ] extract a branch from a bundle into a repository
+    * [x] write the pack into a pack directory, adding the bases that a thin pack lacks, and keep it only if every reference
+      is complete, as `git fetch` from a bundle does
+    * [ ] update references
+    * [ ] filtered bundles
+* [ ] create a bundle that provides references to repositories having given commits, as `git bundle create` does
+    * [x] select the prerequisites and the objects of the pack as `git rev-list --objects` does, and write the pack,
+      copying objects and deltas from existing packs
+    * [ ] filtered bundles
 * [ ] create a bundle from an archive
    * [ ] respect `export-ignore` and `export-subst`
-* [ ] extract a branch from a bundle into a repository
 * [ ] integrate bundle bootstrapping and bundle-uri metadata for clone/fetch
-* [ ] API documentation
+* [x] API documentation
     * [ ] Some examples
 
 ### gix-validate
