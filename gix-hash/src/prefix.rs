@@ -83,14 +83,26 @@ impl Prefix {
 
     /// Provided with candidate id which is a full hash, determine how this prefix compares to it,
     /// only looking at the prefix bytes, ignoring everything behind that.
+    ///
+    /// A prefix with more hex digits than `candidate` has compares as if `candidate` continued with zeros,
+    /// as Git compares them: it matches only if all of its digits after the end of `candidate` are `0`.
     pub fn cmp_oid(&self, candidate: &oid) -> Ordering {
+        let candidate = candidate.as_bytes();
+        if self.hex_len > candidate.len() * 2 {
+            let (common, beyond) = self.bytes.as_bytes().split_at(candidate.len());
+            return common.cmp(candidate).then(if beyond.iter().all(|byte| *byte == 0) {
+                Ordering::Equal
+            } else {
+                Ordering::Greater
+            });
+        }
         let common_len = self.hex_len / 2;
 
         self.bytes.as_bytes()[..common_len]
-            .cmp(&candidate.as_bytes()[..common_len])
+            .cmp(&candidate[..common_len])
             .then(if self.hex_len % 2 == 1 {
                 let half_byte_idx = self.hex_len / 2;
-                self.bytes.as_bytes()[half_byte_idx].cmp(&(candidate.as_bytes()[half_byte_idx] & 0xf0))
+                self.bytes.as_bytes()[half_byte_idx].cmp(&(candidate[half_byte_idx] & 0xf0))
             } else {
                 Ordering::Equal
             })

@@ -110,6 +110,40 @@ mod cmp_oid {
         assert_eq!(prefix.cmp_oid(&sha256), Ordering::Equal);
         assert_eq!(prefix.to_string(), "a920bb");
     }
+
+    #[test]
+    #[cfg(all(feature = "sha1", feature = "sha256"))]
+    fn prefixes_longer_than_the_id_compare_as_if_it_continued_with_zeros() -> gix_testtools::TestResult {
+        let id = hex_to_id("a920bbb055e1efb9080592a409d3975738b6efb3");
+        for zeros in ["0", "0000", "000000000000000000000000"] {
+            let prefix = gix_hash::Prefix::from_hex(&format!("{id}{zeros}"))?;
+            assert_eq!(
+                prefix.cmp_oid(&id),
+                Ordering::Equal,
+                "like Git, all digits of the id followed by {zeros:?} match it"
+            );
+        }
+        for extra in ["f", "1", "0001", "000000000000000000000001"] {
+            let prefix = gix_hash::Prefix::from_hex(&format!("{id}{extra}"))?;
+            assert_eq!(
+                prefix.cmp_oid(&id),
+                Ordering::Greater,
+                "with {extra:?} after all digits of the id, the prefix sorts after it"
+            );
+        }
+        let prefix = gix_hash::Prefix::from_hex("a920bbb055e1efb9080592a409d3975738b6efb30")?;
+        assert_eq!(
+            prefix.cmp_oid(&hex_to_id("a920bbb055e1efb9080592a409d3975738b6efb4")),
+            Ordering::Less,
+            "the digits both have decide first"
+        );
+        assert_eq!(
+            prefix.cmp_oid(&hex_to_id("a920bbb055e1efb9080592a409d3975738b6efb2")),
+            Ordering::Greater,
+            "the digits both have decide first"
+        );
+        Ok(())
+    }
 }
 
 mod new {
