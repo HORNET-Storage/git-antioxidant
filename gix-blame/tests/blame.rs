@@ -405,6 +405,46 @@ fn file_that_was_added_in_two_branches() -> gix_testtools::TestResult {
 }
 
 #[test]
+fn file_from_two_unrelated_histories() -> gix_testtools::TestResult {
+    let worktree_path = gix_testtools::scripted_fixture_read_only("make_blame_unrelated_histories_repo.sh")?;
+
+    let mut fixture = Fixture::for_worktree_path(worktree_path.to_path_buf())?;
+    let source_file_name = "file-from-two-root-commits.txt";
+    let outcome = fixture.blame_file(
+        source_file_name.into(),
+        gix_blame::Options {
+            debug_track_path: true,
+            ..Default::default()
+        },
+    )?;
+
+    let git_dir = worktree_path.join(".git");
+    let baseline = Baseline::collect(
+        git_dir.join("file-from-two-root-commits.baseline"),
+        source_file_name.into(),
+    )?;
+
+    assert_eq!(baseline.len(), 3, "the merge and each root commit contribute lines");
+    pretty_assertions::assert_eq!(outcome.entries, baseline);
+
+    let (first_root, second_root) = (outcome.entries[0].commit_id, outcome.entries[2].commit_id);
+    let roots_in_blame_path: Vec<_> = outcome
+        .blame_path
+        .expect("the blame path is tracked")
+        .iter()
+        .filter(|entry| entry.previous_source_file_path.is_none())
+        .map(|entry| entry.commit_id)
+        .collect();
+    assert_eq!(
+        roots_in_blame_path,
+        [second_root, first_root],
+        "the newer root commit is reached first, while the older one is still queued"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn since() -> gix_testtools::TestResult {
     let Fixture {
         odb,

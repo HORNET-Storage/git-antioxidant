@@ -155,34 +155,29 @@ pub fn file(
         let parent_ids: ParentIds = collect_parents(commit, &odb, cache.as_ref(), &mut buf2)?;
 
         if parent_ids.is_empty() {
-            if queue.is_empty() {
-                // I’m not entirely sure if this is correct yet. `suspect`, at this point, is the
-                // `id` of the last `item` that was yielded by `queue`, so it makes sense to assign
-                // the remaining lines to it, even though we don’t explicitly check whether that is
-                // true here. We could perhaps use diff-tree-to-tree to compare `suspect` against
-                // an empty tree to validate this assumption.
-                if unblamed_to_out_is_done(&mut hunks_to_blame, &mut out, suspect) {
-                    if let Some(ref mut blame_path) = blame_path {
-                        let entry = previous_entry
-                            .take()
-                            .filter(|(id, _)| *id == suspect)
-                            .map(|(_, entry)| entry);
+            // A commit without parents passes blame to no one, so the lines still blamed on it
+            // originate in it. That holds while other suspects are still queued, as they are in a
+            // history with more than one root commit, or when a descendant's commit time isn't newer
+            // than the root commit's.
+            let done = unblamed_to_out_is_done(&mut hunks_to_blame, &mut out, suspect);
+            if let Some(ref mut blame_path) = blame_path {
+                let entry = previous_entry.filter(|(id, _)| *id == suspect).map(|(_, entry)| entry);
 
-                        let blame_path_entry = BlamePathEntry {
-                            source_file_path: current_file_path.clone(),
-                            previous_source_file_path: None,
-                            commit_id: suspect,
-                            blob_id: entry.unwrap_or(gix_hash::Kind::shortest().null()),
-                            previous_blob_id: gix_hash::Kind::shortest().null(),
-                            parent_index: 0,
-                        };
-                        blame_path.push(blame_path_entry);
-                    }
-
-                    break 'outer;
-                }
+                let blame_path_entry = BlamePathEntry {
+                    source_file_path: current_file_path.clone(),
+                    previous_source_file_path: None,
+                    commit_id: suspect,
+                    blob_id: entry.unwrap_or(gix_hash::Kind::shortest().null()),
+                    previous_blob_id: gix_hash::Kind::shortest().null(),
+                    parent_index: 0,
+                };
+                blame_path.push(blame_path_entry);
             }
-            // There is more, keep looking.
+
+            if done {
+                break 'outer;
+            }
+            // Other suspects still have lines to blame, keep looking.
             continue;
         }
 
