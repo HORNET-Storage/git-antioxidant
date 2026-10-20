@@ -884,6 +884,38 @@ mod lookup_prefix {
         assert_all_indices_loaded(&handle, 1, 2);
         Ok(())
     }
+
+    #[test]
+    fn digits_after_the_end_of_an_id_match_only_zeros() -> gix_testtools::TestResult {
+        let (mut handle, _tmp) = db_with_all_object_sources()?;
+        handle.refresh.never();
+
+        for oid in handle.iter()? {
+            let oid = oid?;
+            for (extra, expected) in [
+                ("0", Some(Ok(oid))),
+                ("000000000000000000000000", Some(Ok(oid))),
+                ("f", None),
+            ] {
+                let prefix = gix_hash::Prefix::from_hex(&format!("{oid}{extra}"))?;
+                for mut candidates in [None, Some(HashSet::default())] {
+                    assert_eq!(
+                        handle.lookup_prefix(prefix, candidates.as_mut())?,
+                        expected,
+                        "like Git, all digits of {oid} followed by {extra:?} find it in packs, the multi-pack index and loose objects only if they are zeros"
+                    );
+                    if let Some(candidates) = candidates {
+                        assert_eq!(
+                            candidates,
+                            expected.map(|_| oid).into_iter().collect::<HashSet<_>>(),
+                            "the id is the only candidate, and only when it matches"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[test]

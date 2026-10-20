@@ -252,12 +252,13 @@ mod contains {
 mod lookup_prefix {
     use std::collections::HashSet;
 
+    use gix_object::Write;
     use gix_testtools::fixture_path;
     use maplit::hashset;
 
     use crate::{
         hex_to_id,
-        store::loose::{ldb, ldb_at},
+        store::loose::{ldb, ldb_at, ldb_at_opts},
     };
 
     #[test]
@@ -329,6 +330,56 @@ mod lookup_prefix {
                 }
             }
         }
+    }
+
+    #[test]
+    fn prefixes_parsed_from_hex_find_objects_in_a_sha256_store() -> gix_testtools::TestResult {
+        let dir = gix_testtools::tempfile::tempdir()?;
+        let store = ldb_at_opts(dir.path(), gix_hash::Kind::Sha256);
+        let id = store.write_buf(gix_object::Kind::Blob, b"content\n")?;
+        for hex_len in [4, 7, 40, 41, 64] {
+            let prefix = gix_hash::Prefix::from_hex(&id.to_hex_with_len(hex_len).to_string())?;
+            for mut candidates in [None, Some(HashSet::default())] {
+                assert_eq!(
+                    store.lookup_prefix(prefix, candidates.as_mut())?,
+                    Some(Ok(id)),
+                    "the first {hex_len} hex digits find the object, whatever hash kind they parse as"
+                );
+                if let Some(candidates) = candidates {
+                    assert_eq!(candidates, hashset! {id}, "the object is the only candidate");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn digits_after_the_end_of_an_id_match_only_zeros() -> gix_testtools::TestResult {
+        let store = ldb();
+        let id = hex_to_id("37d4e6c5c48ba0d245164c4e10d5f41140cab980");
+        for (extra, expected) in [
+            ("0", Some(Ok(id))),
+            ("000000000000000000000000", Some(Ok(id))),
+            ("f", None),
+            ("000000000000000000000001", None),
+        ] {
+            let prefix = gix_hash::Prefix::from_hex(&format!("{id}{extra}"))?;
+            for mut candidates in [None, Some(HashSet::default())] {
+                assert_eq!(
+                    store.lookup_prefix(prefix, candidates.as_mut())?,
+                    expected,
+                    "like Git, all digits of a stored SHA-1 id followed by {extra:?} find it only if they are zeros"
+                );
+                if let Some(candidates) = candidates {
+                    assert_eq!(
+                        candidates,
+                        expected.map(|_| id).into_iter().collect::<HashSet<_>>(),
+                        "the id is the only candidate, and only when it matches"
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 }
 

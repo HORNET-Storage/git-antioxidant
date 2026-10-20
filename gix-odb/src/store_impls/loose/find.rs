@@ -34,7 +34,9 @@ impl Store {
                 .max_depth(1)
                 .follow_links(false)
                 .into_iter(),
-            hash_hex_len: prefix.as_oid().kind().len_in_hex(),
+            // Object file names have the store's hash length. A prefix parsed from hex has the kind its
+            // number of digits implies, whatever the store's hash, so its kind can't provide that length.
+            hash_hex_len: self.object_hash.len_in_hex(),
         };
         let mut candidate = None;
         for oid in single_directory_iter {
