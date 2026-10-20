@@ -1857,6 +1857,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "gix-diffcore"
+version = "0.0.0"
+dependencies = [
+ "bstr",
+ "gix-diff",
+ "gix-error",
+ "gix-hash",
+ "gix-hashtable",
+ "gix-object",
+ "gix-odb",
+ "gix-testtools",
+ "pretty_assertions",
+]
+
+[[package]]
 name = "gix-dir"
 version = "0.31.0"
 dependencies = [

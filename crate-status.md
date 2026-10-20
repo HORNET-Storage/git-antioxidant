@@ -992,6 +992,19 @@ See its [README.md](https://github.com/GitoxideLabs/gitoxide/blob/main/gix-lock/
 * [x] API documentation
     * [ ] Some examples
 
+### gix-diffcore
+* [ ] find renames among the changes between two trees as `git diff -M` does
+    * [x] pair identical files, preferring sources with the file name of the destination, in git's order
+    * [x] pair files whose file name is unique among the remaining sources and destinations
+    * [x] estimate the similarity of the remaining files as `diffcore-delta.c` does, within `diff.renameLimit`
+    * [ ] copies (`-C`, `--find-copies-harder`)
+    * [ ] break rewrites (`-B`) and merge them back
+    * [ ] directory rename hints for merges
+* [ ] pickaxe (`-S`, `-G`)
+* [ ] order files (`-O`)
+* [x] API documentation
+    * [ ] Some examples
+
 ### gix-validate
 * [x] validate ref names
 * [x] validate submodule names
