@@ -638,6 +638,10 @@ impl State {
     pub fn remove_tree(&mut self) -> Option<extension::Tree> {
         self.tree.take()
     }
+    /// Set the `tree` extension to `tree`, such as a cache tree computed from the entries, and return the previous one.
+    pub fn set_tree(&mut self, tree: extension::Tree) -> Option<extension::Tree> {
+        self.tree.replace(tree)
+    }
     /// Access the `link` extension.
     pub fn link(&self) -> Option<&extension::Link> {
         self.link.as_ref()

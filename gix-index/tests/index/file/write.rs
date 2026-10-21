@@ -203,6 +203,27 @@ fn extended_flags_automatically_upgrade_the_version_to_avoid_data_loss() -> Test
 }
 
 #[test]
+fn a_set_tree_extension_is_written_with_the_entries() -> TestResult {
+    let mut index = Generated("v2").open();
+    let tree = index
+        .remove_tree()
+        .expect("git records the cache tree of the entries it wrote");
+    assert_eq!(index.set_tree(tree.clone()), None, "the extension was removed before");
+
+    let mut buf = Vec::<u8>::new();
+    index.write_to(&mut buf, only_tree_ext())?;
+    let (state, _checksum) =
+        State::from_bytes(&buf, FileTime::now(), gix_testtools::object_hash(), Default::default())?;
+    assert_eq!(state.tree(), Some(&tree), "the set extension is written and read back");
+    assert_eq!(
+        index.set_tree(tree.clone()),
+        Some(tree),
+        "setting it again returns the previous extension"
+    );
+    Ok(())
+}
+
+#[test]
 fn remove_flag_is_respected() -> TestResult {
     let mut index = Generated("v4_more_files_IEOT").open();
     let total_entries = 10;
