@@ -295,6 +295,7 @@ members = [
     "gix-fsck",
     "gix-bundle",
     "gix-diffcore",
+    "gix-write-tree",
     "tests/tools",
     "tests/it",
     "gix-shallow"

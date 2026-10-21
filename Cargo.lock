@@ -2843,6 +2843,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gix-write-tree"
+version = "0.0.0"
+dependencies = [
+ "bstr",
+ "gix-error",
+ "gix-hash",
+ "gix-index",
+ "gix-object",
+ "gix-odb",
+ "gix-testtools",
+ "pretty_assertions",
+]
+
+[[package]]
 name = "gix-zlib"
 version = "0.3.0"
 dependencies = [
