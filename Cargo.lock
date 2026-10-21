@@ -1614,6 +1614,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "gix-add"
+version = "0.0.0"
+dependencies = [
+ "bstr",
+ "filetime",
+ "gix-attributes",
+ "gix-config",
+ "gix-dir",
+ "gix-discover",
+ "gix-error",
+ "gix-filter",
+ "gix-fs",
+ "gix-hash",
+ "gix-hashtable",
+ "gix-ignore",
+ "gix-index",
+ "gix-object",
+ "gix-odb",
+ "gix-parallel",
+ "gix-path",
+ "gix-pathspec",
+ "gix-ref",
+ "gix-status",
+ "gix-testtools",
+ "gix-trace",
+ "gix-utils",
+ "gix-worktree",
+ "gix-write-tree",
+ "pretty_assertions",
+]
+
+[[package]]
 name = "gix-archive"
 version = "0.38.0"
 dependencies = [

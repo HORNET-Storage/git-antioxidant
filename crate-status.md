@@ -1017,6 +1017,19 @@ See its [README.md](https://github.com/GitoxideLabs/gitoxide/blob/main/gix-lock/
 * [x] API documentation
     * [ ] Some examples
 
+### gix-add
+* [ ] add the changes of a worktree to its index as `git add` does
+    * [x] `--all` within a pathspec: replace or remove the entries of changed and deleted files, and add untracked files
+      that aren't ignored
+    * [x] resolve conflicts with the files in the worktree
+    * [x] add repositories, such as the worktrees of submodules, as the commits that their `HEAD` points to
+    * [x] convert files as `.gitattributes` and the configuration ask for
+    * [ ] `--update`, `--intent-to-add`, `--force`, `--chmod` and `--renormalize`
+    * [ ] report pathspecs that match nothing and ignored files that a pathspec names
+    * [ ] sparse checkouts and sparse indices
+* [x] API documentation
+    * [ ] Some examples
+
 ### gix-validate
 * [x] validate ref names
 * [x] validate submodule names

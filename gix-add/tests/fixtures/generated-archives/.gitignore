@@ -1,0 +1,7 @@
+# The results of these fixtures depend on the host, so they are recorded on each host instead of being archived:
+# `make_add_host.sh` on whether the file system has executable bits and ignores the case of file names, and
+# `make_add_symlinks.sh` on symbolic links, which archives can't represent on all hosts.
+make_add_host.tar
+make_add_host_sha256.tar
+make_add_symlinks.tar
+make_add_symlinks_sha256.tar
