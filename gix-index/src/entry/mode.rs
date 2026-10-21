@@ -44,9 +44,10 @@ impl Mode {
     /// cause a file to be deleted from the index and should be handled before
     /// calling this function.
     ///
-    /// If the stat information belongs to something other than a normal file/
-    /// directory (like a socket) we just return an identity change (non-files
-    /// can not be committed to git).
+    /// Regular files of either mode that aren't regular files on disk anymore changed their type.
+    /// If the stat information belongs to something other than a regular file, a directory or a
+    /// symlink (like a socket), the new mode is that of a regular file, as git can't commit other
+    /// kinds of files.
     pub fn change_to_match_fs(
         self,
         stat: &crate::fs::Metadata,
@@ -89,7 +90,7 @@ impl Mode {
         executable_bit: bool,
     ) -> Option<Change> {
         match self {
-            Mode::FILE if !is_file => (),
+            Mode::FILE | Mode::FILE_EXECUTABLE if !is_file => (),
             Mode::SYMLINK if is_symlink => return None,
             Mode::SYMLINK if has_symlinks && !is_symlink => (),
             Mode::SYMLINK if !has_symlinks && !is_file => (),

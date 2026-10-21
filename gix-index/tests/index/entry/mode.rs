@@ -19,6 +19,23 @@ fn is_dir_for_pattern_matching() {
 }
 
 #[test]
+fn regular_files_that_are_no_longer_regular_files_change_their_type_whether_executable_or_not() {
+    for mode in [Mode::FILE, Mode::FILE_EXECUTABLE] {
+        for (is_symlink, new_mode) in [(true, Mode::SYMLINK), (false, Mode::FILE)] {
+            for executable_bit in [false, true] {
+                assert_eq!(
+                    mode.change_to_match_fs_with_values(false, false, is_symlink, false, true, executable_bit),
+                    Some(Change::Type { new_mode }),
+                    "{mode:?} with a {} on disk and executable_bit={executable_bit}: like git, any regular file that \
+                     isn't one anymore changed its type",
+                    if is_symlink { "symlink" } else { "special file" }
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn apply() {
     assert_eq!(Change::ExecutableBit.apply(Mode::FILE), Mode::FILE_EXECUTABLE);
     assert_eq!(Change::ExecutableBit.apply(Mode::FILE_EXECUTABLE), Mode::FILE);
