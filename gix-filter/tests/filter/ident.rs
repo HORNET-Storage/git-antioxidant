@@ -99,7 +99,7 @@ mod apply {
             gix_hash::Kind::Sha256 => "63cdf77e7872965e2af1bee42e925f9b4bd6a3ab9f5ef6c06c4312f7d90d8021",
             _ => unimplemented!(),
         };
-        assert_eq!(buf.as_bstr(), format!("$Id: {expected_hash}$"));
+        assert_eq!(buf.as_bstr(), format!("$Id: {expected_hash} $"));
 
         assert!(ident::apply(
             B("$Id$ $Id$ foo"),
@@ -113,8 +113,30 @@ mod apply {
         };
         assert_eq!(
             buf.as_bstr(),
-            format!("$Id: {expected_hash}$ $Id: {expected_hash}$ foo")
+            format!("$Id: {expected_hash} $ $Id: {expected_hash} $ foo")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn ids_are_expanded_as_git_expands_them() -> TestResult {
+        let dir = gix_testtools::scripted_fixture_read_only("ident.sh")?;
+        let mut buf = Vec::new();
+        for (file, blob) in [
+            ("single", "$Id$"),
+            ("multiple", "$Id$ $Id$ foo"),
+            ("lines", "hi\n$Id$\nho\n\t$Id$$Id$$Id$"),
+        ] {
+            assert!(
+                ident::apply(B(blob), gix_testtools::object_hash(), &mut buf)?,
+                "{file}: the ids are expanded"
+            );
+            assert_eq!(
+                buf.as_bstr(),
+                std::fs::read(dir.join(file))?.as_bstr(),
+                "{file}: git checked out the same content"
+            );
+        }
         Ok(())
     }
 

@@ -41,18 +41,18 @@ pub fn undo(src: &[u8], buf: &mut Vec<u8>) -> std::result::Result<bool, std::col
     Ok(initialized)
 }
 
-/// Substitute all occurrences of `$Id$` with `$Id: <hexsha-of-input>$` if present in `src` and write all changes to `buf`,
+/// Substitute all occurrences of `$Id$` with `$Id: <hexsha-of-input> $` if present in `src` and write all changes to `buf`,
 /// with `object_hash` being used accordingly. Return `true` if `buf` was written to or `false` if no change was made
 /// (as there was nothing to do).
 ///
 /// ### Deviation
 ///
-/// `Git` also tries to cleanup 'stray' substituted `$Id: <hex>$`, but we don't do that, sticking exactly to what ought to be done.
+/// `Git` also tries to cleanup 'stray' substituted `$Id: <hex> $`, but we don't do that, sticking exactly to what ought to be done.
 /// The respective code is up to 16 years old and one might assume that `git` by now handles checking and checkout filters correctly.
 pub fn apply(src: &[u8], object_hash: gix_hash::Kind, buf: &mut Vec<u8>) -> Result<bool> {
     use gix_error::{ResultExt, message};
 
-    const HASH_LEN: usize = ": ".len() + gix_hash::Kind::longest().len_in_hex();
+    const HASH_LEN: usize = ": ".len() + gix_hash::Kind::longest().len_in_hex() + " ".len();
     let mut id = None;
     let mut ofs = 0;
     while let Some(pos) = src[ofs..].find(b"$Id$") {
@@ -69,7 +69,7 @@ pub fn apply(src: &[u8], object_hash: gix_hash::Kind, buf: &mut Vec<u8>) -> Resu
         buf.push_str(&src[ofs..][..pos + 3]);
         buf.push_str(b": ");
         id.write_hex_to(&mut *buf).expect("writes to memory always work");
-        buf.push(b'$');
+        buf.push_str(b" $");
 
         ofs += pos + 4;
     }
