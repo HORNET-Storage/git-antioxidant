@@ -45,7 +45,7 @@ today's code and goals.
     * [x] `merge-base`, revision parsing and commit description
     * [x] worktree streaming, archive creation and low-level checkout
 * **common workflows that still need plumbing across crates**
-    * [ ] `checkout`, `switch`, `restore` and `reset` - mainly `gix`, `gix-worktree-state`, `gix-index`, `gix-filter`, `gix-hook`
+    * [ ] `checkout`, `switch`, `restore` and `reset` - mainly `gix`, `gix-switch`, `gix-worktree-state`, `gix-index`, `gix-filter`, `gix-hook`
     * [ ] `merge`, `cherry-pick` and `revert` - mainly `gix`, `gix-merge`, `gix-cherry-pick`, `gix-sequencer`, `gix-rerere`, `gix-hook`
     * [ ] `rebase` - mainly `gix-rebase`, `gix-sequencer`, `gix-merge`, `gix-apply`, `gix-rerere`, `gix-hook`, `gix`
     * [ ] `bisect` - mainly `gix-bisect`, `gix-sequencer`, `gix-revision`, `gix-revwalk`, `gix-traverse`, `gix`
@@ -1026,6 +1026,21 @@ See its [README.md](https://github.com/GitoxideLabs/gitoxide/blob/main/gix-lock/
     * [x] convert files as `.gitattributes` and the configuration ask for
     * [ ] `--update`, `--intent-to-add`, `--force`, `--chmod` and `--renormalize`
     * [ ] report pathspecs that match nothing and ignored files that a pathspec names
+    * [ ] sparse checkouts and sparse indices
+* [x] API documentation
+    * [ ] Some examples
+
+### gix-switch
+* [ ] switch an index and its worktree from one tree to another as `git read-tree -m -u` does for `git switch` and
+  `git checkout`
+    * [x] check each path that the trees change with git's two-way merge rules, keeping the staged changes that the new
+      tree agrees with
+    * [x] refuse to lose changes or untracked files, listing the paths in the groups of git's messages
+    * [x] remove the files of deleted entries with the directories that they leave empty, and check out added and changed
+      entries
+    * [x] give the index a cache tree that is valid for the directories whose trees the object database has
+    * [ ] `--merge`
+    * [ ] `--recurse-submodules`
     * [ ] sparse checkouts and sparse indices
 * [x] API documentation
     * [ ] Some examples

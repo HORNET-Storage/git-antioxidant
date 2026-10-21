@@ -297,6 +297,7 @@ members = [
     "gix-diffcore",
     "gix-write-tree",
     "gix-add",
+    "gix-switch",
     "tests/tools",
     "tests/it",
     "gix-shallow"
