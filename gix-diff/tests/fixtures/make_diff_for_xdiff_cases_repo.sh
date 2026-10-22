@@ -112,6 +112,25 @@ pair rediff_c 'b\nc\n}\n' '}\nb\n}\n'
 # path that reached furthest instead.
 pseudo_random_pair many_changes 1 2000 97 25 90
 
+# Git's indent heuristic places a hunk that can slide by the indentation around its possible
+# positions. Only spaces and tabs indent a line: a form feed ends the indentation like any other
+# character, and a line with one isn't blank.
+pair form_feed_a '\f        goto out;\n' '\f        goto out;\n        a;\n\f        goto out;\n'
+{ lines 2 ''; printf '\f\n'; lines 18 ''; } >assets/form_feed_b_before.blob
+{ lines 2 ''; printf '\f\n'; lines 8 ''; } >assets/form_feed_b_after.blob
+
+# After 20 blank lines, the indent heuristic stops looking for a line with indentation and continues
+# as if a line without indentation followed, also when the blank lines reach the start or the end
+# of the file.
+{ lines 10 ''; printf '    a;\n'; } >assets/blank_run_start_before.blob
+{ lines 23 ''; printf '    a;\n'; } >assets/blank_run_start_after.blob
+lines 29 '' >assets/blank_run_end_before.blob
+lines 17 '' >assets/blank_run_end_after.blob
+
+# A line indented less than the one above it starts a block only if a line indented more follows it,
+# and otherwise ends one. At the end of the file, no line follows.
+pair dedent '\t\tb;\n\n\ta;\n  e;\n' '\t\tb;\n\n\ta;\n  e;\n\ta;\n\ta;\n  e;\n'
+
 for before in assets/*_before.blob; do
   name="${before#assets/}"
   name="${name%_before.blob}"

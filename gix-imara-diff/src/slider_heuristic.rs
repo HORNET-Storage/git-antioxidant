@@ -113,7 +113,11 @@ impl IndentLevel {
     /// The maximum trackable indentation level.
     const MAX: IndentLevel = IndentLevel(200);
 
-    /// Computes the indentation level for an ASCII line.
+    /// Computes the indentation level for an ASCII line, as Git's `get_indent()` does.
+    ///
+    /// A space adds one column and a tab advances to the next multiple of `tab_width`. Carriage
+    /// returns and newlines are skipped, and any other byte ends the indentation, including a form
+    /// feed or a vertical tab, which Git doesn't count as whitespace there.
     ///
     /// # Parameters
     ///
@@ -122,7 +126,8 @@ impl IndentLevel {
     ///
     /// # Returns
     ///
-    /// The computed indentation level, or `BLANK` if the line contains only whitespace
+    /// The computed indentation level, or `BLANK` if the line contains only spaces, tabs, carriage
+    /// returns and newlines
     pub fn for_ascii_line(src: impl IntoIterator<Item = u8>, tab_width: u8) -> IndentLevel {
         let mut indent_level = IndentLevel(0);
         let tab_width = tab_width.max(1);
@@ -130,7 +135,7 @@ impl IndentLevel {
             match c {
                 b' ' => indent_level = indent_level.increased_by(1),
                 b'\t' => indent_level = indent_level.increased_by(tab_width - indent_level.0 % tab_width),
-                b'\r' | b'\n' | b'\x0C' => (),
+                b'\r' | b'\n' => (),
                 _ => return indent_level,
             }
             if indent_level >= Self::MAX {
@@ -140,7 +145,7 @@ impl IndentLevel {
         IndentLevel::BLANK
     }
 
-    /// Computes the indentation level for a Unicode line.
+    /// Computes the indentation level for a Unicode line, with the rules of [`Self::for_ascii_line()`].
     ///
     /// # Parameters
     ///
@@ -149,7 +154,8 @@ impl IndentLevel {
     ///
     /// # Returns
     ///
-    /// The computed indentation level, or `BLANK` if the line contains only whitespace
+    /// The computed indentation level, or `BLANK` if the line contains only spaces, tabs, carriage
+    /// returns and newlines
     pub fn for_line(src: impl IntoIterator<Item = char>, tab_width: u8) -> IndentLevel {
         let mut indent_level = IndentLevel(0);
         let tab_width = tab_width.max(1);
@@ -157,7 +163,7 @@ impl IndentLevel {
             match c {
                 ' ' => indent_level = indent_level.increased_by(1),
                 '\t' => indent_level = indent_level.increased_by(tab_width - indent_level.0 % tab_width),
-                '\r' | '\n' | '\x0C' => (),
+                '\r' | '\n' => (),
                 _ => return indent_level,
             }
             if indent_level >= Self::MAX {
@@ -180,81 +186,73 @@ impl IndentLevel {
     }
 }
 
-/// Captures indentation information for a token and its surrounding context.
+/// What Git's `measure_split()` measures about a split above a token.
 ///
 /// This structure is used by the indent heuristic to evaluate different hunk positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Indents {
-    /// Indentation level of the current line/token.
+    /// Indentation level of the line following the split, `BLANK` at the end of the file.
     indent: IndentLevel,
-    /// Indentation level of the previous non-blank line.
+    /// Indentation level of the nearest non-blank line above the split, `BLANK` if there is none,
+    /// or 0 if [`MAX_BLANKS`] blank lines come first.
     prev_indent: IndentLevel,
-    /// Indentation level of the next non-blank line.
+    /// Indentation level of the nearest non-blank line below the line following the split,
+    /// `BLANK` if there is none, or 0 if [`MAX_BLANKS`] blank lines come first.
     next_indent: IndentLevel,
-    /// The number of consecutive blank lines above the current position.
+    /// The number of consecutive blank lines above the split, at most [`MAX_BLANKS`].
     leading_blanks: u8,
-    /// The number of blank lines after the line following the current position.
+    /// The number of consecutive blank lines below the line following the split, at most [`MAX_BLANKS`].
     trailing_blanks: u8,
     /// Whether the split sits past the last line of the file.
     at_eof: bool,
 }
 
-/// Maximum number of consecutive blank lines to consider when computing indentation context.
-const MAX_BLANKS: usize = 20;
+/// The number of consecutive blank lines after which the search for a non-blank line stops, as
+/// if a line with no indentation came next.
+const MAX_BLANKS: u8 = 20;
 
 impl Indents {
+    /// Measures the split above `tokens[token_idx]` as Git's `measure_split()` does.
     fn at_token(tokens: &[Token], token_idx: usize, indent_of_token: impl Fn(Token) -> IndentLevel) -> Indents {
-        let (leading_blank_lines, indent_previous_line) = tokens[..token_idx]
-            .iter()
-            .rev()
-            .enumerate()
-            .find_map(|(i, &token)| {
-                if i == MAX_BLANKS {
-                    Some((i, IndentLevel(0)))
-                } else {
-                    let level = indent_of_token(token);
-                    if level == IndentLevel::BLANK {
-                        None
-                    } else {
-                        Some((i, level))
-                    }
-                }
-            })
-            .unwrap_or((token_idx, IndentLevel::BLANK));
-        let at_eof = token_idx == tokens.len();
-        let (trailing_blank_lines, indent_next_line) = if at_eof {
-            (0, IndentLevel::BLANK)
-        } else {
-            tokens[token_idx + 1..]
-                .iter()
-                .enumerate()
-                .find_map(|(i, &token)| {
-                    if i == MAX_BLANKS {
-                        Some((i, IndentLevel(0)))
-                    } else {
-                        let level = indent_of_token(token);
-                        if level == IndentLevel::BLANK {
-                            None
-                        } else {
-                            Some((i, level))
-                        }
-                    }
-                })
-                .unwrap_or((tokens.len() - token_idx - 1, IndentLevel::BLANK))
-        };
-        let indent = tokens
-            .get(token_idx)
-            .map_or(IndentLevel::BLANK, |&token| indent_of_token(token));
+        let mut leading_blanks = 0;
+        let mut prev_indent = IndentLevel::BLANK;
+        for &token in tokens[..token_idx].iter().rev() {
+            prev_indent = indent_of_token(token);
+            if prev_indent != IndentLevel::BLANK {
+                break;
+            }
+            leading_blanks += 1;
+            if leading_blanks == MAX_BLANKS {
+                prev_indent = IndentLevel(0);
+                break;
+            }
+        }
+        let mut trailing_blanks = 0;
+        let mut next_indent = IndentLevel::BLANK;
+        for &token in tokens.get(token_idx + 1..).unwrap_or_default() {
+            next_indent = indent_of_token(token);
+            if next_indent != IndentLevel::BLANK {
+                break;
+            }
+            trailing_blanks += 1;
+            if trailing_blanks == MAX_BLANKS {
+                next_indent = IndentLevel(0);
+                break;
+            }
+        }
         Indents {
-            indent,
-            prev_indent: indent_previous_line,
-            next_indent: indent_next_line,
-            leading_blanks: leading_blank_lines as u8,
-            trailing_blanks: trailing_blank_lines as u8,
-            at_eof,
+            indent: tokens
+                .get(token_idx)
+                .map_or(IndentLevel::BLANK, |&token| indent_of_token(token)),
+            prev_indent,
+            next_indent,
+            leading_blanks,
+            trailing_blanks,
+            at_eof: token_idx >= tokens.len(),
         }
     }
 
+    /// Scores the split as Git's `score_add_split()` does.
     fn score(&self) -> Score {
         let mut penalty = 0;
         if self.prev_indent == IndentLevel::BLANK && self.leading_blanks == 0 {
@@ -275,20 +273,20 @@ impl Indents {
         if indent != IndentLevel::BLANK && self.prev_indent != IndentLevel::BLANK {
             match indent.0.cmp(&self.prev_indent.0) {
                 Ordering::Equal => {}
-                // self.next_indent != IndentLevel::BLANK follows for free here
-                // since indent != BLANK and therefore self.next_indent <= indent < BLANK
-                Ordering::Less if self.next_indent.0 <= indent.0 => {
-                    penalty += if total_blank_lines != 0 {
-                        RELATIVE_DEDENT_WITH_BLANK_PENALTY
-                    } else {
-                        RELATIVE_DEDENT_PENALTY
-                    }
-                }
-                Ordering::Less => {
+                // A line indented less than the one above it starts a block if a line indented
+                // more follows it, and otherwise ends one.
+                Ordering::Less if self.next_indent != IndentLevel::BLANK && self.next_indent.0 > indent.0 => {
                     penalty += if total_blank_lines != 0 {
                         RELATIVE_OUTDENT_WITH_BLANK_PENALTY
                     } else {
                         RELATIVE_OUTDENT_PENALTY
+                    }
+                }
+                Ordering::Less => {
+                    penalty += if total_blank_lines != 0 {
+                        RELATIVE_DEDENT_WITH_BLANK_PENALTY
+                    } else {
+                        RELATIVE_DEDENT_PENALTY
                     }
                 }
                 Ordering::Greater => {
@@ -378,8 +376,19 @@ impl Score {
 
 #[cfg(test)]
 mod tests {
-    use super::{IndentLevel, Indents};
+    use super::{IndentLevel, Indents, RELATIVE_DEDENT_PENALTY, RELATIVE_OUTDENT_PENALTY};
     use crate::intern::Token;
+
+    const BLANK: Token = Token(0);
+    const CODE: Token = Token(1);
+
+    fn indent(token: Token) -> IndentLevel {
+        if token == BLANK {
+            IndentLevel::BLANK
+        } else {
+            IndentLevel(0)
+        }
+    }
 
     #[test]
     fn trailing_blanks_are_counted_not_positioned() {
@@ -387,21 +396,63 @@ mod tests {
         // measure_split leaves `post_blank` set to the number of blank lines it walked
         // over, which is 3 here. Reporting the split's position instead provides an
         // incorrect score.
-        const BLANK: Token = Token(0);
-        const CODE: Token = Token(1);
-        let indent = |token: Token| {
-            if token == BLANK {
-                IndentLevel::BLANK
-            } else {
-                IndentLevel(0)
-            }
-        };
-
         let mut tokens = vec![CODE; 300];
         tokens.extend([BLANK; 3]);
         let split = tokens.len() - 4;
         let indents = Indents::at_token(&tokens, split, indent);
         assert_eq!(indents.trailing_blanks, 3);
+    }
+
+    #[test]
+    fn twenty_blank_lines_up_to_the_edge_of_the_file_count_as_no_indentation() {
+        // Git's measure_split stops after MAX_BLANKS blank lines and takes the next line to
+        // be indented by 0, also when the file starts or ends right after them.
+        let mut tokens = vec![BLANK; 20];
+        tokens.push(CODE);
+        let indents = Indents::at_token(&tokens, 20, indent);
+        assert_eq!((indents.leading_blanks, indents.prev_indent), (20, IndentLevel(0)));
+        let indents = Indents::at_token(&tokens[1..], 19, indent);
+        assert_eq!((indents.leading_blanks, indents.prev_indent), (19, IndentLevel::BLANK));
+
+        let mut tokens = vec![CODE; 2];
+        tokens.extend([BLANK; 20]);
+        let indents = Indents::at_token(&tokens, 1, indent);
+        assert_eq!((indents.trailing_blanks, indents.next_indent), (20, IndentLevel(0)));
+        let indents = Indents::at_token(&tokens[..21], 1, indent);
+        assert_eq!((indents.trailing_blanks, indents.next_indent), (19, IndentLevel::BLANK));
+    }
+
+    #[test]
+    fn a_dedented_line_starts_a_block_only_if_a_line_below_is_indented_more() {
+        // Git's score_add_split penalizes such a line as an outdent only if the nearest non-blank
+        // line below it is indented more, and otherwise as a dedent, also when no such line exists.
+        let penalty = |next_indent| {
+            Indents {
+                indent: IndentLevel(0),
+                prev_indent: IndentLevel(4),
+                next_indent,
+                leading_blanks: 0,
+                trailing_blanks: 0,
+                at_eof: false,
+            }
+            .score()
+            .penalty
+        };
+        assert_eq!(penalty(IndentLevel(4)), RELATIVE_OUTDENT_PENALTY);
+        assert_eq!(penalty(IndentLevel(0)), RELATIVE_DEDENT_PENALTY);
+        assert_eq!(penalty(IndentLevel::BLANK), RELATIVE_DEDENT_PENALTY);
+    }
+
+    #[test]
+    fn only_spaces_tabs_carriage_returns_and_newlines_are_indentation() {
+        // Git's get_indent skips what its isspace accepts, which excludes form feeds and vertical
+        // tabs.
+        assert_eq!(IndentLevel::for_ascii_line(*b"\x0c\n", 8), IndentLevel(0));
+        assert_eq!(IndentLevel::for_ascii_line(*b"  \x0cx\n", 8), IndentLevel(2));
+        assert_eq!(IndentLevel::for_ascii_line(*b"\t\x0b\n", 8), IndentLevel(8));
+        assert_eq!(IndentLevel::for_line("\u{c}\n".chars(), 8), IndentLevel(0));
+        assert_eq!(IndentLevel::for_ascii_line(*b" \t\r\n", 8), IndentLevel::BLANK);
+        assert_eq!(IndentLevel::for_line(" \t\r\n".chars(), 8), IndentLevel::BLANK);
     }
 
     #[test]
