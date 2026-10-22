@@ -4,22 +4,45 @@
 use crate::histogram::{Histogram, MAX_CHAIN_LEN};
 use crate::intern::Token;
 
-/// Finds the longest common subsequence (LCS) using a histogram-based approach.
+/// Finds the common subsequence to split `before` and `after` at, as `find_lcs()` in Git's
+/// `xdiff/xhistogram.c` does.
 ///
-/// Returns `None` if the sequences are highly repetitive and should fall back to Myers.
-pub(super) fn find_lcs(before: &[Token], after: &[Token], histogram: &mut Histogram) -> Option<Lcs> {
+/// The tokens of `after` are visited in order. Every occurrence in `before` of the visited token is
+/// extended backward and forward over equal tokens, and the extended match becomes the split point
+/// if it is longer than the current one, or if the rarest of its tokens occurs less often in
+/// `before` than the rarest token of the current one. Tokens that occur more often in `before` than
+/// that are passed over, and the visit continues behind the furthest match end in `after`.
+pub(super) fn find_lcs(before: &[Token], after: &[Token], histogram: &mut Histogram) -> Split {
     let mut search = LcsSearch {
-        lcs: Lcs::default(),
+        lcs: None,
+        extent: 0,
         min_occurrences: MAX_CHAIN_LEN + 1,
         found_cs: false,
     };
     search.run(before, after, histogram);
-    if search.success() { Some(search.lcs) } else { None }
+    if search.found_cs && search.min_occurrences > MAX_CHAIN_LEN {
+        Split::FallBack
+    } else if let Some(lcs) = search.lcs {
+        Split::At(lcs)
+    } else {
+        Split::NothingInCommon
+    }
 }
 
-/// Represents a longest common subsequence found by the histogram algorithm.
-#[derive(Default, Debug)]
-pub struct Lcs {
+/// How the histogram algorithm continues with a region, as decided by [`find_lcs`].
+pub(super) enum Split {
+    /// Split the region around this common subsequence.
+    At(Lcs),
+    /// The two sides have no token in common.
+    NothingInCommon,
+    /// Every token that both sides contain occurs more than [`MAX_CHAIN_LEN`] times in `before`,
+    /// so the region is diffed with Myers algorithm instead.
+    FallBack,
+}
+
+/// A common subsequence that the histogram algorithm splits a region at.
+#[derive(Debug)]
+pub(super) struct Lcs {
     /// Starting position in the "before" sequence.
     pub before_start: u32,
     /// Starting position in the "after" sequence.
@@ -28,112 +51,87 @@ pub struct Lcs {
     pub len: u32,
 }
 
-/// State for searching for the longest common subsequence.
-pub struct LcsSearch {
-    /// The best LCS found so far.
-    lcs: Lcs,
-    /// The minimum occurrence count of tokens in the best LCS.
+/// State for searching for the common subsequence to split a region at.
+struct LcsSearch {
+    /// The best common subsequence found so far.
+    lcs: Option<Lcs>,
+    /// The length of `lcs` minus one, zero before anything is found as in Git, where a candidate
+    /// of a single token replaces nothing unless its token is rarer.
+    extent: u32,
+    /// How often the rarest token of `lcs` occurs in `before`, starting at `MAX_CHAIN_LEN + 1`.
     min_occurrences: u32,
-    /// Whether any common subsequence was found.
+    /// Whether any token of `after` occurs in `before`.
     found_cs: bool,
 }
 
 impl LcsSearch {
     fn run(&mut self, before: &[Token], after: &[Token], histogram: &mut Histogram) {
         let mut pos = 0;
-        while let Some(&token) = after.get(pos as usize) {
-            if histogram.num_token_occurrences(token) != 0 {
-                self.found_cs = true;
-                if histogram.num_token_occurrences(token) <= self.min_occurrences {
-                    pos = self.update_lcs(pos, token, histogram, before, after);
-                    continue;
-                }
-            }
-
-            pos += 1;
+        while (pos as usize) < after.len() {
+            pos = self.try_lcs(pos, before, after, histogram);
         }
-
         histogram.clear();
     }
 
-    fn success(&mut self) -> bool {
-        !self.found_cs || self.min_occurrences <= MAX_CHAIN_LEN
-    }
+    /// Tries every occurrence in `before` of the token at `after_pos`, as `try_lcs()` in Git's
+    /// `xdiff/xhistogram.c` does, and returns the position in `after` to visit next.
+    fn try_lcs(&mut self, after_pos: u32, before: &[Token], after: &[Token], histogram: &Histogram) -> u32 {
+        let mut next_after_pos = after_pos + 1;
+        let token = after[after_pos as usize];
+        let token_occurrences = histogram.num_token_occurrences(token);
+        if token_occurrences == 0 {
+            return next_after_pos;
+        }
+        self.found_cs = true;
+        if token_occurrences > self.min_occurrences {
+            return next_after_pos;
+        }
 
-    fn update_lcs(
-        &mut self,
-        after_pos: u32,
-        token: Token,
-        histogram: &Histogram,
-        before: &[Token],
-        after: &[Token],
-    ) -> u32 {
-        let mut next_token_idx2 = after_pos + 1;
-        let mut occurrences_iter = histogram.token_occurrences(token).iter().copied();
-        let mut token_idx1 = occurrences_iter.next().unwrap();
-
-        'occurrences_iter: loop {
-            let mut occurrences = histogram.num_token_occurrences(token);
-            let mut start1 = token_idx1;
+        let occurrences = histogram.token_occurrences(token);
+        let mut next = 0;
+        loop {
+            let mut start1 = occurrences[next];
+            next += 1;
             let mut start2 = after_pos;
-            loop {
-                if start1 == 0 || start2 == 0 {
-                    break;
-                }
-                let token1 = before.get(start1 as usize - 1);
-                let token2 = after.get(start2 as usize - 1);
-                if matches!((token1, token2), (Some(token1), Some(token2)) if token1 == token2) {
-                    start1 -= 1;
-                    start2 -= 1;
-                    let new_occurrences = histogram.num_token_occurrences(before[start1 as usize]);
-                    occurrences = occurrences.min(new_occurrences);
-                } else {
-                    break;
-                }
+            // The last tokens of the match, which includes them.
+            let mut end1 = start1;
+            let mut end2 = after_pos;
+            let mut min_occurrences = token_occurrences;
+            while start1 > 0 && start2 > 0 && before[start1 as usize - 1] == after[start2 as usize - 1] {
+                start1 -= 1;
+                start2 -= 1;
+                min_occurrences = min_occurrences.min(histogram.num_token_occurrences(before[start1 as usize]));
+            }
+            while end1 as usize + 1 < before.len()
+                && end2 as usize + 1 < after.len()
+                && before[end1 as usize + 1] == after[end2 as usize + 1]
+            {
+                end1 += 1;
+                end2 += 1;
+                min_occurrences = min_occurrences.min(histogram.num_token_occurrences(before[end1 as usize]));
             }
 
-            let mut end1 = token_idx1 + 1;
-            let mut end2 = after_pos + 1;
-            loop {
-                let token1 = before.get(end1 as usize);
-                let token2 = after.get(end2 as usize);
-                if matches!((token1, token2), (Some(token1), Some(token2)) if token1 == token2) {
-                    let new_occurrences = histogram.num_token_occurrences(before[end1 as usize]);
-                    occurrences = occurrences.min(new_occurrences);
-                    end1 += 1;
-                    end2 += 1;
-                } else {
-                    break;
-                }
+            if next_after_pos <= end2 {
+                next_after_pos = end2 + 1;
             }
-
-            if next_token_idx2 < end2 {
-                next_token_idx2 = end2;
-            }
-
-            let len = end2 - start2;
-            debug_assert_eq!(len, end1 - start1);
-            if self.lcs.len < len || self.min_occurrences > occurrences {
-                self.min_occurrences = occurrences;
-                self.lcs = Lcs {
+            if self.extent < end1 - start1 || min_occurrences < self.min_occurrences {
+                self.lcs = Some(Lcs {
                     before_start: start1,
                     after_start: start2,
-                    len,
-                };
+                    len: end1 - start1 + 1,
+                });
+                self.extent = end1 - start1;
+                self.min_occurrences = min_occurrences;
             }
 
+            // Continue with the first occurrence behind this match in `before`.
             loop {
-                if let Some(next_token_idx) = occurrences_iter.next() {
-                    if next_token_idx > end2 {
-                        token_idx1 = next_token_idx;
-                        break;
-                    }
-                } else {
-                    break 'occurrences_iter;
+                match occurrences.get(next) {
+                    None => return next_after_pos,
+                    Some(&pos) if pos <= end1 => next += 1,
+                    Some(_) => break,
                 }
             }
         }
-
-        next_token_idx2
     }
 }

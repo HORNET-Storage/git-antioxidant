@@ -1,67 +1,86 @@
 // Modified for gitoxide from the upstream imara-diff crate.
 // Upstream source: git cat-file -p 32d1e45d3df061e6ccba6db7fdce92db29e345d8:src/myers/preprocess.rs
 
+use std::ops::Range;
+
 use crate::intern::Token;
 use crate::myers::sqrt;
 
-/// Preprocesses token sequences by removing tokens that don't appear in the other sequence.
+/// Takes the tokens out of `region1` of `before` and `region2` of `after` that Git's
+/// `xdl_cleanup_records()` keeps out of Myers algorithm, and marks them as changed: tokens that the
+/// other file lacks, and frequent tokens surrounded by such tokens.
+///
+/// As in Git, how often a token occurs is counted over the whole other file, the limit for frequent
+/// tokens comes from the length of the token's own file, and with `minimal` no token is frequent.
 ///
 /// This optimization reduces the problem size for the Myers algorithm, improving performance
 /// for files with many unique tokens.
-pub fn preprocess<'a>(
+pub fn preprocess(
     before: &[Token],
     after: &[Token],
-    removed: &'a mut [bool],
-    added: &'a mut [bool],
+    region1: Range<usize>,
+    region2: Range<usize>,
+    removed: &mut [bool],
+    added: &mut [bool],
+    minimal: bool,
 ) -> (PreprocessedFile, PreprocessedFile) {
-    let (occurrences_before, occurrences_after) = token_occurrences(before, after);
-    let file1 = PreprocessedFile::new(&occurrences_before, before, removed);
-    let file2 = PreprocessedFile::new(&occurrences_after, after, added);
+    let (occurrences_before, occurrences_after) =
+        token_occurrences(before, after, region1.clone(), region2.clone(), minimal);
+    let file1 = PreprocessedFile::new(&occurrences_before, &before[region1.clone()], region1.start, removed);
+    let file2 = PreprocessedFile::new(&occurrences_after, &after[region2.clone()], region2.start, added);
     (file1, file2)
 }
 
-fn token_occurrences(file1: &[Token], file2: &[Token]) -> (Vec<Occurrences>, Vec<Occurrences>) {
+/// Classifies the tokens in `region1` of `file1` and `region2` of `file2` by how often they occur
+/// in the other file.
+fn token_occurrences(
+    file1: &[Token],
+    file2: &[Token],
+    region1: Range<usize>,
+    region2: Range<usize>,
+    minimal: bool,
+) -> (Vec<Occurrences>, Vec<Occurrences>) {
     const MAX_EQLIMIT: u32 = 1024;
 
     // compute the limit after which tokens are treated as `Occurrences::COMMON`
-    let eqlimit1 = sqrt(file1.len()).min(MAX_EQLIMIT);
-    let eqlimit2 = sqrt(file2.len()).min(MAX_EQLIMIT);
-
-    // first collect how often each token occurs in a file
-    let mut occurrences1 = Vec::new();
-    for token in file1 {
-        let bucket = token.0 as usize;
-        if bucket >= occurrences1.len() {
-            occurrences1.resize(bucket + 1, 0u32);
+    let eqlimit = |file: &[Token]| {
+        if minimal {
+            u32::MAX
+        } else {
+            sqrt(file.len()).min(MAX_EQLIMIT)
         }
-        occurrences1[bucket] += 1;
+    };
+    let eqlimit1 = eqlimit(file1);
+    let eqlimit2 = eqlimit(file2);
+
+    let occurrences1 = count_occurrences(file1);
+    let occurrences2 = count_occurrences(file2);
+    let classify = |tokens: &[Token], other_occurrences: &[u32], eqlimit: u32| -> Vec<Occurrences> {
+        tokens
+            .iter()
+            .map(|token| {
+                let occurrences = other_occurrences.get(token.0 as usize).copied().unwrap_or(0);
+                Occurrences::from_occurrences(occurrences, eqlimit)
+            })
+            .collect()
+    };
+    (
+        classify(&file1[region1], &occurrences2, eqlimit1),
+        classify(&file2[region2], &occurrences1, eqlimit2),
+    )
+}
+
+/// Counts how often each token occurs in `file`, indexed by the token.
+fn count_occurrences(file: &[Token]) -> Vec<u32> {
+    let mut occurrences = Vec::new();
+    for token in file {
+        let bucket = token.0 as usize;
+        if bucket >= occurrences.len() {
+            occurrences.resize(bucket + 1, 0u32);
+        }
+        occurrences[bucket] += 1;
     }
-
-    // do the same thing for
-    let mut occurrences2 = Vec::new();
-    let token_occurrences2: Vec<_> = file2
-        .iter()
-        .map(|token| {
-            let bucket = token.0 as usize;
-            if bucket >= occurrences2.len() {
-                occurrences2.resize(bucket + 1, 0);
-            }
-            occurrences2[bucket] += 1;
-            let occurrences1 = *occurrences1.get(bucket).unwrap_or(&0);
-            Occurrences::from_occurrences(occurrences1, eqlimit2)
-        })
-        .collect();
-
-    let token_occurrences1: Vec<_> = file1
-        .iter()
-        .map(|token| {
-            let bucket = token.0 as usize;
-            let occurrences2 = *occurrences2.get(bucket).unwrap_or(&0);
-            Occurrences::from_occurrences(occurrences2, eqlimit1)
-        })
-        .collect();
-
-    (token_occurrences1, token_occurrences2)
+    occurrences
 }
 
 /// Categorizes how frequently a token appears in a file.
@@ -98,8 +117,15 @@ pub struct PreprocessedFile {
 }
 
 impl PreprocessedFile {
-    fn new(token_occurrences: &[Occurrences], tokens: &[Token], changed: &mut [bool]) -> PreprocessedFile {
-        let (tokens, indices) = prune_unmatched_tokens(tokens, token_occurrences, changed);
+    /// Keeps the tokens of `tokens`, which start at `offset` in their file, that take part in the
+    /// search, and marks the others as changed in `changed`, which covers the whole file.
+    fn new(
+        token_occurrences: &[Occurrences],
+        tokens: &[Token],
+        offset: usize,
+        changed: &mut [bool],
+    ) -> PreprocessedFile {
+        let (tokens, indices) = prune_unmatched_tokens(tokens, token_occurrences, offset, changed);
         PreprocessedFile { indices, tokens }
     }
 }
@@ -107,6 +133,7 @@ impl PreprocessedFile {
 fn prune_unmatched_tokens(
     file: &[Token],
     token_status: &[Occurrences],
+    offset: usize,
     changed: &mut [bool],
 ) -> (Vec<Token>, Vec<u32>) {
     assert_eq!(token_status.len(), file.len());
@@ -119,11 +146,12 @@ fn prune_unmatched_tokens(
                 Occurrences::Some => false,
                 Occurrences::Common => should_prune_common_line(token_status, i),
             };
+            let pos = offset + i;
             if prune {
-                changed[i] = true;
+                changed[pos] = true;
                 None
             } else {
-                Some((token, i as u32))
+                Some((token, pos as u32))
             }
         })
         .unzip()

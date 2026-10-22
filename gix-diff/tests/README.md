@@ -68,3 +68,13 @@ or ambiguous selection does.
 
 `GIX_DIFF_SLIDER_CASE` cannot be combined with `GIX_DIFF_SLIDER_STRICT`. Only the selected external case is loaded and
 diffed when `GIX_DIFF_SLIDER_CASE` is given.
+
+### Git's diff decisions
+
+`blob::slider::xdiff_decisions_match_git` needs no corpus. `fixtures/make_diff_for_xdiff_cases_repo.sh` writes small
+pairs of files on which Git's diff algorithms take particular decisions, each group described beside its pairs, and
+diffs every pair with `git diff --no-index` for `myers`, `minimal` and `histogram`, with and without the indent
+heuristic. The test fails unless gix-diff's output matches every one of these diffs.
+
+The committed archives of this fixture hold the diffs of Git 2.55.0. Set `GIX_TEST_IGNORE_ARCHIVES=1` to compare with
+the installed Git instead.

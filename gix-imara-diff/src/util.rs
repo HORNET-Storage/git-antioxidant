@@ -35,22 +35,6 @@ pub fn common_edges(file1: &[Token], file2: &[Token]) -> (u32, u32) {
     (prefix, postfix)
 }
 
-/// Removes the common prefix from both sequences and returns its length.
-pub fn strip_common_prefix(file1: &mut &[Token], file2: &mut &[Token]) -> u32 {
-    let off = common_prefix(file1, file2);
-    *file1 = &file1[off as usize..];
-    *file2 = &file2[off as usize..];
-    off
-}
-
-/// Removes the common postfix from both sequences and returns its length.
-pub fn strip_common_postfix(file1: &mut &[Token], file2: &mut &[Token]) -> u32 {
-    let off = common_postfix(file1, file2);
-    *file1 = &file1[..file1.len() - off as usize];
-    *file2 = &file2[..file2.len() - off as usize];
-    off
-}
-
 /// Computes an approximation of the square root using bit operations.
 /// This returns a u32 instead of a u64 like `xdl_bogosqrt` does, so
 /// when `val` has >=63 significant bits the result clamps to `u32::MAX`

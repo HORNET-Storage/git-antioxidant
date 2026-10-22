@@ -19,11 +19,8 @@
 //!
 //! Myers algorithm has been enhanced with preprocessing and multiple heuristics to ensure fast runtime in pathological
 //! cases to avoid quadratic time complexity and closely matches the behavior of gnu-diff and git.
-//! The Histogram algorithm was originally ported from git but has been heavily optimized.
-//! The **Histogram algorithm outperforms Myers diff** by 10% - 100% across a **wide variety of workloads**.
-//!
-//! Imara-diffs algorithms have been benchmarked over a wide variety of real-world code.
-//! For example, while comparing multiple different Linux kernel versions, it performs up to 30 times better than the `similar` crate.
+//! The Histogram algorithm follows git's `xhistogram.c`, and postprocessing moves hunks that can slide
+//! the way git's `xdl_change_compact()` does.
 //!
 //! # API Overview
 //!
@@ -147,10 +144,7 @@
 use std::ops::Range;
 use std::slice;
 
-use crate::{
-    sources::words,
-    util::{strip_common_postfix, strip_common_prefix},
-};
+use crate::sources::words;
 
 pub use crate::slider_heuristic::{IndentHeuristic, IndentLevel, NoSliderHeuristic, SliderHeuristic};
 pub use intern::{InternedInput, Interner, Token, TokenSource};
@@ -181,12 +175,11 @@ pub enum Algorithm {
     /// However, compared to the `patience` diff algorithm (which is slower than Myers algorithm),
     /// the Histogram algorithm performs much better.
     ///
-    /// The implementation here was originally ported from `git` but has been significantly
-    /// modified to improve performance.
-    /// As a result, it consistently **performs better than Myers algorithm** (5%-100%) over
-    /// a wide variety of test data.
+    /// The implementation follows `git`'s `xhistogram.c`: it looks for matches in the whole files,
+    /// extends them around the lines that occur least often in the old file, and diffs the parts before
+    /// and after a match the same way.
     ///
-    /// For pathological subsequences that only contain highly repeating tokens (64+ occurrences)
+    /// Where every token that both parts contain occurs more than 64 times in the old part,
     /// the algorithm falls back on Myers algorithm (with heuristics) to avoid quadratic behavior.
     ///
     /// Compared to Myers algorithm, the Histogram diff algorithm is more focused on providing
@@ -237,6 +230,9 @@ pub struct Diff {
     /// Tracks which tokens were added to the second sequence (`after`), with
     /// one entry for each one in the `after` sequence.
     added: Vec<bool>,
+    /// The algorithm that computed the diff. Postprocessing diffs the hunks of a histogram diff
+    /// that moved again, as Git does.
+    algorithm: Algorithm,
 }
 
 impl std::fmt::Debug for Diff {
@@ -256,7 +252,7 @@ impl Diff {
 
     /// Computes an edit-script that transforms `before` into `after` using
     /// the specified `algorithm`.
-    pub fn compute_with(&mut self, algorithm: Algorithm, mut before: &[Token], mut after: &[Token], num_tokens: u32) {
+    pub fn compute_with(&mut self, algorithm: Algorithm, before: &[Token], after: &[Token], num_tokens: u32) {
         assert!(
             before.len() < i32::MAX as usize,
             "imara-diff only supports up to {} tokens",
@@ -267,16 +263,12 @@ impl Diff {
             "imara-diff only supports up to {} tokens",
             i32::MAX
         );
+        self.algorithm = algorithm;
         self.removed.clear();
         self.added.clear();
         self.removed.resize(before.len(), false);
         self.added.resize(after.len(), false);
-        let common_prefix = strip_common_prefix(&mut before, &mut after) as usize;
-        let common_postfix = strip_common_postfix(&mut before, &mut after);
-        let range = common_prefix..self.removed.len() - common_postfix as usize;
-        let removed = &mut self.removed[range];
-        let range = common_prefix..self.added.len() - common_postfix as usize;
-        let added = &mut self.added[range];
+        let (removed, added) = (&mut self.removed[..], &mut self.added[..]);
         match algorithm {
             Algorithm::Histogram => histogram::diff(before, after, removed, added, num_tokens),
             Algorithm::Myers => myers::diff(before, after, removed, added, false),

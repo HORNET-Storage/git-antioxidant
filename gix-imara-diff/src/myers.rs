@@ -6,13 +6,17 @@ use std::ptr::NonNull;
 use crate::intern::Token;
 use crate::myers::middle_snake::{MiddleSnakeSearch, SearchResult};
 use crate::myers::slice::FileSlice;
-use crate::util::sqrt;
+use crate::util::{common_edges, sqrt};
 
 mod middle_snake;
 mod preprocess;
 mod slice;
 
-/// Computes a diff using the Myers algorithm.
+/// Computes a diff using the Myers algorithm, as Git's `xdl_do_diff()` does for two whole files.
+///
+/// Like Git, the common prefix and postfix stay unchanged. In between, the tokens that the other
+/// file lacks, and frequent tokens surrounded by such tokens, are marked as changed before the
+/// search, and the remaining tokens are diffed with Myers algorithm.
 ///
 /// # Parameters
 ///
@@ -22,9 +26,12 @@ mod slice;
 /// * `added` - Output array marking added tokens
 /// * `minimal` - If true, disables heuristics to guarantee a minimal diff
 pub fn diff(before: &[Token], after: &[Token], removed: &mut [bool], added: &mut [bool], minimal: bool) {
+    let (prefix, postfix) = common_edges(before, after);
+    let region1 = prefix as usize..before.len() - postfix as usize;
+    let region2 = prefix as usize..after.len() - postfix as usize;
     // Preprocess the files by removing parts of the file that are not contained in the other file at all.
     // This process remaps the token indices so we have to account for that during the rest of the diff
-    let (before, after) = preprocess::preprocess(before, after, removed, added);
+    let (before, after) = preprocess::preprocess(before, after, region1, region2, removed, added, minimal);
 
     // Perform the actual diff
     Myers::new(before.tokens.len(), after.tokens.len()).run(
@@ -115,9 +122,10 @@ impl Myers {
         let mut backwards_search = unsafe { MiddleSnakeSearch::<true>::new(self.kbackward, file1, file2) };
         let is_odd = file2.len().wrapping_sub(file1.len()) & 1 != 0;
 
-        let mut ec = 0;
+        // As in Git, the edit cost counts the search rounds from one.
+        let mut ec = 1;
 
-        while ec <= self.max_cost {
+        loop {
             let mut found_snake = false;
             forward_search.next_d();
             if is_odd {
@@ -198,25 +206,29 @@ impl Myers {
                 }
             }
 
-            ec += 1;
-        }
+            // Enough is enough. We spent too much time here and now we
+            // collect the furthest reaching path using the (i1 + i2) measure.
+            if ec >= self.max_cost {
+                let (distance_forward, token_idx1_forward) = forward_search.best_position(file1, file2);
+                let (distance_backwards, token_idx1_backwards) = backwards_search.best_position(file1, file2);
+                return if distance_forward > file1.len() as isize + file2.len() as isize - distance_backwards {
+                    Split {
+                        token_idx1: token_idx1_forward,
+                        token_idx2: (distance_forward - token_idx1_forward as isize) as i32,
+                        minimized_lo: true,
+                        minimized_hi: false,
+                    }
+                } else {
+                    Split {
+                        token_idx1: token_idx1_backwards,
+                        token_idx2: (distance_backwards - token_idx1_backwards as isize) as i32,
+                        minimized_lo: false,
+                        minimized_hi: true,
+                    }
+                };
+            }
 
-        let (distance_forward, token_idx1_forward) = forward_search.best_position(file1, file2);
-        let (distance_backwards, token_idx1_backwards) = backwards_search.best_position(file1, file2);
-        if distance_forward > file1.len() as isize + file2.len() as isize - distance_backwards {
-            Split {
-                token_idx1: token_idx1_forward,
-                token_idx2: (distance_forward - token_idx1_forward as isize) as i32,
-                minimized_lo: true,
-                minimized_hi: false,
-            }
-        } else {
-            Split {
-                token_idx1: token_idx1_backwards,
-                token_idx2: (distance_backwards - token_idx1_backwards as isize) as i32,
-                minimized_lo: false,
-                minimized_hi: true,
-            }
+            ec += 1;
         }
     }
 }

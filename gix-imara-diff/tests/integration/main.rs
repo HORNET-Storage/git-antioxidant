@@ -7,7 +7,7 @@ use expect_test::expect;
 use gix_imara_diff::BasicLineDiffPrinter;
 use gix_imara_diff::InternedInput;
 use gix_imara_diff::sources::words;
-use gix_imara_diff::{Algorithm, Diff, UnifiedDiffConfig};
+use gix_imara_diff::{Algorithm, Diff, Token, UnifiedDiffConfig};
 
 const ALL_ALGORITHMS: [Algorithm; 2] = [Algorithm::Histogram, Algorithm::Myers];
 
@@ -25,6 +25,10 @@ mod fuzzed {
         after_str: &'a str,
     }
 
+    /// As in the `comprehensive_diff` fuzz target, inputs with more lines aren't diffed with `MyersMinimal`,
+    /// which searches without Git's cost limit.
+    const MAX_MINIMAL_LINES: usize = 4096;
+
     fn run_comprehensive_diff_fuzz_case(
         ComprehensiveDiffInput {
             before,
@@ -36,6 +40,9 @@ mod fuzzed {
         let input = InternedInput::new(before, after);
 
         for algorithm in [Algorithm::Histogram, Algorithm::Myers, Algorithm::MyersMinimal] {
+            if algorithm == Algorithm::MyersMinimal && input.before.len() + input.after.len() > MAX_MINIMAL_LINES {
+                continue;
+            }
             let mut diff = Diff::compute(algorithm, &input);
 
             let _ = diff.count_additions();
@@ -61,6 +68,9 @@ mod fuzzed {
         }
     }
 
+    /// Histogram and Myers stop searching for the middle of a diff at Git's cost limit, so they diff this case
+    /// of 95,473 and 2,233 lines quickly. It has too many lines for `MyersMinimal`, which searches without that
+    /// limit, as `git diff --minimal` does.
     #[test]
     fn timeout_regression() {
         let input = ComprehensiveDiffInput::arbitrary(&mut arbitrary::Unstructured::new(include_bytes!(
@@ -744,4 +754,73 @@ old end
         (10, 10),
         "the blank line between the unmatched runs should still be matched, just like `git diff --no-index --numstat`"
     );
+}
+
+/// `MyersMinimal` finds an edit sequence of the least possible length, as `git diff --minimal` does, also where
+/// `Myers` stops searching for the middle of the diff at Git's cost limit and finds a longer one.
+#[test]
+fn minimal_finds_a_shortest_edit_sequence() {
+    let (before, after) = pseudo_random_pair(1, 2000, 97, 25, 90);
+    let input = InternedInput::new(before.as_str(), after.as_str());
+    let shortest = shortest_edit_sequence_len(&input.before, &input.after);
+    let len = |algorithm| {
+        let diff = Diff::compute(algorithm, &input);
+        (diff.count_removals() + diff.count_additions()) as usize
+    };
+    assert_eq!(
+        len(Algorithm::MyersMinimal),
+        shortest,
+        "MyersMinimal finds an edit sequence as short as the longest common subsequence allows"
+    );
+    assert!(
+        len(Algorithm::Myers) > shortest,
+        "Myers stops at its cost limit on this pair, which makes its edit sequence longer"
+    );
+}
+
+/// Returns `count` lines drawn from `symbols` distinct lines by a linear congruential generator seeded with
+/// `seed`, and a copy in which, in every second run of `run` lines, `percent` percent of the lines are
+/// deleted, replaced or followed by an inserted line.
+fn pseudo_random_pair(seed: u32, count: u32, symbols: u32, run: u32, percent: u32) -> (String, String) {
+    fn step(x: &mut u32) -> u32 {
+        *x = (*x * 75 + 74) % 65537;
+        *x
+    }
+    let (mut x, mut before, mut after) = (seed, String::new(), String::new());
+    for i in 0..count {
+        let line = format!("l{}\n", step(&mut x) % symbols);
+        before.push_str(&line);
+        if (i / run) % 2 == 1 && step(&mut x) % 100 < percent {
+            match step(&mut x) % 3 {
+                0 => {}
+                1 => after.push_str(&format!("s{}\n", step(&mut x) % symbols)),
+                _ => {
+                    after.push_str(&line);
+                    after.push_str(&format!("i{}\n", step(&mut x) % symbols));
+                }
+            }
+        } else {
+            after.push_str(&line);
+        }
+    }
+    (before, after)
+}
+
+/// Returns the length of a shortest edit sequence from `before` to `after`: the number of their tokens
+/// minus twice the length of their longest common subsequence.
+fn shortest_edit_sequence_len(before: &[Token], after: &[Token]) -> usize {
+    let mut row = vec![0; after.len() + 1];
+    for &token in before {
+        let mut diagonal = 0;
+        for (j, &other) in after.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = if token == other {
+                diagonal + 1
+            } else {
+                above.max(row[j])
+            };
+            diagonal = above;
+        }
+    }
+    before.len() + after.len() - 2 * row[after.len()]
 }

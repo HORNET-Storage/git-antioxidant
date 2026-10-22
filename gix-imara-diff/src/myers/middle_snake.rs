@@ -200,66 +200,50 @@ impl<const BACK: bool> MiddleSnakeSearch<BACK> {
         (best_distance, best_token_idx1)
     }
 
+    /// Picks the furthest-reaching path to stop the search at, as the heuristic in Git's
+    /// `xdl_split()` does. A path scores the tokens it covered minus its distance from the middle
+    /// diagonal of its search. Among the paths that score more than `K_HEUR * ec` and whose end is
+    /// preceded, or for the backward search followed, by `SNAKE_CNT` tokens that are equal on both
+    /// sides, the best-scoring one wins.
     pub fn found_snake(&self, ec: u32, file1: &FileSlice, file2: &FileSlice) -> Option<(i32, i32)> {
+        let len1 = file1.len() as i32;
+        let len2 = file2.len() as i32;
+        let snake_cnt = SNAKE_CNT as i32;
+        let middle_diagonal = if BACK { len1 - len2 } else { 0 };
         let mut best_score = 0;
-        let mut best_token_idx1 = 0;
-        let mut best_token_idx2 = 0;
+        let mut best = None;
         let mut k = self.kmax;
         while k >= self.kmin {
             let (token_idx1, token_idx2) = self.pos_at_diagonal(k);
-            if BACK {
-                if !(0..file1.len() as i32 - SNAKE_CNT as i32).contains(&token_idx1) {
-                    k -= 2;
-                    continue;
-                }
-                if !(0..file2.len() as i32 - SNAKE_CNT as i32).contains(&token_idx2) {
-                    k -= 2;
-                    continue;
-                }
-            } else {
-                if !(SNAKE_CNT as i32..file1.len() as i32).contains(&token_idx1) {
-                    k -= 2;
-                    continue;
-                }
-                if !(SNAKE_CNT as i32..file2.len() as i32).contains(&token_idx2) {
-                    k -= 2;
-                    continue;
-                }
-            }
-
-            let main_diagonal_distance = k.unsigned_abs() as usize;
             let distance = if BACK {
-                (file1.len() - token_idx1 as u32) + (file2.len() - token_idx2 as u32)
+                i64::from(len1 - token_idx1) + i64::from(len2 - token_idx2)
             } else {
-                token_idx1 as u32 + token_idx2 as u32
+                i64::from(token_idx1) + i64::from(token_idx2)
             };
-            let score = distance as usize + main_diagonal_distance;
-            if score > (K_HEUR * ec) as usize && score > best_score {
+            let score = distance - i64::from((k - middle_diagonal).unsigned_abs());
+            let in_bounds = if BACK {
+                0 < token_idx1 && token_idx1 <= len1 - snake_cnt && 0 < token_idx2 && token_idx2 <= len2 - snake_cnt
+            } else {
+                snake_cnt <= token_idx1 && token_idx1 < len1 && snake_cnt <= token_idx2 && token_idx2 < len2
+            };
+            if score > i64::from(K_HEUR * ec) && score > best_score && in_bounds {
                 let is_snake = if BACK {
-                    file1.tokens[token_idx1 as usize..]
-                        .iter()
-                        .zip(&file2.tokens[token_idx2 as usize..])
-                        .take(SNAKE_CNT as usize)
-                        .all(|(token1, token2)| token1 == token2)
+                    (0..snake_cnt)
+                        .all(|i| file1.tokens[(token_idx1 + i) as usize] == file2.tokens[(token_idx2 + i) as usize])
                 } else {
-                    file1.tokens[..token_idx1 as usize]
-                        .iter()
-                        .zip(&file2.tokens[..token_idx2 as usize])
-                        .rev()
-                        .take(SNAKE_CNT as usize)
-                        .all(|(token1, token2)| token1 == token2)
+                    (1..=snake_cnt)
+                        .all(|i| file1.tokens[(token_idx1 - i) as usize] == file2.tokens[(token_idx2 - i) as usize])
                 };
                 if is_snake {
-                    best_token_idx1 = token_idx1;
-                    best_token_idx2 = token_idx2;
-                    best_score = score
+                    best = Some((token_idx1, token_idx2));
+                    best_score = score;
                 }
             }
 
             k -= 2;
         }
 
-        (best_score > 0).then_some((best_token_idx1, best_token_idx2))
+        best
     }
 }
 

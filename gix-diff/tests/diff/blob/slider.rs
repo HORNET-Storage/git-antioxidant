@@ -43,6 +43,17 @@ fn baseline() -> gix_testtools::TestResult {
     Ok(())
 }
 
+/// Every algorithm diffs the pairs on which Git's diff algorithms take particular decisions as Git
+/// does, with and without the indent heuristic.
+#[test]
+fn xdiff_decisions_match_git() -> gix_testtools::TestResult {
+    let cases = cases_from_fixture("make_diff_for_xdiff_cases_repo.sh", true)?;
+    assert!(!cases.is_empty(), "the xdiff baseline must contain cases");
+    assert_diffs(&cases);
+    assert_no_indent_heuristic_diffs(&cases);
+    Ok(())
+}
+
 fn try_single_case(should_assert_strictly: bool) -> gix_testtools::Result<Option<Case>> {
     fn case_from_fixture(fixture: &str, selected_file_name: &str) -> gix_testtools::Result<Option<Case>> {
         let worktree_path = crate::scripted_fixture_read_only(fixture)?;
@@ -341,6 +352,33 @@ fn assert_diffs(cases: &[Case]) {
     );
 }
 
+/// Like [`assert_diffs()`], but for postprocessing without a slider heuristic, which must match the
+/// `*.no-indent.baseline` that every case needs then.
+fn assert_no_indent_heuristic_diffs(cases: &[Case]) {
+    let matches = |case: &&Case| case.git_no_indent_heuristic.as_ref() == Some(&case.gix_postprocess_no_heuristic);
+    let total_diffs = cases.len();
+    let matching_diffs = cases.iter().filter(matches).count();
+
+    assert_eq!(
+        matching_diffs,
+        total_diffs,
+        "matching diffs without the indent heuristic {matching_diffs} == total diffs {total_diffs}\n\n{}",
+        cases
+            .iter()
+            .find(|case| !matches(case))
+            .map_or_else(String::new, |case| format!(
+                "affected baseline: `{}`\n\n{}",
+                case.file_name,
+                StrComparison::new(
+                    &case.gix_postprocess_no_heuristic,
+                    case.git_no_indent_heuristic
+                        .as_deref()
+                        .unwrap_or("<missing `*.no-indent.baseline`>")
+                )
+            ))
+    );
+}
+
 // This function intentionally only is capable to detect a subset of diffs that differ by slider
 // placement only. It can only detect sliders that have added/deleted lines in the exact same
 // order. I plan on adding more accurate classification in the future, though.
@@ -622,6 +660,7 @@ mod baseline {
         };
         let algorithm = match algorithm {
             "myers" => Algorithm::Myers,
+            "minimal" => Algorithm::MyersMinimal,
             "histogram" => Algorithm::Histogram,
             other => unreachable!("BUG: '{other}' is not a supported algorithm"),
         };

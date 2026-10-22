@@ -24,8 +24,8 @@ comparing the same file to multiple different files.
 
 Myers algorithm has been enhanced with preprocessing and multiple heuristics to ensure fast runtime in pathological 
 cases to avoid quadratic time complexity and closely matches the behavior of gnu-diff and git.
-The histogram algorithm was originally ported from git but has been heavily optimized.
-The **Histogram algorithm outperforms Myers algorithm** by 10% - 100% across a **wide variety of workloads**.
+The histogram algorithm follows git's `xhistogram.c`, and postprocessing moves hunks that can slide
+the way git's `xdl_change_compact()` does.
 
 ## Limitations
 

@@ -1,8 +1,6 @@
 // Modified for gitoxide from the upstream imara-diff crate.
 // Upstream source: git cat-file -p 32d1e45d3df061e6ccba6db7fdce92db29e345d8:src/histogram/list_pool.rs
 
-use crate::histogram::MAX_CHAIN_LEN;
-
 /// A small list of entity references allocated from a pool.
 ///
 /// An `ListHandle` type provides similar functionality to `Vec`, but with some important
@@ -75,7 +73,12 @@ impl Default for ListHandle {
     }
 }
 
-const MAX_SIZE_CLASS: SizeClass = sclass_for_length(super::MAX_CHAIN_LEN - 1);
+/// Lists hold every position of a token that occurs at most this often, and a full list stands for
+/// this many occurrences or more. The histogram algorithm compares occurrence counts with at most
+/// `MAX_CHAIN_LEN + 1`, so it decides as it would with every occurrence counted.
+const MAX_LEN: u32 = super::MAX_CHAIN_LEN + 2;
+
+const MAX_SIZE_CLASS: SizeClass = sclass_for_length(MAX_LEN - 1);
 const NUM_SIZE_CLASS: usize = MAX_SIZE_CLASS as usize + 1;
 
 /// A memory pool for storing lists of `T`.
@@ -234,7 +237,7 @@ impl ListHandle {
                 self.index = block as u32;
                 self.len = 2;
             }
-            2..=MAX_CHAIN_LEN => {
+            2..MAX_LEN => {
                 // Do we need to reallocate?
                 let block;
                 let idx = self.index as usize;
@@ -250,8 +253,7 @@ impl ListHandle {
                 self.len += 1;
             }
 
-            // ignore elements longer then MAX_CHAIN_LEN
-            // these are rarely relevant and if they are we fall back to myers
+            // a full list stands for `MAX_LEN` or more occurrences
             _ => (),
         }
     }

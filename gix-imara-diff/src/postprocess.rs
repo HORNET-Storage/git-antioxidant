@@ -4,7 +4,7 @@
 use crate::intern::{InternedInput, Token};
 use crate::slider_heuristic::SliderHeuristic;
 use crate::util::{find_hunk_end, find_hunk_start};
-use crate::{Diff, Hunk};
+use crate::{Algorithm, Diff, Hunk, myers};
 
 impl Diff {
     /// Postprocesses the diff using explicit token sequences and a custom heuristic.
@@ -13,32 +13,42 @@ impl Diff {
     /// an `InternedInput`. Use [`postprocess_with_heuristic`](Self::postprocess_with_heuristic)
     /// for a more convenient API.
     ///
+    /// As Git's `xdl_change_compact()` does, the hunks of `before` are moved first, then those of
+    /// `after`. In a diff computed with [`Algorithm::Histogram`], a hunk that moved or absorbed other
+    /// hunks may now share tokens with the hunk it faces on the other side, so like Git, the two are
+    /// diffed again with Myers algorithm.
+    ///
     /// # Parameters
     ///
     /// * `before` - The token sequence from the first file, before changes
     /// * `after` - The token sequence from the second file, after changes
     /// * `heuristic` - The slider heuristic to use for positioning hunks
     pub fn postprocess_with(&mut self, before: &[Token], after: &[Token], mut heuristic: impl SliderHeuristic) {
-        Postprocessor {
-            added: &mut self.added,
-            removed: &mut self.removed,
-            tokens: after,
-            hunk: Hunk {
-                before: 0..0,
-                after: 0..0,
-            },
-            heuristic: &mut heuristic,
-        }
-        .run();
+        let rediff = self.algorithm == Algorithm::Histogram;
         Postprocessor {
             added: &mut self.removed,
             removed: &mut self.added,
             tokens: before,
+            other_tokens: after,
             hunk: Hunk {
                 before: 0..0,
                 after: 0..0,
             },
             heuristic: &mut heuristic,
+            rediff,
+        }
+        .run();
+        Postprocessor {
+            added: &mut self.added,
+            removed: &mut self.removed,
+            tokens: after,
+            other_tokens: before,
+            hunk: Hunk {
+                before: 0..0,
+                after: 0..0,
+            },
+            heuristic: &mut heuristic,
+            rediff,
         }
         .run()
     }
@@ -58,17 +68,25 @@ impl Diff {
 }
 
 /// Internal state for postprocessing a diff to improve readability.
+///
+/// The hunks of one side are moved, and `hunk.after` is the range of the current one. `hunk.before`
+/// is the range of the hunk it faces on the other side, which is empty unless that side changed
+/// tokens there.
 struct Postprocessor<'a, H> {
-    /// The mutable array tracking which tokens were added.
+    /// Which tokens of `tokens` are changed; the hunks they form are moved.
     added: &'a mut [bool],
-    /// The immutable array tracking which tokens were removed.
-    removed: &'a [bool],
-    /// The token sequence being processed.
+    /// Which tokens of `other_tokens` are changed.
+    removed: &'a mut [bool],
+    /// The token sequence whose hunks are moved.
     tokens: &'a [Token],
+    /// The token sequence of the other side.
+    other_tokens: &'a [Token],
     /// The current hunk being processed in the iteration.
     hunk: Hunk,
     /// The heuristic used to determine optimal hunk positions.
     heuristic: &'a mut H,
+    /// Whether a hunk that moved or absorbed other hunks is diffed again with the hunk it faces.
+    rediff: bool,
 }
 
 impl<H: SliderHeuristic> Postprocessor<'_, H> {
@@ -78,6 +96,7 @@ impl<H: SliderHeuristic> Postprocessor<'_, H> {
             if !self.hunk.next_hunk(self.removed, self.added) {
                 break;
             }
+            let original_hunk = self.hunk.after.clone();
 
             let mut earliest_end;
             let mut is_modification;
@@ -101,27 +120,49 @@ impl<H: SliderHeuristic> Postprocessor<'_, H> {
                 }
             }
 
-            if self.hunk.after.end == earliest_end {
-                continue;
+            if self.hunk.after.end != earliest_end {
+                if is_modification {
+                    // hunk can be moved and there is a removed hunk in the same region
+                    // move the hunk so it align with the other hunk to produce a single
+                    // MODIFIED hunk instead of two separate ADDED/REMOVED hunks
+                    while self.hunk.before.start == self.hunk.before.end {
+                        let success = self.slide_up();
+                        debug_assert!(success);
+                    }
+                } else {
+                    let slider_end = self
+                        .heuristic
+                        .best_slider_end(self.tokens, self.hunk.after.clone(), earliest_end);
+                    for _ in slider_end..self.hunk.after.end {
+                        let success = self.slide_up();
+                        debug_assert!(success);
+                    }
+                }
             }
-            if is_modification {
-                // hunk can be moved and there is a removed hunk in the same region
-                // move the hunk so it align with the other hunk to produce a single
-                // MODIFIED hunk instead of two separate ADDED/REMOVED hunks
-                while self.hunk.before.start == self.hunk.before.end {
-                    let success = self.slide_up();
-                    debug_assert!(success);
-                }
-            } else {
-                let slider_end = self
-                    .heuristic
-                    .best_slider_end(self.tokens, self.hunk.after.clone(), earliest_end);
-                for _ in slider_end..self.hunk.after.end {
-                    let success = self.slide_up();
-                    debug_assert!(success);
-                }
+
+            if self.rediff && !self.hunk.before.is_empty() && self.hunk.after != original_hunk {
+                self.rediff_hunk();
             }
         }
+    }
+
+    /// Diffs the current hunk again with the hunk it faces, as Git's `xdl_change_compact()` does for
+    /// a histogram diff. Like Git, both are diffed with Myers algorithm as if they were whole files,
+    /// the hunk being moved as the first one, and their tokens that match stay unchanged.
+    fn rediff_hunk(&mut self) {
+        let hunk = self.hunk.after.start as usize..self.hunk.after.end as usize;
+        let other_hunk = self.hunk.before.start as usize..self.hunk.before.end as usize;
+        let changed = &mut self.added[hunk.clone()];
+        let other_changed = &mut self.removed[other_hunk.clone()];
+        changed.fill(false);
+        other_changed.fill(false);
+        myers::diff(
+            &self.tokens[hunk],
+            &self.other_tokens[other_hunk],
+            changed,
+            other_changed,
+            false,
+        );
     }
 
     /// Slides a hunk down by one token/line, potentially merging it with a subsequent hunk.
