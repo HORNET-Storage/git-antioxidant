@@ -63,7 +63,9 @@ fn run_baseline() -> TestResult {
     {
         actual_cases += 1;
         let mut graph = gix_revwalk::Graph::new(&odb, None);
-        let large_file_threshold_bytes = 100;
+        // Only `big-file-merge` sets `core.bigFileThreshold`, which gix applies to merges and Git ignores. The other
+        // cases merge blobs of any size, as Git does, which matters for merged merge-bases with long conflict markers.
+        let large_file_threshold_bytes = root.ends_with("big-file-merge").then_some(100);
         let mut blob_merge = new_blob_merge_platform(&root, large_file_threshold_bytes);
         let mut diff_resource_cache = new_diff_resource_cache(&root);
         let mut options = basic_merge_options();
@@ -223,11 +225,11 @@ fn run_baseline() -> TestResult {
     }
 
     assert_eq!(
-        actual_cases, 177,
+        actual_cases, 185,
         "BUG: update this number, and don't forget to remove a filter in the end"
     );
     assert_eq!(
-        skipped_tree_resolve_cases, 154,
+        skipped_tree_resolve_cases, 162,
         "this is done when no case is skipped, and we don't want to accidentally skip them.\
         Some don't actually have conflicts.\
         The ones we skipped don't have irreconcilable conflicts"

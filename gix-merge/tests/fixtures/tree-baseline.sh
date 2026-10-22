@@ -1578,6 +1578,67 @@ git init multiple-merge-bases-with-renamed-dir
   git commit -am "edit a/b/h in B"
 )
 
+git init multiple-merge-bases-with-conflicting-content
+(cd multiple-merge-bases-with-conflicting-content
+  # A and B change the same line differently, and each branch merges the change of the other while
+  # keeping its own line. Merging the two merge-bases conflicts on that line, and as Git keeps the
+  # conflict markers in the merged merge-base, the final merge conflicts on the lines A and B kept.
+  write_lines 1 2 3 4 5 >content
+  git add . && tick && git commit -m "initial"
+
+  git branch A
+  git branch B
+
+  git checkout A
+  write_lines 1 2 A1 4 5 >content
+  tick && git commit -am "change in A" && git tag A1
+
+  git checkout B
+  write_lines 1 2 B1 4 5 >content
+  tick && git commit -am "change in B" && git tag B1
+
+  git checkout A
+  git merge B1 || :
+  write_lines 1 2 A1 4 5 >content
+  tick && git commit -am "merge B1 and keep the line of A1"
+
+  git checkout B
+  git merge A1 || :
+  write_lines 1 2 B1 4 5 >content
+  tick && git commit -am "merge A1 and keep the line of B1"
+)
+
+git init three-merge-bases-with-conflicting-content
+(cd three-merge-bases-with-conflicting-content
+  # X, Y and Z change the same line differently, and A and B each merge all three, so A and B have
+  # three merge-bases. Both merges of two merge-bases conflict one level of recursion below the final
+  # merge, so the conflict markers of both are two characters longer than the default.
+  write_lines 1 2 3 4 5 >content
+  git add . && tick && git commit -m "initial"
+
+  for side in X Y Z; do
+    git checkout -b "$side" main
+    write_lines 1 2 "$side" 4 5 >content
+    tick && git commit -am "change in $side"
+  done
+
+  git checkout -b A X
+  git merge Y || :
+  write_lines 1 2 A 4 5 >content
+  tick && git commit -am "merge Y into X"
+  git merge Z || :
+  write_lines 1 2 A 4 5 >content
+  tick && git commit -am "merge Z"
+
+  git checkout -b B Z
+  git merge X || :
+  write_lines 1 2 B 4 5 >content
+  tick && git commit -am "merge X into Z"
+  git merge Y || :
+  write_lines 1 2 B 4 5 >content
+  tick && git commit -am "merge Y"
+)
+
 git init rename-and-modification
 (cd rename-and-modification
   mkdir a && write_lines original 1 2 3 4 5 >a/x.f
@@ -2274,6 +2335,10 @@ baseline no-merge-base A-B-diff3 A B
 baseline multiple-merge-bases A-B A B
 baseline multiple-merge-bases A-B-diff3 A B
 baseline multiple-merge-bases-with-renamed-dir A-B A B
+baseline multiple-merge-bases-with-conflicting-content A-B A B
+baseline multiple-merge-bases-with-conflicting-content A-B-diff3 A B
+baseline three-merge-bases-with-conflicting-content A-B A B
+baseline three-merge-bases-with-conflicting-content A-B-diff3 A B
 
 baseline rename-and-modification A-B A B
 baseline symlink-modification A-B A B

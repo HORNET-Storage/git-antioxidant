@@ -13,13 +13,10 @@ pub struct Outcome {
 
 pub(super) mod function {
     use gix_error::Result;
-    use gix_error::{ResultExt, bail, message};
+    use gix_error::{ResultExt, message};
     use gix_object::FindExt;
 
-    use crate::{
-        blob::builtin_driver,
-        tree::{TreatAsUnresolved, treat_as_unresolved},
-    };
+    use crate::blob::builtin_driver;
 
     /// Create a single virtual merge-base by merging `first_commit`, `second_commit` and `others` into one.
     /// Note that `first_commit` and `second_commit` are expected to have been popped off `others`, so `first_commit`
@@ -28,6 +25,11 @@ pub(super) mod function {
     /// The parameters `graph`, `diff_resource_cache`, `blob_merge`, `objects`, `abbreviate_hash` and `options` are passed
     /// directly to [`tree()`](crate::tree()) for merging the trees of two merge-bases at a time.
     /// Note that most of `options` are overwritten to match the requirements of a merge-base merge.
+    ///
+    /// As in Git, the merged merge-bases keep their conflicts. Conflicting text keeps conflict markers, two
+    /// characters longer for each level of recursion, in the conflict style of `options` if it keeps conflicts
+    /// and in the default style otherwise. Binary files, symbolic links and irreconcilable tree conflicts keep
+    /// the version of their merge-base, and merge-bases without a common ancestor are merged with the empty tree.
     #[expect(clippy::too_many_arguments)]
     pub fn virtual_merge_base<'objects>(
         first_commit: gix_hash::ObjectId,
@@ -43,9 +45,16 @@ pub(super) mod function {
         let mut merged_commit_id = first_commit;
         others.push(second_commit);
 
+        // Each merge of two merge-bases is one level of recursion deeper than the merge that needs them.
+        options.marker_size_multiplier = options.marker_size_multiplier.saturating_add(1);
+        // The merged merge-base must be complete, whatever the caller considers unresolved.
+        options.fail_on_conflict = None;
         options.tree_conflicts = Some(crate::tree::ResolveWith::Ancestor);
         options.blob_merge.is_virtual_ancestor = true;
-        options.blob_merge.text.conflict = builtin_driver::text::Conflict::ResolveWithOurs;
+        let conflict = &mut options.blob_merge.text.conflict;
+        if !matches!(conflict, builtin_driver::text::Conflict::Keep { .. }) {
+            *conflict = builtin_driver::text::Conflict::default();
+        }
         let favor_ancestor = Some(builtin_driver::binary::ResolveWith::Ancestor);
         options.blob_merge.resolve_binary_with = favor_ancestor;
         options.symlink_conflicts = favor_ancestor;
@@ -57,7 +66,7 @@ pub(super) mod function {
         let mut virtual_merge_bases = Vec::new();
         let mut tree_id = None;
         while let Some(next_commit_id) = others.pop() {
-            options.marker_size_multiplier += 1;
+            // Conflicts remain part of the merged tree, as Git ignores whether merges of merge-bases are clean.
             let mut out = crate::commit(
                 merged_commit_id,
                 next_commit_id,
@@ -68,20 +77,12 @@ pub(super) mod function {
                 objects,
                 abbreviate_hash,
                 crate::commit::Options {
-                    allow_missing_merge_base: false,
+                    allow_missing_merge_base: true,
                     tree_merge: options.clone(),
                     use_first_merge_base: false,
                 },
             )?;
-            // This shouldn't happen, but if for some buggy reason it does, we rather bail.
-            if out.tree_merge.has_unresolved_conflicts(TreatAsUnresolved {
-                content_merge: treat_as_unresolved::ContentMerge::Markers,
-                tree_merge: treat_as_unresolved::TreeMerge::Undecidable,
-            }) {
-                bail!(
-                    "Conflicts occurred when trying to resolve multiple merge-bases by merging them. This is most certainly a bug.",
-                );
-            }
+
             let merged_tree_id = out.tree_merge.tree.write(|tree| objects.write(tree))?;
 
             tree_id = Some(merged_tree_id);
