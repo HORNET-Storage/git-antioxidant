@@ -280,6 +280,31 @@ seq 1 4 > untracked-lines.txt
 git add untracked-lines.txt
 git commit -q -m c16
 
+# Git's blame finds a merge's file in every parent before it passes blame to any of them, and gives all of it to the
+# first parent with the same content: under the same name or, when no parent has it there, under the name that rename
+# tracking pairs with the file. Here the first parent renamed the file and added a first and a last line, the second
+# parent added the same first line under the old name, and the merge has the second parent's content under the new
+# name, so Git blames the first line on c17.1 rather than on c17.2.
+echo -e "line 2\nline 3\nline 4\nline 5" > before-rename-in-first-parent.txt
+git add before-rename-in-first-parent.txt
+git commit -q -m c17
+
+git checkout -b branch-that-keeps-the-old-name
+echo -e "line 1\nline 2\nline 3\nline 4\nline 5" > before-rename-in-first-parent.txt
+git add before-rename-in-first-parent.txt
+git commit -q -m c17.1
+
+git checkout main
+git mv before-rename-in-first-parent.txt after-rename-in-first-parent.txt
+echo -e "line 1\nline 2\nline 3\nline 4\nline 5\nline 6" > after-rename-in-first-parent.txt
+git add after-rename-in-first-parent.txt
+git commit -q -m c17.2
+
+git merge -q -s ours --no-commit branch-that-keeps-the-old-name
+echo -e "line 1\nline 2\nline 3\nline 4\nline 5" > after-rename-in-first-parent.txt
+git add after-rename-in-first-parent.txt
+git commit -q -m c17.3
+
 seq 5 7 >> untracked-lines.txt
 
 seq 1 4 >> untracked-file.txt
@@ -320,6 +345,7 @@ git blame --porcelain different-file-in-another-chain-of-ancestors.txt > .git/di
 git blame --porcelain file-only-changed-in-branch.txt > .git/file-only-changed-in-branch.baseline
 git blame --porcelain file-changed-in-two-branches.txt > .git/file-changed-in-two-branches.baseline
 git blame --porcelain file-topo-order-different-than-date-order.txt > .git/file-topo-order-different-than-date-order.baseline
+git blame --porcelain after-rename-in-first-parent.txt > .git/after-rename-in-first-parent.baseline
 
 git blame --porcelain empty-lines-histogram.txt > .git/empty-lines-histogram.baseline
 

@@ -258,10 +258,12 @@ pub fn file(
             }
         }
 
-        let more_than_one_parent = parent_ids.len() > 1;
-        for (index, (parent_id, parent_commit_time)) in parent_ids.iter().enumerate() {
-            queue.insert(*parent_commit_time, *parent_id);
-            let changes_for_file_path = tree_diff_at_file_path(
+        // Find each parent's version of the file before passing blame to any of them, as Git's blame does: the first
+        // parent with the file's content under the same name took all of the blame above, and when there's none, the
+        // first parent with the content under the name that rename tracking pairs with the file takes all of it.
+        let mut changes_per_parent = Vec::with_capacity(parent_ids.len());
+        for (parent_id, _) in &parent_ids {
+            changes_per_parent.push(tree_diff_at_file_path(
                 &odb,
                 current_file_path.as_ref(),
                 suspect,
@@ -274,7 +276,46 @@ pub fn file(
                 &mut buf2,
                 &mut buf3,
                 options.rewrites,
-            )?;
+            )?);
+        }
+
+        let unchanged_under_other_name = changes_per_parent.iter().enumerate().find_map(|(index, change)| {
+            let Some(TreeDiffChange::Rewrite {
+                source_location,
+                source_id,
+                ..
+            }) = change
+            else {
+                return None;
+            };
+            (*source_id == entry_id).then(|| (index, source_location.clone()))
+        });
+        if let Some((index, source_location)) = unchanged_under_other_name {
+            let (parent_id, parent_commit_time) = parent_ids[index];
+            pass_blame_from_to(suspect, parent_id, &mut hunks_to_blame);
+            for hunk in hunks_to_blame.iter_mut().filter(|hunk| hunk.has_suspect(&parent_id)) {
+                hunk.source_file_name = Some(source_location.clone());
+            }
+            if let Some(ref mut blame_path) = blame_path {
+                let blame_path_entry = BlamePathEntry {
+                    source_file_path: current_file_path.clone(),
+                    previous_source_file_path: Some(source_location),
+                    commit_id: suspect,
+                    blob_id: entry_id,
+                    previous_blob_id: entry_id,
+                    parent_index: index,
+                };
+                blame_path.push(blame_path_entry);
+            }
+            queue.insert(parent_commit_time, parent_id);
+            continue 'outer;
+        }
+
+        let more_than_one_parent = parent_ids.len() > 1;
+        for (index, ((parent_id, parent_commit_time), changes_for_file_path)) in
+            parent_ids.iter().zip(changes_per_parent).enumerate()
+        {
+            queue.insert(*parent_commit_time, *parent_id);
             let Some(modification) = changes_for_file_path else {
                 if more_than_one_parent {
                     // None of the changes affected the file we’re currently blaming.

@@ -330,6 +330,11 @@ mktest!(
     "file-topo-order-different-than-date-order",
     3
 );
+mktest!(
+    identical_in_second_parent_under_old_name,
+    "after-rename-in-first-parent",
+    2
+);
 
 /// As of 2025-12-07, both algorithms are expected to pass. They use `imara-diff` 0.2 under the
 /// hood. One of them failed with `imara-diff` 0.1.
