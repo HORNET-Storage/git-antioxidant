@@ -475,7 +475,9 @@ pub fn collect_hunks(
     mut hunks: Vec<Hunk>,
 ) -> Vec<Hunk> {
     let mut diff = imara_diff::Diff::compute(algorithm, input);
-    diff.postprocess_lines(input);
+    // Like Git's merges, slide ambiguous changes as far down as possible without the indentation heuristic
+    // of `git diff`, as their position decides whether the changes of both sides overlap.
+    diff.postprocess_no_heuristic(input);
     hunks.extend(diff.hunks().map(|hunk| Hunk {
         before: hunk.before,
         after: hunk.after,

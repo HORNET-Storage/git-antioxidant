@@ -43,15 +43,7 @@ mod text {
         // git: "1\r\n2\n<<<<<<< complex/marker-newline-handling-lf2/ours.blob\n4  \n||||||| complex/marker-newline-handling-lf2/base.blob  \n2\r\n3\n=======\n5\n>>>>>>> complex/marker-newline-handling-lf2/theirs.blob\n"
         "complex/marker-newline-handling-lf2/zdiff3.merged",
         "complex/marker-newline-handling-lf2/zdiff3-histogram.merged",
-        // This is related to Git seemingly extending a hunk to increase overlap (see diff3)
-        "zdiff3-interesting/merge.merged",
-        "zdiff3-interesting/merge-ours.merged",
-        "zdiff3-interesting/diff3.merged",
-        "zdiff3-interesting/diff3-histogram.merged",
-        "zdiff3-interesting/zdiff3.merged",
-        "zdiff3-interesting/zdiff3-histogram.merged",
-        "zdiff3-interesting/merge-union.merged",
-        // Git can extend hunks, similar to above, but the effect is not as noticeable.
+        // Git can extend hunks, but the effect is not as noticeable.
         // Implementing this would be interesting, to figure out when the hunk processing should apply.
         "zdiff3-evil/merge.merged",
         "zdiff3-evil/merge-union.merged",
@@ -61,16 +53,6 @@ mod text {
         // Git has special character handling, which does magic to prevent conflicts
         "complex/auto-simplification/merge.merged",
         "complex/auto-simplification/merge-union.merged",
-        // Git has special newline handling when diffing,
-        // which auto-inserts a newline when it was removed, kind of.
-        "complex/missing-LF-at-EOF/merge.merged",
-        "complex/missing-LF-at-EOF/diff3.merged",
-        "complex/missing-LF-at-EOF/diff3-histogram.merged",
-        "complex/missing-LF-at-EOF/zdiff3.merged",
-        "complex/missing-LF-at-EOF/zdiff3-histogram.merged",
-        "complex/missing-LF-at-EOF/merge-ours.merged",
-        "complex/missing-LF-at-EOF/merge-theirs.merged",
-        "complex/missing-LF-at-EOF/merge-union.merged",
         // Git has different diff-slider-heuristics so diffs can be different.
         // See https://github.com/mhagger/diff-slider-tools.
         "complex/spurious-c-conflicts/merge.merged",
@@ -84,23 +66,8 @@ mod text {
         // expected cases
         "zdiff3-middlecommon/merge.merged-reversed",
         "zdiff3-middlecommon/merge-union.merged-reversed",
-        "zdiff3-interesting/merge.merged-reversed",
-        "zdiff3-interesting/merge-theirs.merged-reversed",
-        "zdiff3-interesting/diff3.merged-reversed",
-        "zdiff3-interesting/diff3-histogram.merged-reversed",
-        "zdiff3-interesting/zdiff3.merged-reversed",
-        "zdiff3-interesting/zdiff3-histogram.merged-reversed",
-        "zdiff3-interesting/merge-union.merged-reversed",
         "zdiff3-evil/merge.merged-reversed",
         "zdiff3-evil/merge-union.merged-reversed",
-        "complex/missing-LF-at-EOF/merge.merged-reversed",
-        "complex/missing-LF-at-EOF/diff3.merged-reversed",
-        "complex/missing-LF-at-EOF/diff3-histogram.merged-reversed",
-        "complex/missing-LF-at-EOF/zdiff3.merged-reversed",
-        "complex/missing-LF-at-EOF/zdiff3-histogram.merged-reversed",
-        "complex/missing-LF-at-EOF/merge-ours.merged-reversed",
-        "complex/missing-LF-at-EOF/merge-theirs.merged-reversed",
-        "complex/missing-LF-at-EOF/merge-union.merged-reversed",
         "complex/auto-simplification/merge.merged-reversed",
         "complex/auto-simplification/merge-union.merged-reversed",
         "complex/marker-newline-handling-lf2/zdiff3.merged-reversed",
@@ -205,8 +172,8 @@ mod text {
     fn run_baseline() -> TestResult {
         let root = gix_testtools::scripted_fixture_read_only("text-baseline.sh")?;
         for (baseline, diverging, expected_percentage) in [
-            ("baseline.cases", DIVERGING, 10),
-            ("baseline-reversed.cases", DIVERGING_REVERSED, 10),
+            ("baseline.cases", DIVERGING, 4),
+            ("baseline-reversed.cases", DIVERGING_REVERSED, 4),
         ] {
             let cases = std::fs::read_to_string(root.join(baseline))?;
             let mut out = Vec::new();

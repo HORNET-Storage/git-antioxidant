@@ -652,6 +652,16 @@ mkdir line-ending-change
   echo -e "a\n" > theirs.blob
 )
 
+# Their insertion of a second `case` block can be placed before or after the first `case` line. Like Git's merges,
+# place it as far down as possible, after that line, rather than before it as the indentation heuristic of
+# `git diff` does. Our insertion follows the same line, so both insertions conflict.
+mkdir ambiguous-insertion
+(cd ambiguous-insertion
+  write_lines start '' case '  one)' esac >base.blob
+  write_lines start '' case '  ours)' '  one)' esac >ours.blob
+  write_lines start '' case '  two)' esac '' case '  one)' esac >theirs.blob
+)
+
 
 for dir in  simple-conflict-3 \
             simple-conflict-2 \
@@ -670,6 +680,7 @@ for dir in  simple-conflict-3 \
             no-change-add \
             no-change-remove \
             line-ending-change \
+            ambiguous-insertion \
             complex/no-change \
             complex/no-conflict \
             complex/no-conflict-too \
