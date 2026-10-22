@@ -2388,6 +2388,118 @@ git init type-change-to-symlink
   git commit -m "new link to point to 'b'"
 )
 
+git init distinct-types
+(cd distinct-types
+  # Each top-level directory records different types for its entry `item` on the two sides: a
+  # regular file, a symlink, a gitlink or a directory. As in merge-ort's process_entry(), the
+  # regular file moves to the side-qualified `item~<side>` while the other entry stays at `item`,
+  # both move if neither is a regular file, and a directory stays where it is. An entry keeps the
+  # base stage only if it has the base's type.
+  #
+  # Both sides change the base's `item`:
+  # * link-to-file: A replaces the symlink with a regular file, B changes the symlink.
+  # * file-to-link: A replaces the regular file with a symlink, B changes the file.
+  # * file-to-gitlink: A replaces the regular file with a gitlink, B changes the file.
+  # * link-to-gitlink: A replaces the symlink with a gitlink, B changes the symlink, so both
+  #   move and nothing remains at `item`.
+  # * gitlink-to-file: A changes the gitlink, B replaces it with a regular file.
+  # * three-types: A replaces the symlink with a regular file and B with a gitlink, so neither
+  #   entry keeps the base stage.
+  #
+  # Both sides add `item`, A's type named first: added-file-vs-link, added-file-vs-gitlink,
+  # added-link-vs-gitlink, added-directory-vs-gitlink and added-directory-vs-link.
+  #
+  # A renames `source` to `item` while B adds `item`: renamed-file-vs-added-gitlink,
+  # renamed-link-vs-added-gitlink and renamed-gitlink-vs-added-file.
+  #
+  # A renames `file-source` or `link-source` and B renames `gitlink-source` to `item`:
+  # renamed-file-vs-renamed-gitlink and renamed-link-vs-renamed-gitlink.
+  #
+  # The script writes every entry to the index directly: that needs no symlink support, and no
+  # file has to be written where a checked-out gitlink left a directory. Each rename source has an
+  # object no other change of its side adds, so exact rename detection pairs it only with its own
+  # destination.
+  empty_tree=$(git mktree </dev/null)
+  added_target=$(git commit-tree -m "added gitlink target" "$empty_tree")
+  base_target=$(git commit-tree -m "base gitlink target" "$empty_tree")
+  changed_target=$(git commit-tree -p "$base_target" -m "changed gitlink target" "$empty_tree")
+  renamed_target=$(git commit-tree -m "renamed gitlink target" "$empty_tree")
+  file_rename_target=$(git commit-tree -m "gitlink renamed onto a renamed file" "$empty_tree")
+  link_rename_target=$(git commit-tree -m "gitlink renamed onto a renamed symlink" "$empty_tree")
+  for dir in link-to-file file-to-link file-to-gitlink link-to-gitlink gitlink-to-file three-types \
+    added-file-vs-link added-file-vs-gitlink added-link-vs-gitlink added-directory-vs-gitlink \
+    added-directory-vs-link renamed-file-vs-added-gitlink renamed-link-vs-added-gitlink \
+    renamed-gitlink-vs-added-file renamed-file-vs-renamed-gitlink renamed-link-vs-renamed-gitlink; do
+    git update-index --add --cacheinfo 100644,"$(write_lines "$dir" | git hash-object -w --stdin)","$dir"/sibling
+  done
+  git update-index --add --index-info <<EOF
+120000 $(printf target-one | git hash-object -w --stdin)	link-to-file/item
+100644 $(write_lines kilo kilo kilo kilo kilo | git hash-object -w --stdin)	file-to-link/item
+100644 $(write_lines lima lima lima lima lima | git hash-object -w --stdin)	file-to-gitlink/item
+120000 $(printf target-two | git hash-object -w --stdin)	link-to-gitlink/item
+160000 $base_target	gitlink-to-file/item
+120000 $(printf target-three | git hash-object -w --stdin)	three-types/item
+100644 $(write_lines sierra sierra sierra sierra sierra | git hash-object -w --stdin)	renamed-file-vs-added-gitlink/source
+120000 $(printf target-seven | git hash-object -w --stdin)	renamed-link-vs-added-gitlink/source
+160000 $renamed_target	renamed-gitlink-vs-added-file/source
+100644 $(write_lines xray xray xray xray xray | git hash-object -w --stdin)	renamed-file-vs-renamed-gitlink/file-source
+160000 $file_rename_target	renamed-file-vs-renamed-gitlink/gitlink-source
+120000 $(printf target-nine | git hash-object -w --stdin)	renamed-link-vs-renamed-gitlink/link-source
+160000 $link_rename_target	renamed-link-vs-renamed-gitlink/gitlink-source
+EOF
+  git commit -m "base"
+
+  git branch A
+  git branch B
+
+  git checkout A
+  git update-index --force-remove renamed-file-vs-added-gitlink/source renamed-link-vs-added-gitlink/source \
+    renamed-gitlink-vs-added-file/source renamed-file-vs-renamed-gitlink/file-source \
+    renamed-link-vs-renamed-gitlink/link-source
+  git update-index --add --index-info <<EOF
+100644 $(write_lines mike mike mike mike mike | git hash-object -w --stdin)	link-to-file/item
+120000 $(printf target-four | git hash-object -w --stdin)	file-to-link/item
+160000 $added_target	file-to-gitlink/item
+160000 $added_target	link-to-gitlink/item
+160000 $changed_target	gitlink-to-file/item
+100644 $(write_lines november november november november november | git hash-object -w --stdin)	three-types/item
+100644 $(write_lines oscar oscar oscar oscar oscar | git hash-object -w --stdin)	added-file-vs-link/item
+100644 $(write_lines papa papa papa papa papa | git hash-object -w --stdin)	added-file-vs-gitlink/item
+120000 $(printf target-five | git hash-object -w --stdin)	added-link-vs-gitlink/item
+100644 $(write_lines tango tango tango tango tango | git hash-object -w --stdin)	added-directory-vs-gitlink/item/file
+100644 $(write_lines uniform uniform uniform uniform uniform | git hash-object -w --stdin)	added-directory-vs-link/item/file
+100644 $(write_lines sierra sierra sierra sierra sierra | git hash-object -w --stdin)	renamed-file-vs-added-gitlink/item
+120000 $(printf target-seven | git hash-object -w --stdin)	renamed-link-vs-added-gitlink/item
+160000 $renamed_target	renamed-gitlink-vs-added-file/item
+100644 $(write_lines xray xray xray xray xray | git hash-object -w --stdin)	renamed-file-vs-renamed-gitlink/item
+120000 $(printf target-nine | git hash-object -w --stdin)	renamed-link-vs-renamed-gitlink/item
+EOF
+  git commit -m "A changes types, adds entries and renames"
+
+  git checkout B
+  git update-index --force-remove renamed-file-vs-renamed-gitlink/gitlink-source \
+    renamed-link-vs-renamed-gitlink/gitlink-source
+  git update-index --add --index-info <<EOF
+120000 $(printf target-one-changed | git hash-object -w --stdin)	link-to-file/item
+100644 $(write_lines kilo kilo kilo kilo kilo quebec | git hash-object -w --stdin)	file-to-link/item
+100644 $(write_lines lima lima lima lima lima romeo | git hash-object -w --stdin)	file-to-gitlink/item
+120000 $(printf target-two-changed | git hash-object -w --stdin)	link-to-gitlink/item
+100644 $(write_lines whiskey whiskey whiskey whiskey whiskey | git hash-object -w --stdin)	gitlink-to-file/item
+160000 $added_target	three-types/item
+120000 $(printf target-six | git hash-object -w --stdin)	added-file-vs-link/item
+160000 $added_target	added-file-vs-gitlink/item
+160000 $added_target	added-link-vs-gitlink/item
+160000 $added_target	added-directory-vs-gitlink/item
+120000 $(printf target-eight | git hash-object -w --stdin)	added-directory-vs-link/item
+160000 $added_target	renamed-file-vs-added-gitlink/item
+160000 $added_target	renamed-link-vs-added-gitlink/item
+100644 $(write_lines victor victor victor victor victor | git hash-object -w --stdin)	renamed-gitlink-vs-added-file/item
+160000 $file_rename_target	renamed-file-vs-renamed-gitlink/item
+160000 $link_rename_target	renamed-link-vs-renamed-gitlink/item
+EOF
+  git commit -m "B changes and adds entries of other types and renames gitlinks"
+)
+
 
 
 baseline non-tree-to-tree A-B A B
@@ -2491,6 +2603,7 @@ baseline identical-additions-with-different-relations A-B A B
 baseline identical-deletions-with-different-relations A-B A B
 baseline identical-rewrites-with-different-relations A-B A B
 baseline type-change-to-symlink A-B A B
+baseline distinct-types A-B A B
 
 ##
 ## Only once the tree-merges were performed can we refer to their objects
@@ -2816,6 +2929,28 @@ EOF
 100644 blob $(git rev-parse A:f) 3	f
 EOF
   make_conflict_index rename-delete-after-consumed-path-A-B-reversed
+)
+
+(cd distinct-types
+  # Every change of this case conflicts. Choosing the ancestor keeps the base entries and none of
+  # the changes, except that a rename whose destination the other side added an entry of another
+  # type at still removes its source, as it does without a forced resolution. The sources of the
+  # renames onto one destination stay. That is the base tree without those three sources.
+  git read-tree main
+  git update-index --force-remove renamed-file-vs-added-gitlink/source renamed-link-vs-added-gitlink/source \
+    renamed-gitlink-vs-added-file/source
+  make_resolve_tree ancestor A B
+  make_resolve_tree ancestor B A
+
+  # Choosing ours keeps our side of every conflict, our renames included, and none of their
+  # changes. With A as ours, that is A's tree. With B as ours, it is B's tree without the sources
+  # of A's renames onto B's additions, which those renames still remove.
+  git read-tree A
+  make_resolve_tree ours A B
+  git read-tree B
+  git update-index --force-remove renamed-file-vs-added-gitlink/source renamed-link-vs-added-gitlink/source \
+    renamed-gitlink-vs-added-file/source
+  make_resolve_tree ours B A
 )
 
 (cd simple

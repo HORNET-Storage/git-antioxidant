@@ -8,18 +8,16 @@ use std::borrow::Cow;
 use bstr::{BString, ByteSlice};
 use gix_diff::tree_with_rewrites::Change;
 use gix_hash::ObjectId;
-use gix_object::{
-    FindExt, tree,
-    tree::{EntryKind, EntryMode},
-};
+use gix_object::{FindExt, tree, tree::EntryMode};
 
 use crate::tree::{
     Conflict, ConflictIndexEntry, ConflictIndexEntryPathHint, ConflictMapping,
     ConflictMapping::{Original, Swapped},
     ContentMerge, Options, Outcome, Resolution, ResolutionFailure, ResolveWith,
     utils::{
-        ChangeDisposition, ChangeList, PossibleConflict, TrackedChange, apply_change, perform_blob_merge,
+        ChangeDisposition, ChangeList, PossibleConflict, TrackedChange, TreeNodes, apply_change, perform_blob_merge,
         possibly_rewritten_location, rewrite_location_with_renamed_directory, to_components, unique_path_in_tree,
+        unique_path_in_tree_avoiding,
     },
 };
 
@@ -625,6 +623,67 @@ pub fn tree<'objects>(
                                     }
                                 }
                             }
+                            // Modify/modify with results of distinct types, such as a regular file and a
+                            // symlink, which can't be merged: both are kept, placed as Git does. For example,
+                            // ours replaces the symlink `item` with a regular file while theirs changes the
+                            // symlink's target. The symlink keeps `item` and the base entry, and the regular file
+                            // moves to a path named after our side.
+                            (
+                                Change::Modification {
+                                    location,
+                                    previous_entry_mode,
+                                    previous_id,
+                                    entry_mode: our_mode,
+                                    id: our_id,
+                                    ..
+                                },
+                                Change::Modification {
+                                    entry_mode: their_mode,
+                                    id: their_id,
+                                    ..
+                                },
+                            ) if !modes_are_compatible(*our_mode, *their_mode) => {
+                                let placement = DistinctTypes::new(
+                                    location,
+                                    (*our_mode, *our_id),
+                                    (*their_mode, *their_id),
+                                    &editor,
+                                    (&*our_tree, &*their_tree),
+                                    labels,
+                                )?;
+                                let (our_unique_location, their_unique_location) =
+                                    placement.unique_locations(outer_side);
+                                let base = placement.base_entry((*previous_entry_mode, *previous_id), outer_side);
+                                let conflict = Conflict::without_resolution(
+                                    ResolutionFailure::OursModifiedTheirsModifiedTypeMismatch {
+                                        our_unique_location,
+                                        their_unique_location,
+                                    },
+                                    (ours, theirs, Original, outer_side),
+                                    placement.index_entries(base, outer_side),
+                                );
+                                match resolve_tree_conflicts {
+                                    None => placement.apply(
+                                        &mut editor,
+                                        (&mut *our_tree, &mut *their_tree),
+                                        (&mut *our_changes, &mut *their_changes),
+                                        (&mut ours_disposition, &mut theirs_disposition),
+                                        (ours_idx, theirs_idx),
+                                    )?,
+                                    Some(ResolveWith::Ours) => apply_our_resolution(
+                                        ours,
+                                        theirs,
+                                        outer_side,
+                                        &mut editor,
+                                        &mut ours_disposition,
+                                        &mut theirs_disposition,
+                                    )?,
+                                    Some(ResolveWith::Ancestor) => {}
+                                }
+                                if should_fail_on_conflict(conflict) {
+                                    break 'outer;
+                                }
+                            }
                             // Both sides deleting the same base entry agree on the result. For example, both delete
                             // `dir/file`, even if each deletion is related to a different parent rewrite.
                             (Change::Deletion { .. }, Change::Deletion { .. }) => {
@@ -824,11 +883,12 @@ pub fn tree<'objects>(
                                     break 'outer;
                                 }
                             }
-                            // Add/add at one path: compatible non-submodule types use a two-way content merge with an
-                            // empty ancestor, which leaves different executable bits in conflict; incompatible types keep
-                            // the symlink/tree there and relocate the other entry. For example, two different blobs added at
-                            // `file` are content-merged, while a symlink and blob both added at `file` are retained at
-                            // separate paths.
+                            // Add/add at one path: compatible types use a two-way content merge with an empty
+                            // ancestor, which leaves different executable bits in conflict, while entries of
+                            // distinct types are both kept, placed as Git does. For example, two different blobs
+                            // added at `file` are content-merged, while of a symlink and a blob both added at
+                            // `file`, the symlink keeps `file` and the blob moves to a path named after its side.
+                            // Two submodules are handled above.
                             (
                                 Change::Addition {
                                     location,
@@ -841,7 +901,7 @@ pub fn tree<'objects>(
                                     id: their_id,
                                     ..
                                 },
-                            ) if !involves_submodule(our_mode, their_mode) => {
+                            ) => {
                                 let conflict = if modes_are_compatible(*our_mode, *their_mode) {
                                     let (merged_mode, modes_merged_cleanly) =
                                         merge_modes(*our_mode, *their_mode, None, outer_side);
@@ -874,71 +934,42 @@ pub fn tree<'objects>(
                                         [None, index_entry(our_mode, our_id), index_entry(their_mode, their_id)],
                                     )
                                 } else {
-                                    // Actually this has a preference, as symlinks are always left in place with the other side renamed.
-                                    let (
-                                        logical_side,
-                                        label_of_side_to_be_moved,
-                                        (our_mode, our_id, our_path_hint),
-                                        (their_mode, their_id, their_path_hint),
-                                    ) = if matches!(our_mode.kind(), EntryKind::Link | EntryKind::Tree) {
-                                        (
-                                            Original,
-                                            labels.other.unwrap_or_default(),
-                                            (*our_mode, *our_id, ConflictIndexEntryPathHint::Current),
-                                            (*their_mode, *their_id, ConflictIndexEntryPathHint::RenamedOrTheirs),
-                                        )
-                                    } else {
-                                        (
-                                            Swapped,
-                                            labels.current.unwrap_or_default(),
-                                            (*their_mode, *their_id, ConflictIndexEntryPathHint::RenamedOrTheirs),
-                                            (*our_mode, *our_id, ConflictIndexEntryPathHint::Current),
-                                        )
-                                    };
-                                    let tree_with_rename = pick_mut(logical_side, their_tree, our_tree);
-                                    let renamed_location = unique_path_in_tree(
-                                        location.as_bstr(),
+                                    let placement = DistinctTypes::new(
+                                        location,
+                                        (*our_mode, *our_id),
+                                        (*their_mode, *their_id),
                                         &editor,
-                                        tree_with_rename,
-                                        label_of_side_to_be_moved,
+                                        (&*our_tree, &*their_tree),
+                                        labels,
                                     )?;
+                                    let (our_unique_location, their_unique_location) =
+                                        placement.unique_locations(outer_side);
                                     let mut conflict = Conflict::without_resolution(
                                         ResolutionFailure::OursAddedTheirsAddedTypeMismatch {
-                                            their_unique_location: renamed_location.clone(),
+                                            our_unique_location,
+                                            their_unique_location,
                                         },
-                                        (ours, theirs, logical_side, outer_side),
-                                        [
-                                            None,
-                                            index_entry_at_path(&our_mode, &our_id, our_path_hint),
-                                            index_entry_at_path(&their_mode, &their_id, their_path_hint),
-                                        ],
+                                        (ours, theirs, Original, outer_side),
+                                        placement.index_entries(None, outer_side),
                                     );
                                     match resolve_tree_conflicts {
-                                        None => {
-                                            let new_change = Change::Addition {
-                                                location: renamed_location,
-                                                entry_mode: their_mode,
-                                                id: their_id,
-                                                relation: None,
-                                            };
-                                            editor.upsert(toc(location), our_mode.kind(), our_id)?;
-                                            tree_with_rename.remove_change(location.as_bstr());
-                                            push_deferred(
-                                                (new_change, None),
-                                                pick_mut(logical_side, their_changes, our_changes),
-                                            );
-                                        }
+                                        None => placement.apply(
+                                            &mut editor,
+                                            (&mut *our_tree, &mut *their_tree),
+                                            (&mut *our_changes, &mut *their_changes),
+                                            (&mut ours_disposition, &mut theirs_disposition),
+                                            (ours_idx, theirs_idx),
+                                        )?,
                                         Some(resolve) => {
                                             conflict.entries = Default::default();
                                             match resolve {
-                                                ResolveWith::Ours => match outer_side {
-                                                    Original => {
-                                                        editor.upsert(toc(location), our_mode.kind(), our_id)?;
-                                                    }
-                                                    Swapped => {
-                                                        editor.upsert(toc(location), their_mode.kind(), their_id)?;
-                                                    }
-                                                },
+                                                ResolveWith::Ours => {
+                                                    let (mode, id) = match outer_side {
+                                                        Original => (our_mode, our_id),
+                                                        Swapped => (their_mode, their_id),
+                                                    };
+                                                    editor.upsert(toc(location), mode.kind(), *id)?;
+                                                }
                                                 ResolveWith::Ancestor => {
                                                     // Do nothing - this discards both sides.
                                                     // Note that one of these adds might be the result of a rename, which
@@ -1277,10 +1308,12 @@ pub fn tree<'objects>(
                                 ours_disposition = ChangeDisposition::Applied;
                                 theirs_disposition = ChangeDisposition::Applied;
                             }
-                            // Different sources renamed to the same destination: compatible entries are content-merged
-                            // like add/add; incompatible types keep one entry there and relocate the other. For example,
-                            // blobs renamed from `a` and `b` to `dst` are merged, while a symlink renamed from `a` and a
-                            // blob renamed from `b` to `dst` are retained at separate paths.
+                            // Different sources renamed to the same destination: as for add/add, compatible
+                            // entries are content-merged, and entries of distinct types are both kept, placed as
+                            // Git does. For example, blobs renamed from `a` and `b` to `dst` are merged, while of a
+                            // symlink renamed from `a` and a blob renamed from `b` to `dst`, the symlink keeps
+                            // `dst` and the blob moves. Two different submodules renamed to one destination are
+                            // left to the fallback below.
                             (
                                 Change::Rewrite {
                                     source_location: our_source_location,
@@ -1298,7 +1331,7 @@ pub fn tree<'objects>(
                                 },
                             ) if our_source_location != their_source_location
                                 && location == their_location
-                                && !involves_submodule(our_mode, their_mode) =>
+                                && !(our_mode.is_commit() && their_mode.is_commit()) =>
                             {
                                 match resolve_tree_conflicts {
                                     None => {
@@ -1338,54 +1371,32 @@ pub fn tree<'objects>(
                                                 ],
                                             )
                                         } else {
-                                            // Like add/add type conflicts, retain the symlink at the contested path and
-                                            // move the regular file to a side-qualified path.
-                                            let (
-                                                logical_side,
-                                                label_of_side_to_be_moved,
-                                                (our_mode, our_id, our_path_hint),
-                                                (their_mode, their_id, their_path_hint),
-                                                moved_tree,
-                                            ) = if matches!(our_mode.kind(), EntryKind::Link | EntryKind::Tree) {
-                                                (
-                                                    Original,
-                                                    labels.other.unwrap_or_default(),
-                                                    (*our_mode, *our_id, ConflictIndexEntryPathHint::Current),
-                                                    (
-                                                        *their_mode,
-                                                        *their_id,
-                                                        ConflictIndexEntryPathHint::RenamedOrTheirs,
-                                                    ),
-                                                    &mut *their_tree,
-                                                )
-                                            } else {
-                                                (
-                                                    Swapped,
-                                                    labels.current.unwrap_or_default(),
-                                                    (*their_mode, *their_id, ConflictIndexEntryPathHint::Current),
-                                                    (*our_mode, *our_id, ConflictIndexEntryPathHint::RenamedOrTheirs),
-                                                    &mut *our_tree,
-                                                )
-                                            };
-                                            let renamed_location = unique_path_in_tree(
-                                                location.as_bstr(),
+                                            let placement = DistinctTypes::new(
+                                                location,
+                                                (*our_mode, *our_id),
+                                                (*their_mode, *their_id),
                                                 &editor,
-                                                moved_tree,
-                                                label_of_side_to_be_moved,
+                                                (&*our_tree, &*their_tree),
+                                                labels,
                                             )?;
-                                            editor.upsert(toc(location), our_mode.kind(), our_id)?;
-                                            editor.upsert(toc(&renamed_location), their_mode.kind(), their_id)?;
-                                            Conflict::without_resolution(
+                                            let (our_unique_location, their_unique_location) =
+                                                placement.unique_locations(outer_side);
+                                            let conflict = Conflict::without_resolution(
                                                 ResolutionFailure::OursAddedTheirsAddedTypeMismatch {
-                                                    their_unique_location: renamed_location,
+                                                    our_unique_location,
+                                                    their_unique_location,
                                                 },
-                                                (ours, theirs, logical_side, outer_side),
-                                                [
-                                                    None,
-                                                    index_entry_at_path(&our_mode, &our_id, our_path_hint),
-                                                    index_entry_at_path(&their_mode, &their_id, their_path_hint),
-                                                ],
-                                            )
+                                                (ours, theirs, Original, outer_side),
+                                                placement.index_entries(None, outer_side),
+                                            );
+                                            placement.apply(
+                                                &mut editor,
+                                                (&mut *our_tree, &mut *their_tree),
+                                                (&mut *our_changes, &mut *their_changes),
+                                                (&mut ours_disposition, &mut theirs_disposition),
+                                                (ours_idx, theirs_idx),
+                                            )?;
+                                            conflict
                                         };
                                         if should_fail_on_conflict(conflict) {
                                             break 'outer;
@@ -1800,8 +1811,8 @@ pub fn tree<'objects>(
                             }
                             // Rename/add: if directory `old` moves to `new` while the other side adds a file at vacated
                             // `old`, leaf changes already represent the result. Otherwise, two gitlinks require a
-                            // submodule-aware follow-up, compatible blobs are content-merged, and incompatible types are
-                            // retained at separate paths.
+                            // submodule-aware follow-up, compatible blobs are content-merged, and entries of distinct
+                            // types are both kept, placed as for add/add.
                             (
                                 Change::Rewrite {
                                     source_location,
@@ -1930,77 +1941,55 @@ pub fn tree<'objects>(
                                     // no need to put it as addition, we know it's not going to intersect on the other side.
                                     editor.upsert(toc(location), merged_mode.kind(), merged_blob_id)?;
                                 } else {
-                                    // We always remove the source from the tree - it might be re-added later.
-                                    let ours_is_rename =
-                                        resolve_tree_conflicts == Some(ResolveWith::Ours) && side == outer_side;
-                                    let remove_rename_source = resolve_tree_conflicts.is_none()
-                                        || ours_is_rename
-                                        || add_location != source_location;
-                                    if remove_rename_source {
-                                        editor.remove_if_leaf(toc(source_location))?;
-                                        pick_mut(side, our_tree, their_tree).remove_change(source_location.as_bstr());
-                                    }
+                                    // Entries of distinct types are both kept, placed as Git does. Git removes
+                                    // the rename source in any case. The rename itself is already at `location`
+                                    // if it was applied before the addition was paired with it.
+                                    editor.remove_if_leaf(toc(source_location))?;
+                                    pick_mut(side, our_tree, their_tree).remove_change(source_location.as_bstr());
 
-                                    let (
-                                        logical_side,
-                                        label_of_side_to_be_moved,
-                                        (our_mode, our_id, our_path_hint),
-                                        (their_mode, their_id, their_path_hint),
-                                    ) = if matches!(our_mode.kind(), EntryKind::Link | EntryKind::Tree) {
-                                        (
-                                            Original,
-                                            labels.other.unwrap_or_default(),
-                                            (*our_mode, *our_id, ConflictIndexEntryPathHint::Current),
-                                            (*their_mode, *their_id, ConflictIndexEntryPathHint::RenamedOrTheirs),
-                                        )
-                                    } else {
-                                        (
-                                            Swapped,
-                                            labels.current.unwrap_or_default(),
-                                            (*their_mode, *their_id, ConflictIndexEntryPathHint::RenamedOrTheirs),
-                                            (*our_mode, *our_id, ConflictIndexEntryPathHint::Current),
-                                        )
+                                    // `our_*` belong to the rename and `their_*` to the addition, while the
+                                    // placement is decided for the local sides.
+                                    let (local_ours, local_theirs) = match side {
+                                        Original => ((*our_mode, *our_id), (*their_mode, *their_id)),
+                                        Swapped => ((*their_mode, *their_id), (*our_mode, *our_id)),
                                     };
-                                    let tree_with_rename = pick_mut(side, our_tree, their_tree);
-                                    let renamed_location = unique_path_in_tree(
-                                        location.as_bstr(),
+                                    let placement = DistinctTypes::new(
+                                        location,
+                                        local_ours,
+                                        local_theirs,
                                         &editor,
-                                        tree_with_rename,
-                                        label_of_side_to_be_moved,
+                                        (&*our_tree, &*their_tree),
+                                        labels,
                                     )?;
-
-                                    let upsert_rename_destination = resolve_tree_conflicts.is_none() || ours_is_rename;
-                                    if upsert_rename_destination {
-                                        editor.upsert(toc(location), our_mode.kind(), our_id)?;
-                                        tree_with_rename.remove_existing_change(location.as_bstr());
-                                    }
-
+                                    let (our_unique_location, their_unique_location) =
+                                        placement.unique_locations(outer_side);
                                     let conflict = Conflict::without_resolution(
                                         ResolutionFailure::OursAddedTheirsAddedTypeMismatch {
-                                            their_unique_location: renamed_location.clone(),
+                                            our_unique_location,
+                                            their_unique_location,
                                         },
-                                        (ours, theirs, side, outer_side),
-                                        [
-                                            None,
-                                            index_entry_at_path(&our_mode, &our_id, our_path_hint),
-                                            index_entry_at_path(&their_mode, &their_id, their_path_hint),
-                                        ],
+                                        (ours, theirs, Original, outer_side),
+                                        placement.index_entries(None, outer_side),
                                     );
-
-                                    if resolve_tree_conflicts.is_none() {
-                                        let new_change_with_rename = Change::Addition {
-                                            location: renamed_location,
-                                            entry_mode: their_mode,
-                                            id: their_id,
-                                            relation: None,
-                                        };
-                                        push_deferred(
-                                            (
-                                                new_change_with_rename,
-                                                Some(pick_idx(logical_side, theirs_idx, ours_idx)),
-                                            ),
-                                            pick_mut(logical_side, their_changes, our_changes),
-                                        );
+                                    match resolve_tree_conflicts {
+                                        None => placement.apply(
+                                            &mut editor,
+                                            (&mut *our_tree, &mut *their_tree),
+                                            (&mut *our_changes, &mut *their_changes),
+                                            (&mut ours_disposition, &mut theirs_disposition),
+                                            (ours_idx, theirs_idx),
+                                        )?,
+                                        Some(ResolveWith::Ours) => {
+                                            let (mode, id) = match outer_side {
+                                                Original => local_ours,
+                                                Swapped => local_theirs,
+                                            };
+                                            editor.upsert(toc(location), mode.kind(), id)?;
+                                        }
+                                        // Keep neither entry, removing the rename if it is already applied.
+                                        Some(ResolveWith::Ancestor) => {
+                                            editor.remove_if_leaf(toc(location))?;
+                                        }
                                     }
 
                                     if should_fail_on_conflict(conflict) {
@@ -2147,13 +2136,6 @@ fn pick<'a, T: ?Sized>(side: ConflictMapping, ours: &'a T, theirs: &'a T) -> &'a
     }
 }
 
-fn pick_idx(side: ConflictMapping, ours: usize, theirs: usize) -> usize {
-    match side {
-        Original => ours,
-        Swapped => theirs,
-    }
-}
-
 fn pick_mut<'a, T: ?Sized>(side: ConflictMapping, ours: &'a mut T, theirs: &'a mut T) -> &'a mut T {
     match side {
         Original => ours,
@@ -2179,4 +2161,208 @@ fn index_entry_at_path(
         id: *id,
         path_hint: Some(hint),
     })
+}
+
+/// Two entries of distinct types that want the same path, and where each of them goes, as Git's `merge-ort` decides in
+/// `process_entry()`.
+///
+/// A directory keeps the path and the other entry moves. Otherwise the regular file moves and the other entry, a
+/// symlink or a submodule, keeps the path; if neither is a regular file, both move. An entry that moves goes to a
+/// unique path named after its side, such as `item~ours` for `item`.
+struct DistinctTypes {
+    /// The path that both entries want.
+    location: BString,
+    /// The entry of the local *ours* side.
+    ours: PlacedEntry,
+    /// The entry of the local *theirs* side.
+    theirs: PlacedEntry,
+}
+
+/// One of the two entries of [`DistinctTypes`].
+struct PlacedEntry {
+    mode: EntryMode,
+    id: ObjectId,
+    /// The unique path that this entry moves to, or `None` if it keeps the contested path.
+    unique_location: Option<BString>,
+}
+
+impl DistinctTypes {
+    /// Place the local *ours* entry `(our_mode, our_id)` and the local *theirs* entry
+    /// `(their_mode, their_id)`, which both want `location`. An entry that moves is named after its side
+    /// in `labels`, at a path that neither `editor` nor the path tree of its side uses.
+    fn new(
+        location: &BString,
+        (our_mode, our_id): (EntryMode, ObjectId),
+        (their_mode, their_id): (EntryMode, ObjectId),
+        editor: &tree::Editor<'_>,
+        (our_tree, their_tree): (&TreeNodes, &TreeNodes),
+        labels: crate::blob::builtin_driver::text::Labels<'_>,
+    ) -> Result<Self> {
+        let (ours_moves, theirs_moves) = if our_mode.is_tree() {
+            (false, true)
+        } else if their_mode.is_tree() {
+            (true, false)
+        } else {
+            // The types differ, so at most one of the entries is a regular file.
+            (
+                our_mode.is_blob() || !their_mode.is_blob(),
+                their_mode.is_blob() || !our_mode.is_blob(),
+            )
+        };
+        let our_unique_location = ours_moves
+            .then(|| unique_path_in_tree(location.as_bstr(), editor, our_tree, labels.current.unwrap_or_default()))
+            .transpose()?;
+        // If both entries move, sides with equal names would otherwise get the same path.
+        let their_unique_location = theirs_moves
+            .then(|| {
+                unique_path_in_tree_avoiding(
+                    location.as_bstr(),
+                    editor,
+                    their_tree,
+                    labels.other.unwrap_or_default(),
+                    our_unique_location.as_ref().map(|path| path.as_bstr()),
+                )
+            })
+            .transpose()?;
+        Ok(DistinctTypes {
+            location: location.clone(),
+            ours: PlacedEntry {
+                mode: our_mode,
+                id: our_id,
+                unique_location: our_unique_location,
+            },
+            theirs: PlacedEntry {
+                mode: their_mode,
+                id: their_id,
+                unique_location: their_unique_location,
+            },
+        })
+    }
+
+    /// Return the unique locations of the entries of the global *ours* and *theirs* sides, which `outer_side`
+    /// maps to the local sides.
+    fn unique_locations(&self, outer_side: ConflictMapping) -> (Option<BString>, Option<BString>) {
+        let (ours, theirs) = match outer_side {
+            Original => (&self.ours, &self.theirs),
+            Swapped => (&self.theirs, &self.ours),
+        };
+        (ours.unique_location.clone(), theirs.unique_location.clone())
+    }
+
+    /// Return the index entry of the base `(mode, id)` if either entry has the base's type, in which case it
+    /// stays with that entry.
+    fn base_entry(&self, (mode, id): (EntryMode, ObjectId), outer_side: ConflictMapping) -> Option<ConflictIndexEntry> {
+        [(Original, &self.ours), (Swapped, &self.theirs)]
+            .into_iter()
+            .find(|(_, entry)| modes_are_compatible(entry.mode, mode))
+            .and_then(|(local_side, _)| {
+                index_entry_at_path(&mode, &id, type_mismatch_path_hint(local_side, outer_side))
+            })
+    }
+
+    /// Return `base` and the entries of the local *ours* and *theirs* sides as the index entries of a conflict
+    /// between the local changes, which `outer_side` maps to the global sides.
+    fn index_entries(
+        &self,
+        base: Option<ConflictIndexEntry>,
+        outer_side: ConflictMapping,
+    ) -> [Option<ConflictIndexEntry>; 3] {
+        [
+            base,
+            index_entry_at_path(
+                &self.ours.mode,
+                &self.ours.id,
+                type_mismatch_path_hint(Original, outer_side),
+            ),
+            index_entry_at_path(
+                &self.theirs.mode,
+                &self.theirs.id,
+                type_mismatch_path_hint(Swapped, outer_side),
+            ),
+        ]
+    }
+
+    /// Put both entries into the result. An entry that keeps the contested path is written there, and the path is
+    /// removed if both entries move. An entry that moves leaves the path tree of its side and is deferred as an
+    /// addition at its unique path to the change list of its side, to be matched against the other side there.
+    ///
+    /// `ours_idx` and `theirs_idx` index the changes of the two entries in `our_changes` and `their_changes`. A
+    /// deferred addition ignores the change of the other entry when it is matched, so the pair can't meet again,
+    /// for example where the unique path is the source of the other side's rename.
+    fn apply(
+        self,
+        editor: &mut tree::Editor<'_>,
+        (our_tree, their_tree): (&mut TreeNodes, &mut TreeNodes),
+        (our_changes, their_changes): (&mut ChangeList, &mut ChangeList),
+        (ours_disposition, theirs_disposition): (&mut ChangeDisposition, &mut ChangeDisposition),
+        (ours_idx, theirs_idx): (usize, usize),
+    ) -> Result {
+        if self.ours.unique_location.is_some() && self.theirs.unique_location.is_some() {
+            editor.remove_if_leaf(to_components(self.location.as_bstr()))?;
+        }
+        self.ours.apply(
+            &self.location,
+            editor,
+            our_tree,
+            our_changes,
+            ours_disposition,
+            theirs_idx,
+        )?;
+        self.theirs.apply(
+            &self.location,
+            editor,
+            their_tree,
+            their_changes,
+            theirs_disposition,
+            ours_idx,
+        )
+    }
+}
+
+impl PlacedEntry {
+    /// Write this entry to `editor` at the contested `location` if it keeps that path. Otherwise remove it from
+    /// `path_tree` at `location` and defer its addition at its unique path to `changes`, ignoring the change at
+    /// `other_idx` of the other side when it is matched. `path_tree` and `changes` belong to the side of this entry.
+    fn apply(
+        self,
+        location: &BString,
+        editor: &mut tree::Editor<'_>,
+        path_tree: &mut TreeNodes,
+        changes: &mut ChangeList,
+        disposition: &mut ChangeDisposition,
+        other_idx: usize,
+    ) -> Result {
+        match self.unique_location {
+            None => {
+                editor.upsert(to_components(location.as_bstr()), self.mode.kind(), self.id)?;
+                *disposition = ChangeDisposition::Applied;
+            }
+            Some(unique_location) => {
+                path_tree.remove_change(location.as_bstr());
+                push_deferred(
+                    (
+                        Change::Addition {
+                            location: unique_location,
+                            relation: None,
+                            entry_mode: self.mode,
+                            id: self.id,
+                        },
+                        Some(other_idx),
+                    ),
+                    changes,
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Return the hint that finds the index entry of `local_side` at the location that a type-mismatch failure records for
+/// the global side, which `outer_side` maps it to: [`Current`](ConflictIndexEntryPathHint::Current) for *ours* and
+/// [`RenamedOrTheirs`](ConflictIndexEntryPathHint::RenamedOrTheirs) for *theirs*.
+fn type_mismatch_path_hint(local_side: ConflictMapping, outer_side: ConflictMapping) -> ConflictIndexEntryPathHint {
+    match local_side.to_global(outer_side) {
+        Original => ConflictIndexEntryPathHint::Current,
+        Swapped => ConflictIndexEntryPathHint::RenamedOrTheirs,
+    }
 }

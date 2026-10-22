@@ -79,6 +79,21 @@ pub fn unique_path_in_tree(
     tree: &TreeNodes,
     side_name: &BStr,
 ) -> Result<BString> {
+    unique_path_in_tree_avoiding(file_path, editor, tree, side_name, None)
+}
+
+/// Like [`unique_path_in_tree()`], but never return `reserved`, a path already chosen for another entry that neither
+/// `editor` nor `tree` contains yet.
+///
+/// When both entries of one path move, each to a path named after its side, equal side names, or names that are equal
+/// once `/` is replaced, would otherwise give both entries the same path.
+pub fn unique_path_in_tree_avoiding(
+    file_path: &BStr,
+    editor: &tree::Editor<'_>,
+    tree: &TreeNodes,
+    side_name: &BStr,
+    reserved: Option<&BStr>,
+) -> Result<BString> {
     let mut qualifier = BString::from("~");
     qualifier.extend(
         side_name
@@ -104,7 +119,8 @@ pub fn unique_path_in_tree(
             if !at_root && matches!(conflict, Some(PossibleConflict::NonTreeToTree { .. })) {
                 break;
             }
-            if editor.get(to_components_bstring_ref(&buf)).is_none()
+            if reserved.is_none_or(|reserved| reserved != buf.as_bstr())
+                && editor.get(to_components_bstring_ref(&buf)).is_none()
                 && conflict.is_none_or(|conflict| matches!(conflict, PossibleConflict::PassedRewrittenDirectory { .. }))
             {
                 return Ok(buf);

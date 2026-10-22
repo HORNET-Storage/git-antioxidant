@@ -310,6 +310,7 @@ impl Conflict {
                     renamed_unique_path_to_modified_blob: _,
                 }
                 | ResolutionFailure::OursAddedTheirsAddedTypeMismatch { .. }
+                | ResolutionFailure::OursModifiedTheirsModifiedTypeMismatch { .. }
                 | ResolutionFailure::OursDeletedTheirsRenamed => None,
             }
         }
@@ -396,12 +397,27 @@ pub enum ResolutionFailure {
         /// The non-conflicting path of *their* non-tree entry.
         renamed_unique_path_of_theirs: BString,
     },
-    /// *ours* was added (or renamed into place) with a different mode than theirs, e.g. blob and symlink, and we kept
-    /// the symlink in its original location, renaming the other side to `their_unique_location`.
+    /// *ours* and *theirs* were added at the same path, possibly by renaming, with types that can't be merged, such as a
+    /// regular file and a symlink, so they were kept at separate paths.
+    ///
+    /// As Git does, a directory keeps the path and the other entry moves. Otherwise the regular file moves and the
+    /// other entry, a symlink or a submodule, keeps the path; if neither is a regular file, both move. An entry that
+    /// moves is placed at a unique path named after its side.
     OursAddedTheirsAddedTypeMismatch {
-        /// The location at which *their* state was placed to resolve the name and type clash, named to indicate
-        /// where the entry is coming from.
-        their_unique_location: BString,
+        /// The location at which *our* entry was placed, or `None` if it kept its path.
+        our_unique_location: Option<BString>,
+        /// The location at which *their* entry was placed, or `None` if it kept its path.
+        their_unique_location: Option<BString>,
+    },
+    /// *ours* and *theirs* both changed the same entry, and their results have types that can't be merged, such as a
+    /// regular file and a symlink. Both were kept at separate paths, placed as for
+    /// [`OursAddedTheirsAddedTypeMismatch`](Self::OursAddedTheirsAddedTypeMismatch), and the base entry stays with the
+    /// result that has the base's type, if either has it.
+    OursModifiedTheirsModifiedTypeMismatch {
+        /// The location at which *our* entry was placed, or `None` if it kept its path.
+        our_unique_location: Option<BString>,
+        /// The location at which *their* entry was placed, or `None` if it kept its path.
+        their_unique_location: Option<BString>,
     },
     /// *ours* was modified, and they renamed the same file, but there is also a non-mergable type-change.
     /// Here we keep both versions of the file.
@@ -565,8 +581,21 @@ pub mod apply_index_entries {
                             Some(renamed_unique_path_to_modified_blob.as_bstr()),
                             conflict.ours.location(),
                         ),
-                        ResolutionFailure::OursAddedTheirsAddedTypeMismatch { their_unique_location } => {
-                            (Some(their_unique_location.as_bstr()), conflict.ours.location())
+                        ResolutionFailure::OursAddedTheirsAddedTypeMismatch {
+                            our_unique_location,
+                            their_unique_location,
+                        }
+                        | ResolutionFailure::OursModifiedTheirsModifiedTypeMismatch {
+                            our_unique_location,
+                            their_unique_location,
+                        } => {
+                            // Both changes are at the contested location, which an entry without a unique
+                            // location kept.
+                            let location = conflict.ours.location();
+                            (
+                                Some(their_unique_location.as_ref().map_or(location, |path| path.as_bstr())),
+                                our_unique_location.as_ref().map_or(location, |path| path.as_bstr()),
+                            )
                         }
                     },
                 };
