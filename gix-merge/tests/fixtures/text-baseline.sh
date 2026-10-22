@@ -703,9 +703,7 @@ for dir in  simple-conflict-3 \
   baseline ours base theirs merge-ours --ours
   baseline ours base theirs merge-theirs --theirs
   baseline ours base theirs merge-union --union
-  (
-    export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.algorithm GIT_CONFIG_VALUE_0=histogram
-    baseline ours base theirs diff3-histogram --diff3
-    baseline ours base theirs zdiff3-histogram --zdiff3
-  )
+  # `git merge-file` takes the diff algorithm only as an option, it doesn't read `diff.algorithm`.
+  baseline ours base theirs diff3-histogram --diff3 --diff-algorithm=histogram
+  baseline ours base theirs zdiff3-histogram --zdiff3 --diff-algorithm=histogram
 done

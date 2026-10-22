@@ -57,8 +57,6 @@ mod text {
         // See https://github.com/mhagger/diff-slider-tools.
         "complex/spurious-c-conflicts/merge.merged",
         "complex/spurious-c-conflicts/merge-union.merged",
-        "complex/spurious-c-conflicts/diff3-histogram.merged",
-        "complex/spurious-c-conflicts/zdiff3-histogram.merged",
     ];
 
     /// Should be a copy of `DIVERGING` once the reverse operation truly works like before
@@ -74,8 +72,6 @@ mod text {
         "complex/marker-newline-handling-lf2/zdiff3-histogram.merged-reversed",
         "complex/spurious-c-conflicts/merge.merged-reversed",
         "complex/spurious-c-conflicts/merge-union.merged-reversed",
-        "complex/spurious-c-conflicts/diff3-histogram.merged-reversed",
-        "complex/spurious-c-conflicts/zdiff3-histogram.merged-reversed",
     ];
 
     // TODO: fix all of these eventually
@@ -172,8 +168,8 @@ mod text {
     fn run_baseline() -> TestResult {
         let root = gix_testtools::scripted_fixture_read_only("text-baseline.sh")?;
         for (baseline, diverging, expected_percentage) in [
-            ("baseline.cases", DIVERGING, 4),
-            ("baseline-reversed.cases", DIVERGING_REVERSED, 4),
+            ("baseline.cases", DIVERGING, 3),
+            ("baseline-reversed.cases", DIVERGING_REVERSED, 3),
         ] {
             let cases = std::fs::read_to_string(root.join(baseline))?;
             let mut out = Vec::new();
@@ -520,23 +516,25 @@ mod text {
                 let mut options = gix_merge::blob::builtin_driver::text::Options::default();
                 let marker_size = 7.try_into().unwrap();
                 for arg in words {
-                    options.conflict = match arg {
-                        "--diff3" => Conflict::Keep {
-                            style: ConflictStyle::Diff3,
-                            marker_size,
-                        },
-                        "--zdiff3" => Conflict::Keep {
-                            style: ConflictStyle::ZealousDiff3,
-                            marker_size,
-                        },
-                        "--ours" => Conflict::ResolveWithOurs,
-                        "--theirs" => Conflict::ResolveWithTheirs,
-                        "--union" => Conflict::ResolveWithUnion,
+                    match arg {
+                        "--diff3" => {
+                            options.conflict = Conflict::Keep {
+                                style: ConflictStyle::Diff3,
+                                marker_size,
+                            }
+                        }
+                        "--zdiff3" => {
+                            options.conflict = Conflict::Keep {
+                                style: ConflictStyle::ZealousDiff3,
+                                marker_size,
+                            }
+                        }
+                        "--ours" => options.conflict = Conflict::ResolveWithOurs,
+                        "--theirs" => options.conflict = Conflict::ResolveWithTheirs,
+                        "--union" => options.conflict = Conflict::ResolveWithUnion,
+                        "--diff-algorithm=histogram" => options.diff_algorithm = imara_diff::Algorithm::Histogram,
                         _ => panic!("Unknown argument to parse into options: '{arg}'"),
                     }
-                }
-                if output.contains("histogram") {
-                    options.diff_algorithm = imara_diff::Algorithm::Histogram;
                 }
 
                 Some(Expectation {
