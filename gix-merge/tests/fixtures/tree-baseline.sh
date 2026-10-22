@@ -573,9 +573,9 @@ git init identical-renames-to-same-destination-with-mode-change
   git branch A
   git branch B
 
-  # The destinations have the same blob ID but differ in executable mode.
-  # Content merging must see those original modes even though the final mode
-  # has already been selected.
+  # The destinations have the same blob ID but differ in executable mode. Without a common
+  # ancestor entry at `target`, the executable bits conflict as in an add/add, and `target`
+  # keeps our mode.
   git checkout A
   git mv one target
   chmod +x target
@@ -586,12 +586,6 @@ git init identical-renames-to-same-destination-with-mode-change
   git checkout B
   git mv two target
   git commit -m "rename two to target"
-
-  # gix treats the identical content as clean and carries the executable mode
-  # selected from A to the shared destination in both merge directions.
-  git checkout -b expected A
-  git rm two
-  git commit -m "expected gix merge"
 )
 
 git init deleted-file-added-dir-with-rename
@@ -1284,6 +1278,7 @@ git init added-file-changed-content-and-mode
   git branch A
   git branch B
   git branch expected
+  git branch expected-reversed
 
   git checkout A
   write_lines 1 2 3 4 5 >new
@@ -1296,11 +1291,159 @@ git init added-file-changed-content-and-mode
   git add --chmod=+x new
   git commit -m "add new with content B and +x"
 
+  # Without an ancestor, the executable bits conflict and `new` keeps our mode. Both sides add
+  # all of their lines, which remain in one conflict hunk.
   git checkout expected
   echo -n $'<<<<<<< A\n1\n2\n3\n4\n5\n=======\noriginal\n1\n2\n3\n4\n5\n6\n>>>>>>> B\n' >new
+  git add new
+  git commit -m "one conflict hunk with A's lines first, and A's mode"
+
+  git checkout expected-reversed
+  echo -n $'<<<<<<< B\noriginal\n1\n2\n3\n4\n5\n6\n=======\n1\n2\n3\n4\n5\n>>>>>>> A\n' >new
   chmod +x new
   git add --chmod=+x new
-  git commit -m "Git has a better merge here, but that's due to better hunk handling/hunk splitting. We, however, consistently use +x"
+  git commit -m "one conflict hunk with B's lines first, and B's mode"
+)
+
+git init executable-bit-merges
+(cd executable-bit-merges
+  # Each top-level directory is one independent merge of executable bits that Git resolves
+  # cleanly, as the mode that only one side changed wins:
+  #
+  # * rename-clears-bit:
+  #   A renames executable `f` to `g` and clears its executable bit; B appends to `f`.
+  #   `g` gets B's content and A's mode.
+  # * modify-clears-bit:
+  #   A renames executable `f` to `g`; B appends to `f` and clears its executable bit.
+  #   `g` gets B's content and B's mode.
+  # * rename-changes-and-clears-bit:
+  #   A renames executable `f` to `g`, prepends to it and clears its executable bit; B appends
+  #   to `f`. `g` gets both changes and A's mode.
+  # * same-rename:
+  #   Both rename executable `f` to `g`; A clears its executable bit and B appends to it.
+  #   `g` gets B's content and A's mode.
+  # * same-change-sets-bit:
+  #   Both change `f` to the same content, and A also sets its executable bit, which `f` keeps.
+  # * same-change-clears-bit:
+  #   Both change executable `f` to the same content, and A also clears its executable bit, which
+  #   stays cleared.
+  #
+  # Distinct repeated words keep rename similarity pairing local to each case.
+  mkdir rename-clears-bit modify-clears-bit rename-changes-and-clears-bit same-rename \
+    same-change-sets-bit same-change-clears-bit
+  write_lines kilo kilo kilo kilo kilo >rename-clears-bit/f
+  write_lines lima lima lima lima lima >modify-clears-bit/f
+  write_lines mike mike mike mike mike >rename-changes-and-clears-bit/f
+  write_lines november november november november november >same-rename/f
+  write_lines oscar >same-change-sets-bit/f
+  write_lines papa >same-change-clears-bit/f
+  chmod +x rename-clears-bit/f modify-clears-bit/f rename-changes-and-clears-bit/f same-rename/f \
+    same-change-clears-bit/f
+  git add .
+  # For this to work on windows, we need explicit executable bit handling.
+  git update-index --chmod=+x rename-clears-bit/f modify-clears-bit/f rename-changes-and-clears-bit/f \
+    same-rename/f same-change-clears-bit/f
+  git commit -m "base"
+
+  git branch A
+  git branch B
+
+  git checkout A
+  git mv rename-clears-bit/f rename-clears-bit/g
+  git mv modify-clears-bit/f modify-clears-bit/g
+  git mv rename-changes-and-clears-bit/f rename-changes-and-clears-bit/g
+  write_lines changed-by-A mike mike mike mike mike >rename-changes-and-clears-bit/g
+  git mv same-rename/f same-rename/g
+  write_lines oscar-changed >same-change-sets-bit/f
+  write_lines papa-changed >same-change-clears-bit/f
+  chmod +x same-change-sets-bit/f
+  chmod -x rename-clears-bit/g rename-changes-and-clears-bit/g same-rename/g same-change-clears-bit/f
+  git add .
+  git update-index --chmod=+x same-change-sets-bit/f
+  git update-index --chmod=-x rename-clears-bit/g rename-changes-and-clears-bit/g same-rename/g \
+    same-change-clears-bit/f
+  git commit -m "A renames files and changes executable bits"
+
+  git checkout B
+  echo changed-by-B >>rename-clears-bit/f
+  echo changed-by-B >>modify-clears-bit/f
+  echo changed-by-B >>rename-changes-and-clears-bit/f
+  echo changed-by-B >>same-rename/f
+  write_lines oscar-changed >same-change-sets-bit/f
+  write_lines papa-changed >same-change-clears-bit/f
+  chmod -x modify-clears-bit/f
+  git add .
+  git update-index --chmod=-x modify-clears-bit/f
+  git mv same-rename/f same-rename/g
+  git commit -m "B changes content, renames one file and clears one executable bit"
+)
+
+git init executable-bit-conflicts
+(cd executable-bit-conflicts
+  # Each top-level directory is one independent merge that Git reports as conflicting, and whose
+  # result depends on how the executable bits merge:
+  #
+  # * different-renames:
+  #   A renames executable `f` to `g` and clears its executable bit; B appends to `f` and renames
+  #   it to `h`. Both destinations of the rename/rename conflict get the merged content and A's
+  #   mode, as only A changed the mode.
+  # * added-with-different-modes:
+  #   Both add the same content at `f`, but only B makes it executable. Without an ancestor entry,
+  #   the executable bits conflict and `f` keeps our mode.
+  # * symlink-replaced-with-different-modes:
+  #   Both replace the symlink `l` with the same content, but only B makes it executable. The
+  #   symlink ancestor has no executable bit, so the executable bits conflict and `l` keeps our
+  #   mode.
+  # * rename-and-addition-with-different-modes:
+  #   A renames `source` to `target`; B adds the same content at `target` and makes it
+  #   executable. The rename destination and the addition have no ancestor entry, so the
+  #   executable bits conflict and `target` keeps our mode.
+  #
+  # Distinct repeated words keep rename similarity pairing local to each case.
+  mkdir different-renames added-with-different-modes symlink-replaced-with-different-modes \
+    rename-and-addition-with-different-modes
+  write_lines quebec quebec quebec quebec quebec >different-renames/f
+  write_lines romeo >added-with-different-modes/existing
+  write_lines sierra >symlink-replaced-with-different-modes/existing
+  write_lines tango tango tango tango tango >rename-and-addition-with-different-modes/source
+  chmod +x different-renames/f
+  git add .
+  git update-index --chmod=+x different-renames/f
+  # The symlink exists only in the index, which works without symlink support as well.
+  git update-index --add --cacheinfo \
+    120000,"$(printf existing | git hash-object -w --stdin)",symlink-replaced-with-different-modes/l
+  git commit -m "base"
+
+  git branch A
+  git branch B
+
+  git checkout A
+  git mv different-renames/f different-renames/g
+  write_lines uniform >added-with-different-modes/f
+  rm -f symlink-replaced-with-different-modes/l
+  write_lines victor >symlink-replaced-with-different-modes/l
+  git rm --cached -q symlink-replaced-with-different-modes/l
+  git mv rename-and-addition-with-different-modes/source rename-and-addition-with-different-modes/target
+  chmod -x different-renames/g
+  git add .
+  git update-index --chmod=-x different-renames/g
+  git commit -m "A renames files, adds a file and replaces the symlink"
+
+  git checkout B
+  echo changed-by-B >>different-renames/f
+  git add different-renames/f
+  git mv different-renames/f different-renames/h
+  write_lines uniform >added-with-different-modes/f
+  rm -f symlink-replaced-with-different-modes/l
+  write_lines victor >symlink-replaced-with-different-modes/l
+  git rm --cached -q symlink-replaced-with-different-modes/l
+  write_lines tango tango tango tango tango >rename-and-addition-with-different-modes/target
+  chmod +x added-with-different-modes/f symlink-replaced-with-different-modes/l \
+    rename-and-addition-with-different-modes/target
+  git add .
+  git update-index --chmod=+x added-with-different-modes/f symlink-replaced-with-different-modes/l \
+    rename-and-addition-with-different-modes/target
+  git commit -m "B renames a file, adds executable files and replaces the symlink with one"
 )
 
 git init type-change-and-renamed
@@ -2291,7 +2434,7 @@ baseline same-rename-with-content A-B A B
 baseline same-rename-and-file-to-directory A-B A B
 baseline renames-to-same-destination A-B A B
 baseline identical-renames-to-same-destination A-B A B
-baseline identical-renames-to-same-destination-with-mode-change A-B A B "gix resolves the identical content and mode change cleanly, while Git leaves an add/add mode conflict"
+baseline identical-renames-to-same-destination-with-mode-change A-B A B
 baseline deleted-file-added-dir-with-rename A-B A B
 baseline deleted-file-replaced-by-renamed-dir A-B A B
 baseline renamed-file-replaced-by-renamed-dir A-B A B
@@ -2316,7 +2459,9 @@ baseline conflicting-rename-complex A-B A B "Git has different rename tracking -
 
 baseline same-rename-different-mode A-B A B "Git works for the A/B case, but for B/A it forgets to set the executable bit"
 baseline renamed-symlink-with-conflict A-B A B
-baseline added-file-changed-content-and-mode A-B A B "We improve on executable bit handling, but loose on diff quality as we are definitely missing some tweaks"
+baseline added-file-changed-content-and-mode A-B A B "Git splits the conflict around the lines both sides share, while gix keeps one hunk"
+baseline executable-bit-merges A-B A B
+baseline executable-bit-conflicts A-B A B
 
 baseline type-change-and-renamed A-B A B
 baseline change-and-delete A-B A B
@@ -2944,12 +3089,6 @@ EOF
 )
 
 (cd identical-renames-to-same-destination-with-mode-change
-  # Git leaves the two destination modes at stages 2 and 3. gix resolves the
-  # identical content and the one-sided executable change into a stage-0 entry.
-  git read-tree expected
-  make_conflict_index identical-renames-to-same-destination-with-mode-change-A-B
-  make_conflict_index identical-renames-to-same-destination-with-mode-change-A-B-reversed
-
   # Ancestor rejects both colliding renames.
   git read-tree main
   make_resolve_tree ancestor A B

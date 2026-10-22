@@ -66,7 +66,8 @@ pub mod treat_as_unresolved {
     /// Which kind of content merges should be considered unresolved?
     #[derive(Default, Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
     pub enum ContentMerge {
-        /// Content merges that still show conflict markers.
+        /// Content merges that still show conflict markers, or whose entries have conflicting executable bits, as Git
+        /// also considers those unresolved.
         #[default]
         Markers,
         /// Content merges who would have conflicted if it wasn't for a
@@ -341,7 +342,8 @@ pub enum Resolution {
     /// We moved the changed blob from *ours* to its new location, and merged it successfully.
     /// If this is a `copy`, the source of the copy was set to be the changed blob as well so both match.
     OursModifiedTheirsRenamedAndChangedThenRename {
-        /// If one side added the executable bit, we always add it in the merged result.
+        /// The mode of the merged result if it differs from the mode of the renamed blob, as the modifying side
+        /// changed the executable bit.
         merged_mode: Option<gix_object::tree::EntryMode>,
         /// If `Some(…)`, the content of the involved blob had to be merged.
         merged_blob: Option<ContentMerge>,
@@ -420,7 +422,9 @@ pub enum ResolutionFailure {
 pub struct ContentMerge {
     /// The fully merged blob.
     pub merged_blob_id: gix_hash::ObjectId,
-    /// Identify the kind of resolution of the blob merge. Note that it may be conflicting.
+    /// Identify the kind of resolution of the blob merge. Note that it may be conflicting, which, as in Git, includes
+    /// merged entries whose executable bits conflict even though their content merged, and the merged entry then has
+    /// *our* mode.
     pub resolution: crate::blob::Resolution,
 }
 

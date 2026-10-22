@@ -388,7 +388,14 @@ pub fn tree<'objects>(
                                 } else {
                                     Swapped
                                 };
-                                if let Some(merged_mode) = merge_modes(*our_mode, *their_mode) {
+                                if modes_are_compatible(*our_mode, *their_mode) {
+                                    // Both changes derive from the entry at the rename source.
+                                    let (merged_mode, modes_merged_cleanly) = merge_modes(
+                                        *our_mode,
+                                        *their_mode,
+                                        Some(*previous_entry_mode),
+                                        side.to_global(outer_side),
+                                    );
                                     let their_rewritten_location = possibly_rewritten_location(
                                         pick(side, our_tree, their_tree),
                                         their_location.as_ref(),
@@ -396,7 +403,7 @@ pub fn tree<'objects>(
                                     );
                                     let renamed_without_change = their_source_id == their_id;
                                     let (merged_blob_id, resolution) = if renamed_without_change {
-                                        (*our_id, None)
+                                        (*our_id, identical_content_resolution(modes_merged_cleanly))
                                     } else {
                                         let (our_location, our_id, our_mode, their_location, their_id, their_mode) =
                                             match side {
@@ -429,6 +436,7 @@ pub fn tree<'objects>(
                                             (0, outer_side),
                                             &options,
                                         )?;
+                                        let resolution = content_resolution(resolution, modes_merged_cleanly);
                                         (merged_blob_id, Some(resolution))
                                     };
 
@@ -501,11 +509,11 @@ pub fn tree<'objects>(
                                     }
                                 }
                             }
-                            // Modify/modify for compatible, non-submodule entries: merge their content and executable
-                            // modes. For example, both sides produce different contents for ancestor blob `script`,
-                            // possibly changing its executable bit as well. If the ancestor had another type, such as a
-                            // symlink both sides replace with blobs, merge those blobs with an empty compatible base
-                            // instead.
+                            // Modify/modify for compatible, non-submodule entries: merge their content and modes. For
+                            // example, both sides produce different contents for ancestor blob `script`, possibly changing
+                            // its executable bit as well, or produce the same content with different executable bits. If
+                            // the ancestor had another type, such as a symlink both sides replace with blobs, merge those
+                            // blobs with an empty compatible base instead, and different executable bits conflict.
                             (
                                 Change::Modification {
                                     location,
@@ -521,50 +529,53 @@ pub fn tree<'objects>(
                                     ..
                                 },
                             ) if !involves_submodule(our_mode, their_mode)
-                                && merge_modes(*our_mode, *their_mode).is_some()
-                                && our_id != their_id =>
+                                && modes_are_compatible(*our_mode, *their_mode) =>
                             {
-                                let previous_is_compatible = merge_modes(*our_mode, *previous_entry_mode).is_some()
-                                    && merge_modes(*their_mode, *previous_entry_mode).is_some();
-                                let merged_mode = if previous_is_compatible {
-                                    merge_modes_prev(*our_mode, *their_mode, *previous_entry_mode)
+                                let (merged_mode, modes_merged_cleanly) =
+                                    merge_modes(*our_mode, *their_mode, Some(*previous_entry_mode), outer_side);
+                                let (merged_blob_id, resolution) = if our_id == their_id {
+                                    // Both sides produced the same content, so only their modes need merging.
+                                    (*our_id, identical_content_resolution(modes_merged_cleanly))
                                 } else {
-                                    merge_modes(*our_mode, *their_mode)
-                                }
-                                .expect("the match guard assures compatible current modes");
-                                let (merge_base_id, merge_base_mode) = if previous_is_compatible {
-                                    (*previous_id, *previous_entry_mode)
-                                } else {
-                                    (previous_id.kind().null(), merged_mode)
+                                    let (merge_base_id, merge_base_mode) =
+                                        if modes_are_compatible(*our_mode, *previous_entry_mode) {
+                                            (*previous_id, *previous_entry_mode)
+                                        } else {
+                                            (previous_id.kind().null(), merged_mode)
+                                        };
+                                    let (merged_blob_id, resolution) = perform_blob_merge(
+                                        labels,
+                                        objects,
+                                        blob_merge,
+                                        &mut diff_state.buf1,
+                                        &mut write_blob_to_odb,
+                                        (location, *our_id, *our_mode),
+                                        (location, *their_id, *their_mode),
+                                        (location, merge_base_id, merge_base_mode),
+                                        (0, outer_side),
+                                        &options,
+                                    )?;
+                                    let resolution = content_resolution(resolution, modes_merged_cleanly);
+                                    (merged_blob_id, Some(resolution))
                                 };
-                                let (merged_blob_id, resolution) = perform_blob_merge(
-                                    labels,
-                                    objects,
-                                    blob_merge,
-                                    &mut diff_state.buf1,
-                                    &mut write_blob_to_odb,
-                                    (location, *our_id, *our_mode),
-                                    (location, *their_id, *their_mode),
-                                    (location, merge_base_id, merge_base_mode),
-                                    (0, outer_side),
-                                    &options,
-                                )?;
 
                                 editor.upsert(toc(location), merged_mode.kind(), merged_blob_id)?;
-                                if should_fail_on_conflict(Conflict::with_resolution(
-                                    Resolution::OursModifiedTheirsModifiedThenBlobContentMerge {
-                                        merged_blob: ContentMerge {
-                                            resolution,
-                                            merged_blob_id,
+                                if let Some(resolution) = resolution
+                                    && should_fail_on_conflict(Conflict::with_resolution(
+                                        Resolution::OursModifiedTheirsModifiedThenBlobContentMerge {
+                                            merged_blob: ContentMerge {
+                                                resolution,
+                                                merged_blob_id,
+                                            },
                                         },
-                                    },
-                                    (ours, theirs, Original, outer_side),
-                                    [
-                                        index_entry(previous_entry_mode, previous_id),
-                                        index_entry(our_mode, our_id),
-                                        index_entry(their_mode, their_id),
-                                    ],
-                                )) {
+                                        (ours, theirs, Original, outer_side),
+                                        [
+                                            index_entry(previous_entry_mode, previous_id),
+                                            index_entry(our_mode, our_id),
+                                            index_entry(their_mode, their_id),
+                                        ],
+                                    ))
+                                {
                                     break 'outer;
                                 }
                             }
@@ -814,9 +825,10 @@ pub fn tree<'objects>(
                                 }
                             }
                             // Add/add at one path: compatible non-submodule types use a two-way content merge with an
-                            // empty ancestor; incompatible types keep the symlink/tree there and relocate the other entry.
-                            // For example, two different blobs added at `file` are content-merged, while a symlink and blob
-                            // both added at `file` are retained at separate paths.
+                            // empty ancestor, which leaves different executable bits in conflict; incompatible types keep
+                            // the symlink/tree there and relocate the other entry. For example, two different blobs added at
+                            // `file` are content-merged, while a symlink and blob both added at `file` are retained at
+                            // separate paths.
                             (
                                 Change::Addition {
                                     location,
@@ -829,25 +841,27 @@ pub fn tree<'objects>(
                                     id: their_id,
                                     ..
                                 },
-                            ) if !involves_submodule(our_mode, their_mode) && our_id != their_id => {
-                                let conflict = if let Some(merged_mode) = merge_modes(*our_mode, *their_mode) {
-                                    let side = if our_mode == their_mode || matches!(our_mode.kind(), EntryKind::Blob) {
-                                        outer_side
+                            ) if !involves_submodule(our_mode, their_mode) => {
+                                let conflict = if modes_are_compatible(*our_mode, *their_mode) {
+                                    let (merged_mode, modes_merged_cleanly) =
+                                        merge_modes(*our_mode, *their_mode, None, outer_side);
+                                    let (merged_blob_id, resolution) = if our_id == their_id {
+                                        (*our_id, crate::blob::Resolution::Complete)
                                     } else {
-                                        outer_side.swapped()
+                                        perform_blob_merge(
+                                            labels,
+                                            objects,
+                                            blob_merge,
+                                            &mut diff_state.buf1,
+                                            &mut write_blob_to_odb,
+                                            (location, *our_id, merged_mode),
+                                            (location, *their_id, merged_mode),
+                                            (location, their_id.kind().null(), merged_mode),
+                                            (0, outer_side),
+                                            &options,
+                                        )?
                                     };
-                                    let (merged_blob_id, resolution) = perform_blob_merge(
-                                        labels,
-                                        objects,
-                                        blob_merge,
-                                        &mut diff_state.buf1,
-                                        &mut write_blob_to_odb,
-                                        (location, *our_id, merged_mode),
-                                        (location, *their_id, merged_mode),
-                                        (location, their_id.kind().null(), merged_mode),
-                                        (0, side),
-                                        &options,
-                                    )?;
+                                    let resolution = content_resolution(resolution, modes_merged_cleanly);
                                     editor.upsert(toc(location), merged_mode.kind(), merged_blob_id)?;
                                     Conflict::with_resolution(
                                         Resolution::OursModifiedTheirsModifiedThenBlobContentMerge {
@@ -1292,7 +1306,9 @@ pub fn tree<'objects>(
                                         editor.remove_if_leaf(toc(their_source_location))?;
                                         our_tree.remove_change(our_source_location.as_bstr());
                                         their_tree.remove_change(their_source_location.as_bstr());
-                                        let conflict = if let Some(merged_mode) = merge_modes(*our_mode, *their_mode) {
+                                        let conflict = if modes_are_compatible(*our_mode, *their_mode) {
+                                            let (merged_mode, modes_merged_cleanly) =
+                                                merge_modes(*our_mode, *their_mode, None, outer_side);
                                             let (merged_blob_id, resolution) = perform_blob_merge(
                                                 labels,
                                                 objects,
@@ -1305,6 +1321,7 @@ pub fn tree<'objects>(
                                                 (0, outer_side),
                                                 &options,
                                             )?;
+                                            let resolution = content_resolution(resolution, modes_merged_cleanly);
                                             editor.upsert(toc(location), merged_mode.kind(), merged_blob_id)?;
                                             Conflict::with_resolution(
                                                 Resolution::OursModifiedTheirsModifiedThenBlobContentMerge {
@@ -1559,10 +1576,12 @@ pub fn tree<'objects>(
                                 },
                             ) if ((our_mode.is_blob_or_symlink() && their_mode.is_blob_or_symlink())
                                 || (our_mode.is_commit() && their_mode.is_commit() && our_id == their_id))
-                                && merge_modes(*our_mode, *their_mode).is_some() =>
+                                && modes_are_compatible(*our_mode, *their_mode) =>
                             {
+                                let (merged_mode, modes_merged_cleanly) =
+                                    merge_modes(*our_mode, *their_mode, Some(*source_entry_mode), outer_side);
                                 let (merged_blob_id, mut resolution) = if our_id == their_id {
-                                    (*our_id, None)
+                                    (*our_id, identical_content_resolution(modes_merged_cleanly))
                                 } else {
                                     let (id, resolution) = perform_blob_merge(
                                         labels,
@@ -1576,11 +1595,9 @@ pub fn tree<'objects>(
                                         (u8::from(our_location != their_location), outer_side),
                                         &options,
                                     )?;
+                                    let resolution = content_resolution(resolution, modes_merged_cleanly);
                                     (id, Some(resolution))
                                 };
-
-                                let merged_mode =
-                                    merge_modes(*our_mode, *their_mode).expect("this case was assured earlier");
 
                                 if matches!(resolve_tree_conflicts, None | Some(ResolveWith::Ours)) {
                                     editor.remove_if_leaf(toc(source_location))?;
@@ -1620,12 +1637,12 @@ pub fn tree<'objects>(
                                                 ConflictIndexEntryPathHint::Source,
                                             ),
                                             index_entry_at_path(
-                                                our_mode,
+                                                &merged_mode,
                                                 &merged_blob_id,
                                                 ConflictIndexEntryPathHint::Current,
                                             ),
                                             index_entry_at_path(
-                                                their_mode,
+                                                &merged_mode,
                                                 &merged_blob_id,
                                                 ConflictIndexEntryPathHint::RenamedOrTheirs,
                                             ),
@@ -1866,9 +1883,14 @@ pub fn tree<'objects>(
                                         }
                                         Some(ResolveWith::Ancestor) => {}
                                     }
-                                } else if let Some(merged_mode) = merge_modes(*our_mode, *their_mode) {
+                                } else if modes_are_compatible(*our_mode, *their_mode) {
+                                    // The rename destination and the addition have no common ancestor entry. The `our_*`
+                                    // bindings belong to the rename, which `side` maps to its global side for the modes, the
+                                    // content merge and the conflict's index entries alike.
+                                    let (merged_mode, modes_merged_cleanly) =
+                                        merge_modes(*our_mode, *their_mode, None, side.to_global(outer_side));
                                     let (merged_blob_id, resolution) = if our_id == their_id {
-                                        (*our_id, None)
+                                        (*our_id, identical_content_resolution(modes_merged_cleanly))
                                     } else {
                                         let (id, resolution) = perform_blob_merge(
                                             labels,
@@ -1879,9 +1901,10 @@ pub fn tree<'objects>(
                                             (location, *our_id, *our_mode),
                                             (location, *their_id, *their_mode),
                                             (source_location, source_id.kind().null(), *source_entry_mode),
-                                            (0, outer_side),
+                                            (0, side.to_global(outer_side)),
                                             &options,
                                         )?;
+                                        let resolution = content_resolution(resolution, modes_merged_cleanly);
                                         (id, Some(resolution))
                                     };
 
@@ -1896,7 +1919,7 @@ pub fn tree<'objects>(
                                                     merged_blob_id,
                                                 },
                                             },
-                                            (ours, theirs, Original, outer_side),
+                                            (ours, theirs, side, outer_side),
                                             [None, index_entry(our_mode, our_id), index_entry(their_mode, their_id)],
                                         ))
                                     {
@@ -2061,41 +2084,48 @@ fn involves_submodule(a: &EntryMode, b: &EntryMode) -> bool {
     a.is_commit() || b.is_commit()
 }
 
-/// Merge two modes without a common ancestor: retain equal modes and, for two blob modes, prefer executable.
+/// Return `true` if entries with modes `a` and `b` can be merged as they have the same type, allowing blobs to differ in
+/// their executable bit.
+fn modes_are_compatible(a: EntryMode, b: EntryMode) -> bool {
+    a.kind() == b.kind() || (a.is_blob() && b.is_blob())
+}
+
+/// Merge the modes `a` and `b` of [compatible](modes_are_compatible()) entries as Git does, and return the merged mode
+/// along with `true` if the modes merged cleanly.
 ///
-/// This is suitable for add/add and other pairs without a single shared source mode. If both changes derive from the
-/// same entry, use [`merge_modes_prev()`] so a mode changed on one side wins over the unchanged ancestor mode.
-fn merge_modes(a: EntryMode, b: EntryMode) -> Option<EntryMode> {
-    match (a.kind(), b.kind()) {
-        (_, _) if a == b => Some(a),
-        (EntryKind::BlobExecutable, EntryKind::BlobExecutable | EntryKind::Blob)
-        | (EntryKind::Blob, EntryKind::BlobExecutable) => Some(EntryKind::BlobExecutable.into()),
-        _ => None,
+/// `ancestor` is the mode of the entry both sides changed, or `None` if both added their entry, and `a_side` is
+/// `Original` if `a` belongs to *our* side, or `Swapped` if it belongs to *their* side. A mode that only one side changed
+/// wins. Blobs with different executable bits whose ancestor is missing or not a blob keep *our* mode, and their merge
+/// conflicts.
+fn merge_modes(a: EntryMode, b: EntryMode, ancestor: Option<EntryMode>, a_side: ConflictMapping) -> (EntryMode, bool) {
+    let (ours, theirs) = match a_side {
+        Original => (a, b),
+        Swapped => (b, a),
+    };
+    let ancestor = ancestor.map(|mode| mode.kind());
+    if ours.kind() == theirs.kind() || Some(ours.kind()) == ancestor {
+        (theirs, true)
+    } else {
+        (ours, Some(theirs.kind()) == ancestor)
     }
 }
 
-/// Merge modes derived from the same ancestor mode, `prev`.
+/// Return the `resolution` of a content merge if the modes of the merged entries merged cleanly, or a conflict otherwise.
 ///
-/// Equal modes are retained. If blob modes differ only in their executable bit, the side that differs from `prev` wins,
-/// preserving either a one-sided enable or disable of that bit.
-fn merge_modes_prev(a: EntryMode, b: EntryMode, prev: EntryMode) -> Option<EntryMode> {
-    match (a.kind(), b.kind()) {
-        (_, _) if a == b => Some(a),
-        (a @ EntryKind::BlobExecutable, b @ (EntryKind::BlobExecutable | EntryKind::Blob))
-        | (a @ EntryKind::Blob, b @ EntryKind::BlobExecutable) => {
-            let prev = prev.kind();
-            let changed = if a == prev { b } else { a };
-            Some(
-                match (prev, changed) {
-                    (EntryKind::Blob, EntryKind::BlobExecutable) => EntryKind::BlobExecutable,
-                    (EntryKind::BlobExecutable, EntryKind::Blob) => EntryKind::Blob,
-                    _ => unreachable!("upper match already assured we only deal with blobs"),
-                }
-                .into(),
-            )
-        }
-        _ => None,
+/// Like Git, report conflicting executable bits as a conflicting content merge, which no conflict resolution strategy of
+/// the content merge resolves.
+fn content_resolution(resolution: crate::blob::Resolution, modes_merged_cleanly: bool) -> crate::blob::Resolution {
+    if modes_merged_cleanly {
+        resolution
+    } else {
+        crate::blob::Resolution::Conflict
     }
+}
+
+/// Return the resolution of merged entries with identical content: none if their modes merged cleanly, as nothing needed
+/// merging, or a conflicting content merge otherwise, as Git reports conflicting executable bits.
+fn identical_content_resolution(modes_merged_cleanly: bool) -> Option<crate::blob::Resolution> {
+    (!modes_merged_cleanly).then_some(crate::blob::Resolution::Conflict)
 }
 
 fn push_deferred(change_and_idx: (Change, Option<usize>), changes: &mut ChangeList) {
