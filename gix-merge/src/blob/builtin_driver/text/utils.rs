@@ -1,487 +1,494 @@
-use std::{iter::Peekable, ops::Range};
+use std::{collections::HashMap, ops::Range};
 
-use bstr::{BStr, ByteSlice, ByteVec};
+use bstr::BStr;
+use imara_diff::{Algorithm, Diff, Hunk, Interner, NoSliderHeuristic, Token};
 
-use crate::blob::builtin_driver::text::ConflictStyle;
+use crate::blob::builtin_driver::text::{ConflictStyle, Labels};
 
-/// Used only when `diff3` is the conflict style as `zdiff3` automatically reduces hunks into nothing.
-/// Here we check if all hunks are the same.
-pub fn hunks_differ_in_diff3(
-    style: ConflictStyle,
-    a: &[Hunk],
-    b: &[Hunk],
-    input: &imara_diff::InternedInput<&[u8]>,
-    current_tokens: &[imara_diff::Token],
-) -> bool {
-    if style != ConflictStyle::Diff3 {
-        return true;
-    }
-
-    let tokens_for_hunk = |hunk: &Hunk| -> &[imara_diff::Token] {
-        &tokens_for_side(hunk.side, input, current_tokens)[hunk.after.start as usize..hunk.after.end as usize]
-    };
-
-    a.iter()
-        .flat_map(tokens_for_hunk)
-        .ne(b.iter().flat_map(tokens_for_hunk))
-}
-
-pub fn contains_lines(hunks: &[Hunk]) -> bool {
-    hunks.iter().any(|h| !h.after.is_empty())
-}
-
-/// ## Deviation
-///
-/// This implementation definitely isn't the same as in Git, primarily because it seemed impossible
-/// to understand what's going on there without investing more time than it seemed worth.
-pub fn detect_line_ending(
-    hunks: &[Hunk],
-    input: &imara_diff::InternedInput<&[u8]>,
-    current_tokens: &[imara_diff::Token],
-) -> Option<&'static BStr> {
-    fn is_eol_crlf(
-        hunks: &[Hunk],
-        input: &imara_diff::InternedInput<&[u8]>,
-        current_tokens: &[imara_diff::Token],
-    ) -> Option<bool> {
-        let (range, side) = hunks.iter().rev().find_map(|h| {
-            (!h.after.is_empty())
-                .then_some((&h.after, h.side))
-                .or((!h.before.is_empty()).then_some((&h.before, Side::Ancestor)))
-        })?;
-
-        let tokens = tokens_for_side(side, input, current_tokens);
-        {
-            let last_line = tokens
-                .get(range.end as usize - 1)
-                .map(|token| &input.interner[*token])?;
-            if last_line.last() == Some(&b'\n') {
-                return last_line.get(last_line.len().checked_sub(2)?).map(|c| *c == b'\r');
-            }
-        }
-        let second_to_last_line = tokens
-            .get(range.end.checked_sub(2)? as usize)
-            .map(|token| &input.interner[*token])?;
-        second_to_last_line
-            .get(second_to_last_line.len().checked_sub(2)?)
-            .map(|c| *c == b'\r')
-    }
-    is_eol_crlf(hunks, input, current_tokens).map(|is_crlf| if is_crlf { b"\r\n".into() } else { b"\n".into() })
-}
-
-pub fn detect_line_ending_or_nl(
-    hunks: &[Hunk],
-    input: &imara_diff::InternedInput<&[u8]>,
-    current_tokens: &[imara_diff::Token],
-) -> &'static BStr {
-    detect_line_ending(hunks, input, current_tokens).unwrap_or(b"\n".into())
-}
-
-fn tokens_for_side<'a>(
-    side: Side,
-    input: &'a imara_diff::InternedInput<&[u8]>,
-    current_tokens: &'a [imara_diff::Token],
-) -> &'a [imara_diff::Token] {
-    match side {
-        Side::Current => current_tokens,
-        Side::Other => &input.after,
-        Side::Ancestor => &input.before,
-    }
-}
-
-pub fn assure_ends_with_nl(out: &mut Vec<u8>, nl: &BStr) {
-    if !out.is_empty() && !out.ends_with(b"\n") {
-        out.push_str(nl);
-    }
-}
-
-pub fn write_conflict_marker(out: &mut Vec<u8>, marker: u8, label: Option<&BStr>, marker_size: u8, nl: &BStr) {
-    assure_ends_with_nl(out, nl);
-    out.extend(std::iter::repeat_n(marker, marker_size as usize));
-    if let Some(label) = label {
-        out.push(b' ');
-        out.extend_from_slice(label);
-    }
-    out.push_str(nl);
-}
-
-pub fn write_ancestor(input: &imara_diff::InternedInput<&[u8]>, from: u32, to: usize, out: &mut Vec<u8>) {
-    if to < from as usize {
-        return;
-    }
-    if let Some(tokens) = input.before.get(from as usize..to) {
-        write_tokens(&input.interner, tokens, out);
-    }
-}
-
-/// Look at all hunks in `in_out` and fill in the ancestor in the range of `ancestor_range`.
-/// This is all based on knowing the ranges are sequences of tokens.
-pub fn fill_ancestor(Range { start, end }: &Range<u32>, in_out: &mut Vec<Hunk>) {
-    fn is_nonzero(num: &u32) -> bool {
-        *num > 0
-    }
-    if in_out.is_empty() {
-        return;
-    }
-    let first = &in_out[0];
-    let mut first_idx = 0;
-    if let Some(lines_to_add) = first.before.start.checked_sub(*start).filter(is_nonzero) {
-        in_out.insert(0, ancestor_hunk(*start, lines_to_add));
-        first_idx += 1;
-    }
-
-    let mut added_hunks = false;
-    for (idx, next_idx) in (first_idx..in_out.len()).map(|idx| (idx, idx + 1)) {
-        let Some(next_hunk) = in_out.get(next_idx) else { break };
-        let hunk = &in_out[idx];
-        if let Some(lines_to_add) = next_hunk.before.start.checked_sub(hunk.before.end).filter(is_nonzero) {
-            in_out.push(ancestor_hunk(hunk.before.end, lines_to_add));
-            added_hunks = true;
-        }
-    }
-    let in_out_len = in_out.len();
-    if added_hunks {
-        in_out[first_idx..in_out_len].sort_by_key(|hunk| hunk.before.start);
-    }
-
-    let last = &in_out[in_out_len - 1];
-    if let Some(lines_to_add) = end.checked_sub(last.before.end).filter(is_nonzero) {
-        in_out.push(ancestor_hunk(last.before.end, lines_to_add));
-    }
-}
-
-fn ancestor_hunk(start: u32, num_lines: u32) -> Hunk {
-    let range = start..start + num_lines;
-    Hunk {
-        before: range.clone(),
-        after: range,
-        side: Side::Ancestor,
-    }
-}
-
-/// Reduce the area of `a_hunks` and the hunks in `b_hunks` so that only those lines that are
-/// actually different remain. Note that we have to compare the resolved values, not only the tokens,
-/// so `current_tokens` is expected to be known to the `input` (and its `interner`).
-/// Hunks from all input arrays maybe removed in the process from the front and back, in case they
-/// are entirely equal to each other.
-/// Note also that `a_hunks` and `b_hunks` are treated to be consecutive, so [`fill_ancestor()`] must
-/// have been called beforehand, and are assumed to cover the same space in the ancestor buffer.
-///
-/// Return a new vector of all the hunks that were removed from front and back, with partial hunks inserted,
-/// along with the amount of hunks that go front, with the remaining going towards the back.
-#[must_use]
-pub fn zealously_contract_hunks(
-    a_hunks: &mut Vec<Hunk>,
-    b_hunks: &mut Vec<Hunk>,
-    input: &imara_diff::InternedInput<&[u8]>,
-    current_tokens: &[imara_diff::Token],
-) -> (Vec<Hunk>, usize) {
-    let line_content = |token_idx: u32, side: Side| {
-        let tokens = match side {
-            Side::Current => current_tokens,
-            Side::Other => &input.after,
-            Side::Ancestor => &input.before,
-        };
-        &input.interner[tokens[token_idx as usize]]
-    };
-    let (mut last_a_hunk_idx, mut last_b_hunk_idx) = (0, 0);
-    let (mut out, hunks_in_front) = {
-        let (mut remove_leading_a_hunks_from, mut remove_leading_b_hunks_from) = (None, None);
-        let (mut a_hunk_token_equal_till, mut b_hunk_token_equal_till) = (None, None);
-        for ((a_token_idx, a_hunk_idx, a_hunk_side), (b_token_idx, b_hunk_idx, b_hunk_side)) in
-            iterate_hunks(a_hunks).zip(iterate_hunks(b_hunks))
-        {
-            let a_line = line_content(a_token_idx, a_hunk_side).as_bstr();
-            let b_line = line_content(b_token_idx, b_hunk_side).as_bstr();
-
-            if last_a_hunk_idx != a_hunk_idx {
-                a_hunk_token_equal_till = None;
-                last_a_hunk_idx = a_hunk_idx;
-            }
-            if last_b_hunk_idx != b_hunk_idx {
-                b_hunk_token_equal_till = None;
-                last_b_hunk_idx = b_hunk_idx;
-            }
-            if a_line == b_line {
-                (remove_leading_a_hunks_from, remove_leading_b_hunks_from) = (Some(a_hunk_idx), Some(b_hunk_idx));
-                (a_hunk_token_equal_till, b_hunk_token_equal_till) = (Some(a_token_idx), Some(b_token_idx));
-            } else {
-                break;
-            }
-        }
-
-        let mut out = Vec::with_capacity(
-            remove_leading_a_hunks_from.unwrap_or_else(|| if a_hunk_token_equal_till.is_some() { 1 } else { 0 }),
-        );
-        truncate_hunks_from_from_front(
-            a_hunks,
-            remove_leading_a_hunks_from,
-            a_hunk_token_equal_till,
-            Some(&mut out),
-        );
-        truncate_hunks_from_from_front(b_hunks, remove_leading_b_hunks_from, b_hunk_token_equal_till, None);
-        let hunks_in_front = out.len();
-        (out, hunks_in_front)
-    };
-
-    (last_a_hunk_idx, last_b_hunk_idx) = (0, 0);
-    {
-        let (mut remove_trailing_a_hunks_from, mut remove_trailing_b_hunks_from) = (None, None);
-        let (mut a_hunk_token_equal_from, mut b_hunk_token_equal_from) = (None, None);
-        for ((a_token_idx, a_hunk_idx, a_hunk_side), (b_token_idx, b_hunk_idx, b_hunk_side)) in
-            iterate_hunks_rev(a_hunks).zip(iterate_hunks_rev(b_hunks))
-        {
-            let a_line = line_content(a_token_idx, a_hunk_side).as_bstr();
-            let b_line = line_content(b_token_idx, b_hunk_side).as_bstr();
-
-            if last_a_hunk_idx != a_hunk_idx {
-                a_hunk_token_equal_from = None;
-                last_a_hunk_idx = a_hunk_idx;
-            }
-            if last_b_hunk_idx != b_hunk_idx {
-                b_hunk_token_equal_from = None;
-                last_b_hunk_idx = b_hunk_idx;
-            }
-
-            if a_line == b_line {
-                (remove_trailing_a_hunks_from, remove_trailing_b_hunks_from) = (Some(a_hunk_idx), Some(b_hunk_idx));
-                (a_hunk_token_equal_from, b_hunk_token_equal_from) = (Some(a_token_idx), Some(b_token_idx));
-            } else {
-                break;
-            }
-        }
-
-        truncate_hunks_from_from_back(
-            a_hunks,
-            remove_trailing_a_hunks_from,
-            a_hunk_token_equal_from,
-            Some(&mut out),
-        );
-        truncate_hunks_from_from_back(b_hunks, remove_trailing_b_hunks_from, b_hunk_token_equal_from, None);
-    }
-
-    (out, hunks_in_front)
-}
-
-fn range_by_side(hunk: &mut Hunk) -> &mut Range<u32> {
-    match hunk.side {
-        Side::Current | Side::Other => &mut hunk.after,
-        Side::Ancestor => &mut hunk.before,
-    }
-}
-fn truncate_hunks_from_from_front(
-    hunks: &mut Vec<Hunk>,
-    hunks_to_remove_until_idx: Option<usize>,
-    hunk_token_equal_till: Option<u32>,
-    mut out_hunks: Option<&mut Vec<Hunk>>,
-) {
-    let Some(hunks_to_remove_until_idx) = hunks_to_remove_until_idx else {
-        assert!(hunk_token_equal_till.is_none());
-        return;
-    };
-    let mut last_index_to_remove = Some(hunks_to_remove_until_idx);
-    let hunk = &mut hunks[hunks_to_remove_until_idx];
-    let range = range_by_side(hunk);
-    if let Some(hunk_token_equal_till) = hunk_token_equal_till {
-        let orig_start = range.start;
-        let new_start = hunk_token_equal_till + 1;
-        range.start = new_start;
-        if Range::<u32>::is_empty(range) {
-            range.start = orig_start;
-        } else if let Some(out) = out_hunks.as_deref_mut() {
-            last_index_to_remove = hunks_to_remove_until_idx.checked_sub(1);
-            let mut removed_hunk = hunk.clone();
-            let new_range = range_by_side(&mut removed_hunk);
-
-            new_range.start = orig_start;
-            new_range.end = new_start;
-
-            out.push(removed_hunk);
-        } else {
-            last_index_to_remove = hunks_to_remove_until_idx.checked_sub(1);
-        }
-    }
-    if let Some(last_index_to_remove) = last_index_to_remove {
-        let mut current_idx = 0;
-        hunks.retain(|hunk| {
-            if current_idx > last_index_to_remove {
-                true
-            } else {
-                current_idx += 1;
-                if let Some(out) = out_hunks.as_deref_mut() {
-                    out.push(hunk.clone());
-                }
-                false
-            }
-        });
-    }
-}
-
-fn truncate_hunks_from_from_back(
-    hunks: &mut Vec<Hunk>,
-    remove_trailing_hunks_from_idx: Option<usize>,
-    hunk_token_equal_from: Option<u32>,
-    mut out_hunks: Option<&mut Vec<Hunk>>,
-) {
-    let Some(mut remove_trailing_hunks_from_idx) = remove_trailing_hunks_from_idx else {
-        assert!(hunk_token_equal_from.is_none());
-        return;
-    };
-
-    let hunk = &mut hunks[remove_trailing_hunks_from_idx];
-    let range = range_by_side(hunk);
-    if let Some(hunk_token_equal_from) = hunk_token_equal_from {
-        let orig_end = range.end;
-        let new_end = hunk_token_equal_from;
-        range.end = new_end;
-        if Range::<u32>::is_empty(range) {
-            range.end = orig_end;
-        } else if let Some(out) = out_hunks.as_deref_mut() {
-            remove_trailing_hunks_from_idx += 1;
-            let mut removed_hunk = hunk.clone();
-            let new_range = range_by_side(&mut removed_hunk);
-
-            new_range.start = new_end;
-            new_range.end = orig_end;
-
-            out.push(removed_hunk);
-        } else {
-            remove_trailing_hunks_from_idx += 1;
-        }
-    }
-    if let Some(out) = out_hunks {
-        out.extend_from_slice(&hunks[remove_trailing_hunks_from_idx..]);
-    }
-    hunks.truncate(remove_trailing_hunks_from_idx);
-}
-
-/// Return an iterator over `(token_idx, hunk_idx, hunk_side)` from `hunks`.
-fn iterate_hunks(hunks: &[Hunk]) -> impl Iterator<Item = (u32, usize, Side)> + '_ {
-    hunks.iter().enumerate().flat_map(|(hunk_idx, hunk)| {
-        match hunk.side {
-            Side::Current | Side::Other => &hunk.after,
-            Side::Ancestor => &hunk.before,
-        }
-        .clone()
-        .map(move |idx| (idx, hunk_idx, hunk.side))
-    })
-}
-
-/// Return a reverse iterator over `(token_idx, hunk_idx, hunk_side)` from `hunks`.
-fn iterate_hunks_rev(hunks: &[Hunk]) -> impl Iterator<Item = (u32, usize, Side)> + '_ {
-    hunks.iter().enumerate().rev().flat_map(|(hunk_idx, hunk)| {
-        match hunk.side {
-            Side::Current | Side::Other => &hunk.after,
-            Side::Ancestor => &hunk.before,
-        }
-        .clone()
-        .rev()
-        .map(move |idx| (idx, hunk_idx, hunk.side))
-    })
-}
-
-pub fn write_hunks(
-    hunks: &[Hunk],
-    input: &imara_diff::InternedInput<&[u8]>,
-    current_tokens: &[imara_diff::Token],
-    out: &mut Vec<u8>,
-) {
-    for hunk in hunks {
-        let (tokens, range) = match hunk.side {
-            Side::Current => (current_tokens, &hunk.after),
-            Side::Other => (input.after.as_slice(), &hunk.after),
-            Side::Ancestor => (input.before.as_slice(), &hunk.before),
-        };
-        write_tokens(&input.interner, &tokens[usize_range(range)], out);
-    }
-}
-
-fn usize_range(range: &Range<u32>) -> Range<usize> {
-    range.start as usize..range.end as usize
-}
-
-fn write_tokens(interner: &imara_diff::Interner<&[u8]>, tokens: &[imara_diff::Token], out: &mut Vec<u8>) {
-    for token in tokens {
-        out.extend_from_slice(interner[*token]);
-    }
-}
-
-/// Find all hunks in `iter` which aren't from the same side as `hunk` and intersect with it.
-/// Also put `hunk` into `input` so it's the first item, and possibly put more hunks of the side of `hunk` so
-/// `iter` doesn't have any overlapping hunks left.
-/// Return `Some` if `intersecting` is non-empty after the operation, indicating overlapping hunks were found.
-pub fn take_intersecting(
-    iter: &mut Peekable<impl Iterator<Item = Hunk>>,
-    input: &mut Vec<Hunk>,
-    intersecting: &mut Vec<Hunk>,
-) -> Option<()> {
-    input.clear();
-    input.push(iter.next()?);
-    intersecting.clear();
-
-    fn left_overlaps_right(left: &Hunk, right: &Hunk) -> bool {
-        // Like Git, consider changes disjoint only if there is a gap between their base ranges.
-        left.side != right.side && left.before.start <= right.before.end
-    }
-
-    loop {
-        let hunk = input.last().expect("just pushed");
-        while iter.peek().filter(|b_hunk| left_overlaps_right(b_hunk, hunk)).is_some() {
-            intersecting.extend(iter.next());
-        }
-        // The hunks that overlap might themselves overlap with a following hunk of the other side.
-        // If so, split it so it doesn't overlap anymore.
-        let mut found_more_intersections = false;
-        while intersecting
-            .last_mut()
-            .zip(iter.peek_mut())
-            .filter(|(last_intersecting, candidate)| left_overlaps_right(candidate, last_intersecting))
-            .is_some()
-        {
-            input.extend(iter.next());
-            found_more_intersections = true;
-        }
-        if !found_more_intersections {
-            break;
-        }
-    }
-    Some(())
-}
-
+/// Split `input` into lines that keep their line endings.
 pub fn tokens(input: &[u8]) -> imara_diff::sources::ByteLines<'_> {
     imara_diff::sources::byte_lines(input)
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum Side {
+/// Return the changes that turn `before` into `after` according to `algorithm`, where every token of both
+/// is less than `num_tokens`.
+///
+/// Like Git's merges, slide ambiguous changes as far down as possible without the indentation heuristic
+/// of `git diff`, as their position decides whether the changes of both sides overlap.
+pub fn diff(algorithm: Algorithm, before: &[Token], after: &[Token], num_tokens: u32) -> Vec<Hunk> {
+    let mut diff = Diff::default();
+    diff.compute_with(algorithm, before, after, num_tokens);
+    diff.postprocess_with(before, after, NoSliderHeuristic);
+    diff.hunks().collect()
+}
+
+/// `len` consecutive lines from line `start` on.
+///
+/// Both are signed like the line numbers in Git's merge, whose computations pass through negative offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lines {
+    pub start: i64,
+    pub len: i64,
+}
+
+impl Lines {
+    /// The lines in `range`.
+    fn in_range(range: &Range<u32>) -> Self {
+        Lines::between(range.start.into(), range.end.into())
+    }
+
+    /// The lines from line `start` up to, but not including, line `end`.
+    fn between(start: i64, end: i64) -> Self {
+        Lines {
+            start,
+            len: end - start,
+        }
+    }
+
+    /// All lines of `tokens`.
+    fn all(tokens: &[Token]) -> Self {
+        Lines {
+            start: 0,
+            len: tokens.len() as i64,
+        }
+    }
+
+    /// The line after the last one.
+    fn end(self) -> i64 {
+        self.start + self.len
+    }
+
+    /// Return the tokens of these lines in `tokens`, or `None` if they aren't all within it.
+    fn of(self, tokens: &[Token]) -> Option<&[Token]> {
+        tokens.get(usize::try_from(self.start).ok()?..usize::try_from(self.end()).ok()?)
+    }
+}
+
+/// What the merge result contains for a [`Region`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// The lines of both sides between conflict markers, as both sides changed the region differently.
+    Conflict,
+    /// The lines of the current side.
     Current,
+    /// The lines of the other side.
     Other,
-    /// A special marker that is just used to be able to mix-in hunks that only point to the ancestor.
-    /// Only `before` matters then.
-    Ancestor,
+    /// The lines of the current side followed by the lines of the other side.
+    Both,
+    /// The lines of the current side, which are the same as those of the other side.
+    Identical,
 }
 
-#[derive(Debug, Clone)]
-pub struct Hunk {
-    pub before: Range<u32>,
-    pub after: Range<u32>,
-    pub side: Side,
+/// Lines of the ancestor that one or both sides changed, and the lines of each side in their place.
+///
+/// The lines of a side that didn't change the ancestor lines are its copy of them.
+#[derive(Debug, Clone, Copy)]
+pub struct Region {
+    pub mode: Mode,
+    pub ancestor: Lines,
+    pub current: Lines,
+    pub other: Lines,
 }
 
-pub fn collect_hunks(
-    algorithm: imara_diff::Algorithm,
-    input: &imara_diff::InternedInput<&[u8]>,
-    side: Side,
-    mut hunks: Vec<Hunk>,
-) -> Vec<Hunk> {
-    let mut diff = imara_diff::Diff::compute(algorithm, input);
-    // Like Git's merges, slide ambiguous changes as far down as possible without the indentation heuristic
-    // of `git diff`, as their position decides whether the changes of both sides overlap.
-    diff.postprocess_no_heuristic(input);
-    hunks.extend(diff.hunks().map(|hunk| Hunk {
-        before: hunk.before,
-        after: hunk.after,
-        side,
-    }));
-    hunks
+/// Combine the changes that turn `ancestor` into `current` and into `other` into the regions of the merge
+/// result, as Git's `xdl_do_merge()` does.
+///
+/// A change that at least one unchanged ancestor line separates from the changes of the other side becomes
+/// a region with the lines of its side. Other changes conflict, unless both sides replaced the same ancestor
+/// lines with the same lines, which leaves nothing to merge. A region that starts within or right after the
+/// previous one on either side extends that one, which then conflicts if their modes differ.
+pub fn combine_changes(
+    current_changes: &[Hunk],
+    other_changes: &[Hunk],
+    ancestor: &[Token],
+    current: &[Token],
+    other: &[Token],
+) -> Vec<Region> {
+    let mut regions = Vec::new();
+    let (mut current_idx, mut other_idx) = (0, 0);
+    while let (Some(current_change), Some(other_change)) =
+        (current_changes.get(current_idx), other_changes.get(other_idx))
+    {
+        let (current_ancestor, current_lines) = (
+            Lines::in_range(&current_change.before),
+            Lines::in_range(&current_change.after),
+        );
+        let (other_ancestor, other_lines) = (
+            Lines::in_range(&other_change.before),
+            Lines::in_range(&other_change.after),
+        );
+        if current_ancestor.end() < other_ancestor.start {
+            append(
+                &mut regions,
+                Region {
+                    mode: Mode::Current,
+                    ancestor: current_ancestor,
+                    current: current_lines,
+                    other: Lines {
+                        start: other_lines.start - other_ancestor.start + current_ancestor.start,
+                        len: current_ancestor.len,
+                    },
+                },
+            );
+            current_idx += 1;
+            continue;
+        }
+        if other_ancestor.end() < current_ancestor.start {
+            append(
+                &mut regions,
+                Region {
+                    mode: Mode::Other,
+                    ancestor: other_ancestor,
+                    current: Lines {
+                        start: current_lines.start - current_ancestor.start + other_ancestor.start,
+                        len: other_ancestor.len,
+                    },
+                    other: other_lines,
+                },
+            );
+            other_idx += 1;
+            continue;
+        }
+        if current_ancestor != other_ancestor
+            || current_lines.len != other_lines.len
+            || current_lines.of(current) != other_lines.of(other)
+        {
+            append(
+                &mut regions,
+                conflict(current_ancestor, current_lines, other_ancestor, other_lines),
+            );
+        }
+        if current_ancestor.end() >= other_ancestor.end() {
+            other_idx += 1;
+        }
+        if other_ancestor.end() >= current_ancestor.end() {
+            current_idx += 1;
+        }
+    }
+
+    let ancestor_len = ancestor.len() as i64;
+    for change in &current_changes[current_idx..] {
+        let ancestor_lines = Lines::in_range(&change.before);
+        append(
+            &mut regions,
+            Region {
+                mode: Mode::Current,
+                ancestor: ancestor_lines,
+                current: Lines::in_range(&change.after),
+                other: Lines {
+                    start: ancestor_lines.start + other.len() as i64 - ancestor_len,
+                    len: ancestor_lines.len,
+                },
+            },
+        );
+    }
+    for change in &other_changes[other_idx..] {
+        let ancestor_lines = Lines::in_range(&change.before);
+        append(
+            &mut regions,
+            Region {
+                mode: Mode::Other,
+                ancestor: ancestor_lines,
+                current: Lines {
+                    start: ancestor_lines.start + current.len() as i64 - ancestor_len,
+                    len: ancestor_lines.len,
+                },
+                other: Lines::in_range(&change.after),
+            },
+        );
+    }
+    regions
+}
+
+/// Return the conflict of the overlapping changes of `current_lines` in place of `current_ancestor` and of
+/// `other_lines` in place of `other_ancestor`, as Git's `xdl_do_merge()` computes it: in the ancestor, it
+/// reaches from the start of the earlier change to the end of the later one, and each side's lines extend by
+/// the ancestor lines that only the change of the other side covers.
+fn conflict(current_ancestor: Lines, current_lines: Lines, other_ancestor: Lines, other_lines: Lines) -> Region {
+    let start_offset = current_ancestor.start - other_ancestor.start;
+    let (mut ancestor_start, mut current_start, mut other_start) =
+        (current_ancestor.start, current_lines.start, other_lines.start);
+    if start_offset > 0 {
+        ancestor_start -= start_offset;
+        current_start -= start_offset;
+    } else {
+        other_start += start_offset;
+    }
+
+    let end_offset = current_ancestor.end() - other_ancestor.end();
+    let (mut ancestor_end, mut current_end, mut other_end) =
+        (current_ancestor.end(), current_lines.end(), other_lines.end());
+    if end_offset < 0 {
+        ancestor_end -= end_offset;
+        current_end -= end_offset;
+    } else {
+        other_end += end_offset;
+    }
+
+    Region {
+        mode: Mode::Conflict,
+        ancestor: Lines::between(ancestor_start, ancestor_end),
+        current: Lines::between(current_start, current_end),
+        other: Lines::between(other_start, other_end),
+    }
+}
+
+/// Add `region` to `regions`, or extend the last of them by it if it starts within or right after that one on
+/// either side, as Git's `xdl_append_merge()` does.
+fn append(regions: &mut Vec<Region>, region: Region) {
+    if let Some(last) = regions.last_mut()
+        && (region.current.start <= last.current.end() || region.other.start <= last.other.end())
+    {
+        if region.mode != last.mode {
+            last.mode = Mode::Conflict;
+        }
+        last.ancestor.len = region.ancestor.end() - last.ancestor.start;
+        last.current.len = region.current.end() - last.current.start;
+        last.other.len = region.other.end() - last.other.start;
+    } else {
+        regions.push(region);
+    }
+}
+
+/// Narrow each conflict of `regions` to the lines in which its sides differ, as Git's `xdl_refine_conflicts()`
+/// does: the lines of the current side are diffed against those of the other side with `algorithm`, and each
+/// change becomes a conflict of its own. A conflict without changes becomes [`Mode::Identical`].
+pub fn refine_conflicts(regions: Vec<Region>, current: &[Token], other: &[Token], algorithm: Algorithm) -> Vec<Region> {
+    let mut refined = Vec::with_capacity(regions.len());
+    for region in regions {
+        if region.mode != Mode::Conflict || region.current.len == 0 || region.other.len == 0 {
+            refined.push(region);
+            continue;
+        }
+        let (Some(current_tokens), Some(other_tokens)) = (region.current.of(current), region.other.of(other)) else {
+            refined.push(region);
+            continue;
+        };
+        let (current_tokens, other_tokens, num_tokens) = renumber(current_tokens, other_tokens);
+        let changes = diff(algorithm, &current_tokens, &other_tokens, num_tokens);
+        if changes.is_empty() {
+            refined.push(Region {
+                mode: Mode::Identical,
+                ..region
+            });
+            continue;
+        }
+        refined.extend(changes.iter().map(|change| {
+            let (current_lines, other_lines) = (Lines::in_range(&change.before), Lines::in_range(&change.after));
+            Region {
+                mode: Mode::Conflict,
+                ancestor: region.ancestor,
+                current: Lines {
+                    start: region.current.start + current_lines.start,
+                    len: current_lines.len,
+                },
+                other: Lines {
+                    start: region.other.start + other_lines.start,
+                    len: other_lines.len,
+                },
+            }
+        }));
+    }
+    refined
+}
+
+/// Return `a` and `b` with their tokens renumbered from zero in the order in which they first appear, along
+/// with the number of distinct tokens, so that diffing them takes time in proportion to their length rather
+/// than to the number of tokens in all files.
+fn renumber(a: &[Token], b: &[Token]) -> (Vec<Token>, Vec<Token>, u32) {
+    let mut numbers = HashMap::with_capacity(a.len() + b.len());
+    let mut renumber = |tokens: &[Token]| -> Vec<Token> {
+        tokens
+            .iter()
+            .map(|token| {
+                let next = Token(numbers.len() as u32);
+                *numbers.entry(*token).or_insert(next)
+            })
+            .collect()
+    };
+    let (a, b) = (renumber(a), renumber(b));
+    let num_tokens = numbers.len() as u32;
+    (a, b, num_tokens)
+}
+
+/// Join each conflict of `regions` with the next one if at most three lines of the current side separate them,
+/// as Git's `xdl_simplify_non_conflicts()` does in merges: the joined conflict takes up no more lines than
+/// the two conflicts with the lines between them.
+pub fn join_close_conflicts(regions: Vec<Region>) -> Vec<Region> {
+    let mut joined: Vec<Region> = Vec::with_capacity(regions.len());
+    for region in regions {
+        if let Some(last) = joined.last_mut()
+            && last.mode == Mode::Conflict
+            && region.mode == Mode::Conflict
+            && region.current.start - last.current.end() <= 3
+        {
+            last.current.len = region.current.end() - last.current.start;
+            last.other.len = region.other.end() - last.other.start;
+            continue;
+        }
+        joined.push(region);
+    }
+    joined
+}
+
+/// Remove the lines that both sides of each conflict of `regions` start or end with from the conflict, keeping
+/// all of its ancestor lines, as Git's `xdl_refine_zdiff3_conflicts()` does.
+pub fn trim_conflicts(regions: &mut [Region], current: &[Token], other: &[Token]) {
+    let same_line = |current_line: i64, other_line: i64| {
+        let line = |tokens: &[Token], line: i64| usize::try_from(line).ok().and_then(|line| tokens.get(line).copied());
+        matches!((line(current, current_line), line(other, other_line)), (Some(a), Some(b)) if a == b)
+    };
+    for region in regions.iter_mut().filter(|region| region.mode == Mode::Conflict) {
+        while region.current.len > 0 && region.other.len > 0 && same_line(region.current.start, region.other.start) {
+            region.current.start += 1;
+            region.current.len -= 1;
+            region.other.start += 1;
+            region.other.len -= 1;
+        }
+        while region.current.len > 0
+            && region.other.len > 0
+            && same_line(region.current.end() - 1, region.other.end() - 1)
+        {
+            region.current.len -= 1;
+            region.other.len -= 1;
+        }
+    }
+}
+
+/// How to write the conflicts of a merge result.
+#[derive(Debug, Clone, Copy)]
+pub struct Markers<'a> {
+    /// Whether to show the ancestor's lines of each conflict.
+    pub style: ConflictStyle,
+    /// The number of characters of each marker.
+    pub size: u8,
+    /// The names that follow the markers.
+    pub labels: Labels<'a>,
+}
+
+/// The lines of the three files of a merge, from which the merge result is written.
+pub struct Writer<'a, 'data> {
+    pub interner: &'a Interner<&'data [u8]>,
+    pub ancestor: &'a [Token],
+    pub current: &'a [Token],
+    pub other: &'a [Token],
+}
+
+impl Writer<'_, '_> {
+    /// Write all of `tokens` to `out`.
+    pub fn write_all(&self, out: &mut Vec<u8>, tokens: &[Token]) {
+        self.write(out, tokens, Lines::all(tokens), None);
+    }
+
+    /// Write the merge result of `regions` to `out`, as Git's `xdl_fill_merge_buffer()` does: conflicts take
+    /// the mode `resolve_with` if it is set, and are otherwise written with `markers`.
+    pub fn write_merge(&self, out: &mut Vec<u8>, regions: &[Region], resolve_with: Option<Mode>, markers: Markers<'_>) {
+        // The current side's lines before this one are written, or replaced by those of the other side.
+        let mut current_written = 0;
+        for region in regions {
+            let mode = match region.mode {
+                Mode::Conflict => resolve_with.unwrap_or(Mode::Conflict),
+                mode => mode,
+            };
+            match mode {
+                Mode::Conflict => {
+                    self.write(
+                        out,
+                        self.current,
+                        Lines::between(current_written, region.current.start),
+                        None,
+                    );
+                    self.write_conflict(out, region, markers);
+                }
+                Mode::Current | Mode::Other | Mode::Both => {
+                    self.write(
+                        out,
+                        self.current,
+                        Lines::between(current_written, region.current.start),
+                        None,
+                    );
+                    if mode != Mode::Other {
+                        let line_ending = (mode == Mode::Both).then(|| self.line_ending(region));
+                        self.write(out, self.current, region.current, line_ending);
+                    }
+                    if mode != Mode::Current {
+                        self.write(out, self.other, region.other, None);
+                    }
+                }
+                Mode::Identical => continue,
+            }
+            current_written = region.current.end();
+        }
+        self.write(
+            out,
+            self.current,
+            Lines::between(current_written, Lines::all(self.current).end()),
+            None,
+        );
+    }
+
+    /// Write the lines of both sides of the conflict `region` between `markers`, with its ancestor lines in the
+    /// `diff3` styles, as Git's `fill_conflict_hunk()` does.
+    fn write_conflict(&self, out: &mut Vec<u8>, region: &Region, markers: Markers<'_>) {
+        let line_ending = self.line_ending(region);
+        write_marker(out, b'<', markers.size, markers.labels.current, line_ending);
+        self.write(out, self.current, region.current, Some(line_ending));
+        if matches!(markers.style, ConflictStyle::Diff3 | ConflictStyle::ZealousDiff3) {
+            write_marker(out, b'|', markers.size, markers.labels.ancestor, line_ending);
+            self.write(out, self.ancestor, region.ancestor, Some(line_ending));
+        }
+        write_marker(out, b'=', markers.size, None, line_ending);
+        self.write(out, self.other, region.other, Some(line_ending));
+        write_marker(out, b'>', markers.size, markers.labels.other, line_ending);
+    }
+
+    /// Write `lines` of `tokens` to `out`, followed by `line_ending` if it is set and the last of them has none,
+    /// as Git's `xdl_recs_copy()` does.
+    fn write(&self, out: &mut Vec<u8>, tokens: &[Token], lines: Lines, line_ending: Option<&[u8]>) {
+        let tokens = lines.of(tokens).unwrap_or_default();
+        for token in tokens {
+            out.extend_from_slice(self.interner[*token]);
+        }
+        if let (Some(line_ending), Some(last)) = (line_ending, tokens.last())
+            && !self.interner[*last].ends_with(b"\n")
+        {
+            out.extend_from_slice(line_ending);
+        }
+    }
+
+    /// Return the line ending of the conflict markers of `region` and of the line ending added to the last line
+    /// of each of its sides, as Git's `is_cr_needed()` decides: CRLF only if the first line of the ancestor ends
+    /// with CRLF and neither side's line before the region, or first line, ends with LF alone.
+    fn line_ending(&self, region: &Region) -> &'static [u8] {
+        let mut crlf = ends_with_crlf(self.interner, self.current, (region.current.start - 1).max(0));
+        if crlf != Some(false) {
+            crlf = ends_with_crlf(self.interner, self.other, (region.other.start - 1).max(0));
+        }
+        if crlf != Some(false) {
+            crlf = ends_with_crlf(self.interner, self.ancestor, 0);
+        }
+        if crlf == Some(true) { b"\r\n" } else { b"\n" }
+    }
+}
+
+/// Return whether line `line` of `lines` ends with CRLF, or `None` if that can't be told, as Git's
+/// `is_eol_crlf()` does: a last line without a line ending is judged by the line before it.
+fn ends_with_crlf(interner: &Interner<&[u8]>, lines: &[Token], line: i64) -> Option<bool> {
+    let line = usize::try_from(line).ok()?;
+    let token = *lines.get(line)?;
+    if line + 1 < lines.len() || interner[token].ends_with(b"\n") {
+        return Some(interner[token].ends_with(b"\r\n"));
+    }
+    let previous = *lines.get(line.checked_sub(1)?)?;
+    Some(interner[previous].ends_with(b"\r\n"))
+}
+
+/// Write a conflict marker of `size` times `marker`, then a space and `label` unless it is empty, as Git does.
+fn write_marker(out: &mut Vec<u8>, marker: u8, size: u8, label: Option<&BStr>, line_ending: &[u8]) {
+    out.extend(std::iter::repeat_n(marker, size.into()));
+    if let Some(label) = label.filter(|label| !label.is_empty()) {
+        out.push(b' ');
+        out.extend_from_slice(label);
+    }
+    out.extend_from_slice(line_ending);
 }

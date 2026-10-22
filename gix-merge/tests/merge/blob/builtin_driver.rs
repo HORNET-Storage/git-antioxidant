@@ -37,44 +37,18 @@ mod text {
     use std::num::NonZero;
 
     const DIVERGING: &[&str] = &[
-        // Somehow, on in zdiff mode, it's different, and I wasn't able to figure out the rule properly.
-        // Now we prefer ancestor/before newlines and somewhat ignore our hunks. It's probably a minor issue in practice.
-        // gix: "1\r\n2\n<<<<<<< complex/marker-newline-handling-lf2/ours.blob\n4\r\n||||||| complex/marker-newline-handling-lf2/base.blob\r\n2\r\n3\n=======\n5\n>>>>>>> complex/marker-newline-handling-lf2/theirs.blob\n"
-        // git: "1\r\n2\n<<<<<<< complex/marker-newline-handling-lf2/ours.blob\n4  \n||||||| complex/marker-newline-handling-lf2/base.blob  \n2\r\n3\n=======\n5\n>>>>>>> complex/marker-newline-handling-lf2/theirs.blob\n"
-        "complex/marker-newline-handling-lf2/zdiff3.merged",
-        "complex/marker-newline-handling-lf2/zdiff3-histogram.merged",
-        // Git can extend hunks, but the effect is not as noticeable.
-        // Implementing this would be interesting, to figure out when the hunk processing should apply.
-        "zdiff3-evil/merge.merged",
-        "zdiff3-evil/merge-union.merged",
-        // Git seems to merge to hunks if they are close together to get a less noisy diff.
-        "zdiff3-middlecommon/merge.merged",
-        "zdiff3-middlecommon/merge-union.merged",
-        // Git has special character handling, which does magic to prevent conflicts
-        "complex/auto-simplification/merge.merged",
-        "complex/auto-simplification/merge-union.merged",
-        // Git has different diff-slider-heuristics so diffs can be different.
-        // See https://github.com/mhagger/diff-slider-tools.
-        "complex/spurious-c-conflicts/merge.merged",
-        "complex/spurious-c-conflicts/merge-union.merged",
+        // `git merge-file` also joins two conflicts when the lines between them contain no letters or digits, however
+        // many there are. Git's merges, like this driver, only join conflicts that at most three lines separate.
+        "complex/auto-simplification2/merge.merged",
+        "complex/auto-simplification2/merge-union.merged",
     ];
 
-    /// Should be a copy of `DIVERGING` once the reverse operation truly works like before
+    /// The cases of `DIVERGING` with the sides swapped.
     const DIVERGING_REVERSED: &[&str] = &[
-        // expected cases
-        "zdiff3-middlecommon/merge.merged-reversed",
-        "zdiff3-middlecommon/merge-union.merged-reversed",
-        "zdiff3-evil/merge.merged-reversed",
-        "zdiff3-evil/merge-union.merged-reversed",
-        "complex/auto-simplification/merge.merged-reversed",
-        "complex/auto-simplification/merge-union.merged-reversed",
-        "complex/marker-newline-handling-lf2/zdiff3.merged-reversed",
-        "complex/marker-newline-handling-lf2/zdiff3-histogram.merged-reversed",
-        "complex/spurious-c-conflicts/merge.merged-reversed",
-        "complex/spurious-c-conflicts/merge-union.merged-reversed",
+        "complex/auto-simplification2/merge.merged-reversed",
+        "complex/auto-simplification2/merge-union.merged-reversed",
     ];
 
-    // TODO: fix all of these eventually
     fn is_case_diverging(case: &baseline::Expectation, diverging: &[&str]) -> bool {
         diverging.iter().any(|name| case.name == *name)
     }
@@ -168,8 +142,8 @@ mod text {
     fn run_baseline() -> TestResult {
         let root = gix_testtools::scripted_fixture_read_only("text-baseline.sh")?;
         for (baseline, diverging, expected_percentage) in [
-            ("baseline.cases", DIVERGING, 3),
-            ("baseline-reversed.cases", DIVERGING_REVERSED, 3),
+            ("baseline.cases", DIVERGING, 0),
+            ("baseline-reversed.cases", DIVERGING_REVERSED, 0),
         ] {
             let cases = std::fs::read_to_string(root.join(baseline))?;
             let mut out = Vec::new();

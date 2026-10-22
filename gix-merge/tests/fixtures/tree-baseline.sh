@@ -1277,8 +1277,6 @@ git init added-file-changed-content-and-mode
 
   git branch A
   git branch B
-  git branch expected
-  git branch expected-reversed
 
   git checkout A
   write_lines 1 2 3 4 5 >new
@@ -1290,19 +1288,6 @@ git init added-file-changed-content-and-mode
   chmod +x new
   git add --chmod=+x new
   git commit -m "add new with content B and +x"
-
-  # Without an ancestor, the executable bits conflict and `new` keeps our mode. Both sides add
-  # all of their lines, which remain in one conflict hunk.
-  git checkout expected
-  echo -n $'<<<<<<< A\n1\n2\n3\n4\n5\n=======\noriginal\n1\n2\n3\n4\n5\n6\n>>>>>>> B\n' >new
-  git add new
-  git commit -m "one conflict hunk with A's lines first, and A's mode"
-
-  git checkout expected-reversed
-  echo -n $'<<<<<<< B\noriginal\n1\n2\n3\n4\n5\n6\n=======\n1\n2\n3\n4\n5\n>>>>>>> A\n' >new
-  chmod +x new
-  git add --chmod=+x new
-  git commit -m "one conflict hunk with B's lines first, and B's mode"
 )
 
 git init executable-bit-merges
@@ -2459,7 +2444,7 @@ baseline conflicting-rename-complex A-B A B "Git has different rename tracking -
 
 baseline same-rename-different-mode A-B A B "Git works for the A/B case, but for B/A it forgets to set the executable bit"
 baseline renamed-symlink-with-conflict A-B A B
-baseline added-file-changed-content-and-mode A-B A B "Git splits the conflict around the lines both sides share, while gix keeps one hunk"
+baseline added-file-changed-content-and-mode A-B A B
 baseline executable-bit-merges A-B A B
 baseline executable-bit-conflicts A-B A B
 
