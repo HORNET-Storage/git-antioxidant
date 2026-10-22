@@ -302,6 +302,8 @@ mktest!(switched_lines, "switched-lines", 4);
 mktest!(added_line_before_changed_line, "added-line-before-changed-line", 3);
 mktest!(same_line_changed_twice, "same-line-changed-twice", 2);
 mktest!(coalesce_adjacent_hunks, "coalesce-adjacent-hunks", 1);
+mktest!(shared_end_cut_at_line_start, "shared-end-cut-at-line-start", 3);
+mktest!(shared_end_cut_within_line, "shared-end-cut-within-line", 3);
 
 mktest!(sub_directory, "sub-directory/sub-directory", 3);
 

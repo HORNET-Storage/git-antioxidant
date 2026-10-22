@@ -157,6 +157,9 @@ impl BlameRanges {
 #[derive(Default, Debug, Clone)]
 pub struct Options {
     /// The algorithm to use for diffing.
+    ///
+    /// As Git's blame does, the two versions of a file are diffed without most of the end they share: Git leaves out
+    /// whole blocks of 1024 bytes there, but keeps the line the cut falls in.
     pub diff_algorithm: gix_diff::blob::Algorithm,
     /// The ranges to blame in the file.
     pub ranges: BlameRanges,

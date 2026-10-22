@@ -162,6 +162,23 @@ mv before-second-rename.txt after-second-rename.txt
 git add before-second-rename.txt after-second-rename.txt
 git commit -q -m c5.5
 
+# Git's blame leaves out most of the end that both versions of a file share before diffing them: whole blocks of
+# 1024 bytes, less the rest of the line the cut falls in. Each file below is a run of equal lines that gets one more
+# such line, which a diff could place anywhere in the run. Git places it at the end of what it diffs, so it is blamed
+# for line 491 of 1002 and line 20 of 702 rather than for the last line. With lines of two bytes the cut falls at the
+# start of a line, with lines of three bytes within one.
+echo "line 1" > shared-end-cut-at-line-start.txt
+printf 'r\n%.0s' $(seq 1000) >> shared-end-cut-at-line-start.txt
+echo "line 1" > shared-end-cut-within-line.txt
+printf 'rr\n%.0s' $(seq 700) >> shared-end-cut-within-line.txt
+git add shared-end-cut-at-line-start.txt shared-end-cut-within-line.txt
+git commit -q -m c5.6
+
+echo "r" >> shared-end-cut-at-line-start.txt
+echo "rr" >> shared-end-cut-within-line.txt
+git add shared-end-cut-at-line-start.txt shared-end-cut-within-line.txt
+git commit -q -m c5.7
+
 # The commit history created by the commits above this line is linear, it only
 # contains commits that have exactly one parent.
 # Below this line, there’s also commits that have more than one parent.
@@ -283,6 +300,8 @@ git blame --porcelain switched-lines.txt > .git/switched-lines.baseline
 git blame --porcelain added-line-before-changed-line.txt > .git/added-line-before-changed-line.baseline
 git blame --porcelain same-line-changed-twice.txt > .git/same-line-changed-twice.baseline
 git blame --porcelain coalesce-adjacent-hunks.txt > .git/coalesce-adjacent-hunks.baseline
+git blame --porcelain shared-end-cut-at-line-start.txt > .git/shared-end-cut-at-line-start.baseline
+git blame --porcelain shared-end-cut-within-line.txt > .git/shared-end-cut-within-line.baseline
 git blame --porcelain untracked-lines.txt > .git/untracked-lines.baseline
 git blame --porcelain -L 3,7 untracked-lines.txt > .git/untracked-lines-ranges.baseline
 git blame --porcelain untracked-file.txt > .git/untracked-file.baseline

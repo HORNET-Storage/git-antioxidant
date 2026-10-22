@@ -799,6 +799,11 @@ fn blob_changes_from_data(
 ) -> Vec<Change> {
     use gix_diff::blob::Hunk;
 
+    // Git's blame diffs without context lines, so `xdi_diff()` leaves out most of the end both blobs share before
+    // diffing them, which limits where a hunk next to that end can be placed. The lines it leaves out are unchanged.
+    let left_out_len = shared_end_len(old_data, new_data);
+    let old_data = &old_data[..old_data.len() - left_out_len];
+    let (new_data, left_out) = new_data.split_at(new_data.len() - left_out_len);
     let input = gix_diff::blob::InternedInput::new(old_data, new_data);
 
     let mut diff = gix_diff::blob::Diff::compute(diff_algorithm, &input);
@@ -831,13 +836,36 @@ fn blob_changes_from_data(
         hunks
     });
 
-    let total_number_of_lines = input.after.len() as u32;
-    if input.after.len() > last_seen_after_end as usize {
+    let total_number_of_lines = input.after.len() as u32 + tokens_for_diffing(left_out).tokenize().count() as u32;
+    if total_number_of_lines > last_seen_after_end {
         changes.push(Change::Unchanged(last_seen_after_end..total_number_of_lines));
     }
 
     stats.blobs_diffed += 1;
     changes
+}
+
+/// Return the length of the end that `old` and `new` share and that Git leaves out before diffing them without context
+/// lines, as `trim_common_tail()` in Git's `xdiff-interface.c` computes it: the whole blocks of 1024 bytes at the end
+/// that are equal in both, less the rest of the line the cut falls in, so that what remains of each ends with a
+/// complete line.
+fn shared_end_len(old: &[u8], new: &[u8]) -> usize {
+    const BLOCK_LEN: usize = 1024;
+    let shorter_len = old.len().min(new.len());
+    let mut len = 0;
+    while len + BLOCK_LEN <= shorter_len {
+        let (old_end, new_end) = (old.len() - len, new.len() - len);
+        if old[old_end - BLOCK_LEN..old_end] != new[new_end - BLOCK_LEN..new_end] {
+            break;
+        }
+        len += BLOCK_LEN;
+    }
+    let blocks = &old[old.len() - len..];
+    let rest_of_cut_line = blocks
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .map_or(len, |newline| newline + 1);
+    len - rest_of_cut_line
 }
 
 fn find_path_entry_in_commit(
