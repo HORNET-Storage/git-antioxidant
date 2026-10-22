@@ -333,6 +333,73 @@ fn an_object_in_a_pack_moved_by_an_external_process_can_be_found_from_a_stale_ha
 }
 
 #[test]
+fn a_loose_object_deleted_after_its_existence_check_is_found_in_its_pack() -> gix_testtools::TestResult {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    // `git repack -d` deletes the loose copies of the objects it just packed. A lookup that saw a loose
+    // file right before its deletion must then find the object in the pack instead of reporting it missing.
+    let tmp = gix_testtools::tempfile::tempdir()?;
+    let objects_dir = tmp.path().join("objects");
+    let pack_dir = objects_dir.join("pack");
+    std::fs::create_dir_all(&pack_dir)?;
+    gix_testtools::copy_recursively_into_existing_dir(fixture_path("objects/pack"), &pack_dir)?;
+
+    let id = hex_to_id("dd25c539efbb0ab018caa4cda2d133285634e9b5");
+    let mut buf = Vec::new();
+    let object = db().find(&id, &mut buf)?;
+    let loose = gix_odb::loose::Store::at(&objects_dir, gix_hash::Kind::Sha1);
+    assert_eq!(
+        loose.write_buf(object.kind, object.data)?,
+        id,
+        "the loose copy has the id of the packed object"
+    );
+    let loose_path = loose.object_path(&id);
+    let loose_copy = tmp.path().join("loose-copy");
+    std::fs::hard_link(&loose_path, &loose_copy)?;
+
+    let stop = AtomicBool::new(false);
+    let lookups = std::thread::scope(|scope| {
+        // Remove the loose file and link it back, so lookups keep meeting a file that vanishes after `contains()`
+        // found it, or that fails to open while Windows deletes it.
+        scope.spawn(|| {
+            while !stop.load(Ordering::Relaxed) {
+                std::fs::remove_file(&loose_path).ok();
+                std::fs::hard_link(&loose_copy, &loose_path).ok();
+            }
+        });
+        let lookups = count_missing_lookups(&objects_dir, &id, 100);
+        stop.store(true, Ordering::Relaxed);
+        lookups
+    });
+    assert_eq!(
+        lookups?,
+        (0, 0),
+        "header and object lookups always find the object, loose or packed"
+    );
+    Ok(())
+}
+
+/// Count how many of `rounds` header and object lookups of `id` find nothing, each through a new store at
+/// `objects_dir`. A new store checks the loose objects before it loads any pack index.
+fn count_missing_lookups(
+    objects_dir: &std::path::Path,
+    id: &gix_hash::oid,
+    rounds: usize,
+) -> gix_testtools::Result<(usize, usize)> {
+    use gix_object::Find;
+
+    let mut buf = Vec::new();
+    let (mut missing_headers, mut missing_objects) = (0, 0);
+    for _ in 0..rounds {
+        let store = gix_odb::at(objects_dir, gix_hash::Kind::Sha1)?;
+        missing_headers += usize::from(store.try_header(id)?.is_none());
+        let store = gix_odb::at(objects_dir, gix_hash::Kind::Sha1)?;
+        missing_objects += usize::from(store.try_find(id, &mut buf)?.is_none());
+    }
+    Ok((missing_headers, missing_objects))
+}
+
+#[test]
 fn write() -> gix_testtools::TestResult {
     let dir = gix_testtools::tempfile::tempdir()?;
     let mut handle = odb_at(dir.path())?;

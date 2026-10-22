@@ -254,10 +254,19 @@ where
                 }
             }
 
+            // A loose file that a concurrent repack deletes can vanish or fail to open after `contains()` found it.
+            // As Git does, look for the object in new packs before reporting the failure.
+            let mut loose_error = None;
             for lodb in snapshot.loose_dbs.iter() {
                 // TODO: remove this double-lookup once the borrow checker allows it.
                 if lodb.contains(id) {
-                    return lodb.try_find(id, buffer).map(|obj| obj.map(|obj| (obj, None)));
+                    match lodb.try_find(id, buffer).map(|obj| obj.map(|obj| obj.kind)) {
+                        Ok(Some(kind)) => {
+                            return Ok(Some((gix_object::Data::new(buffer.as_slice(), kind, id.kind()), None)));
+                        }
+                        Ok(None) => {}
+                        Err(err) => loose_error = Some(err),
+                    }
                 }
             }
 
@@ -266,7 +275,7 @@ where
                     *snapshot = new_snapshot;
                     self.clear_cache();
                 }
-                None => return Ok(None),
+                None => return loose_error.map_or(Ok(None), Err),
             }
         }
     }
