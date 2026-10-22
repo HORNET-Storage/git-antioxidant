@@ -1,4 +1,5 @@
-//! Pair files that were deleted with files that were added, as `git diff -M` does.
+//! Pair files that were deleted with files that were added, as `git diff -M` does, and as a merge does for each of its
+//! sides ([`merge`]).
 
 use std::{cmp::Ordering, collections::HashMap};
 
@@ -8,6 +9,8 @@ use gix_hash::oid;
 use gix_object::tree::EntryMode;
 
 use crate::similarity::Spans;
+
+pub mod merge;
 
 /// The similarity of identical files, of which [`Options::min_score`] and [`Rename::score`] are fractions.
 ///
@@ -145,17 +148,15 @@ pub fn detect(
     blobs: &mut dyn Blobs,
     options: Options,
 ) -> Result<Outcome> {
-    let min_score = match options.min_score {
-        0 => MAX_SCORE / 2,
-        min_score => min_score.min(MAX_SCORE),
-    };
-    let mut state = State::new(sources, destinations, blobs);
+    let min_score = effective_min_score(options.min_score);
+    let mut state = State::new(sorted_files(sources), sorted_files(destinations), blobs);
     state.pair_identical();
     if min_score == MAX_SCORE {
         return Ok(state.into_outcome(None));
     }
-    state.pair_unique_file_names(min_score + (MAX_SCORE - min_score) / 2)?;
-    let needed_limit = state.pair_similar(min_score, options.limit)?;
+    state.pair_file_names(basename_min_score(min_score), &|_| true, None)?;
+    let sources = state.unpaired_sources();
+    let needed_limit = state.pair_similar(min_score, options.limit, &sources, None)?;
     Ok(state.into_outcome(needed_limit))
 }
 
@@ -196,28 +197,48 @@ impl File<'_> {
     }
 }
 
-/// The files among `entries` that aren't trees, in the order of their locations.
-fn files<'a>(entries: &[Entry<'a>]) -> Vec<File<'a>> {
-    let mut files: Vec<_> = entries
+/// The similarity that a pair needs for a `min_score` option: 0 stands for half of [`MAX_SCORE`], as git's
+/// `DEFAULT_RENAME_SCORE` does, and more than [`MAX_SCORE`] for [`MAX_SCORE`].
+fn effective_min_score(min_score: u32) -> u32 {
+    match min_score {
+        0 => MAX_SCORE / 2,
+        min_score => min_score.min(MAX_SCORE),
+    }
+}
+
+/// The similarity that a source and a destination with the same file name need to be paired by their file name:
+/// halfway from `min_score` to [`MAX_SCORE`], as `diffcore_rename_extended()` computes it.
+fn basename_min_score(min_score: u32) -> u32 {
+    min_score + (MAX_SCORE - min_score) / 2
+}
+
+/// The files among `entries` that aren't trees and that `keep` accepts, in the order of `entries`.
+fn files<'a>(entries: &[Entry<'a>], keep: impl Fn(&Entry<'a>) -> bool) -> Vec<File<'a>> {
+    entries
         .iter()
         .enumerate()
-        .filter(|(_, entry)| !entry.mode.is_tree())
+        .filter(|(_, entry)| !entry.mode.is_tree() && keep(entry))
         .map(|(index, &entry)| File {
             index,
             entry,
             size: None,
             spans: None,
         })
-        .collect();
+        .collect()
+}
+
+/// The files among `entries` that aren't trees, in the order of their locations.
+fn sorted_files<'a>(entries: &[Entry<'a>]) -> Vec<File<'a>> {
+    let mut files = files(entries, |_| true);
     files.sort_by_key(|file| file.entry.location);
     files
 }
 
 /// The files that are paired so far, along with what is needed to estimate their similarity.
 struct State<'a, 'b> {
-    /// The files that were deleted, in the order of their locations.
+    /// The files that were deleted, in the order in which git considers them.
     sources: Vec<File<'a>>,
-    /// The files that were added, in the order of their locations.
+    /// The files that were added, in the order in which git considers them.
     destinations: Vec<File<'a>>,
     /// The source that each destination was paired with, and the similarity of the two.
     pairs: Vec<Option<(usize, u32)>>,
@@ -229,8 +250,7 @@ struct State<'a, 'b> {
 }
 
 impl<'a, 'b> State<'a, 'b> {
-    fn new(sources: &[Entry<'a>], destinations: &[Entry<'a>], blobs: &'b mut dyn Blobs) -> Self {
-        let (sources, destinations) = (files(sources), files(destinations));
+    fn new(sources: Vec<File<'a>>, destinations: Vec<File<'a>>, blobs: &'b mut dyn Blobs) -> Self {
         State {
             pairs: vec![None; destinations.len()],
             source_is_paired: vec![false; sources.len()],
@@ -247,8 +267,8 @@ impl<'a, 'b> State<'a, 'b> {
         for (source, file) in self.sources.iter().enumerate() {
             sources_by_id.entry(file.entry.id).or_default().push(source);
         }
-        // Git's table of sources returns those with the same blob in the order of their locations, unless it grew when
-        // the last source was added, which reversed that order.
+        // Git's table of sources returns those with the same blob in the order of the sources, unless it grew when the
+        // last source was added, which reversed that order.
         if git_table_grows_with_last_insertion(self.sources.len()) {
             for sources in sources_by_id.values_mut() {
                 sources.reverse();
@@ -276,14 +296,22 @@ impl<'a, 'b> State<'a, 'b> {
                 best.get_or_insert(source);
             }
             if let Some(source) = best {
-                self.pair(source, destination, MAX_SCORE);
+                self.pair(source, destination, MAX_SCORE, None);
             }
         }
     }
 
-    /// Pair each source and destination with the same file name that no other remaining source or destination has, if
-    /// their similarity reaches `min_score`, as `find_basename_matches()` does.
-    fn pair_unique_file_names(&mut self, min_score: u32) -> Result {
+    /// Pair sources with destinations of the same file name if their similarity reaches `min_score`, as
+    /// `find_basename_matches()` does. Each unpaired source for which `wanted` holds is paired with the only unpaired
+    /// destination of its file name if no other unpaired source has that name, and otherwise with the destination of
+    /// that name in the directory that `directories` suggests for its directory, if there is one. `directories`
+    /// counts each pair.
+    fn pair_file_names(
+        &mut self,
+        min_score: u32,
+        wanted: &dyn Fn(usize) -> bool,
+        mut directories: Option<&mut merge::Directories<'a, '_>>,
+    ) -> Result {
         let source_names = unique_file_names(
             self.sources
                 .iter()
@@ -300,28 +328,42 @@ impl<'a, 'b> State<'a, 'b> {
         );
 
         for source in 0..self.sources.len() {
-            let name = file_name(self.sources[source].entry.location);
-            if source_names.get(name) != Some(&Some(source)) {
+            if self.source_is_paired[source] || !wanted(source) {
                 continue;
             }
-            let Some(&Some(destination)) = destination_names.get(name) else {
+            let location = self.sources[source].entry.location;
+            let name = file_name(location);
+            let Some(&unique_destination) = destination_names.get(name) else {
+                continue;
+            };
+            let destination = match (source_names.get(name), unique_destination) {
+                (Some(&Some(_)), Some(destination)) => Some(destination),
+                _ => directories
+                    .as_deref()
+                    .and_then(|directories| directories.suggested_destination(location)),
+            };
+            let Some(destination) = destination.filter(|&destination| self.pairs[destination].is_none()) else {
                 continue;
             };
             let score = self.estimate(source, destination, min_score)?;
             if score >= min_score {
-                self.pair(source, destination, score);
+                self.pair(source, destination, score, directories.as_deref_mut());
             }
         }
         Ok(())
     }
 
-    /// Estimate the similarity of each remaining source and destination, keep the most similar sources of each
-    /// destination, and pair the most similar ones first, as the end of `diffcore_rename_extended()` does. If `limit`
-    /// prevents the estimates, return the limit that would have allowed them instead.
-    fn pair_similar(&mut self, min_score: u32, limit: usize) -> Result<Option<usize>> {
-        let sources: Vec<_> = (0..self.sources.len())
-            .filter(|&source| !self.source_is_paired[source])
-            .collect();
+    /// Estimate the similarity of each of `sources` with each unpaired destination, keep the most similar sources of
+    /// each destination, and pair the most similar ones first, as the end of `diffcore_rename_extended()` does, with
+    /// `directories` counting each pair. If `limit` prevents the estimates, return the limit that would have allowed
+    /// them instead.
+    fn pair_similar(
+        &mut self,
+        min_score: u32,
+        limit: usize,
+        sources: &[usize],
+        mut directories: Option<&mut merge::Directories<'a, '_>>,
+    ) -> Result<Option<usize>> {
         let destinations: Vec<_> = (0..self.destinations.len())
             .filter(|&destination| self.pairs[destination].is_none())
             .collect();
@@ -338,7 +380,7 @@ impl<'a, 'b> State<'a, 'b> {
             let mut best = [None; CANDIDATES_PER_DESTINATION];
             // Like git, this offers every source, even one that isn't similar at all, as it takes a place that a more
             // similar source can take later, which decides the order of equally similar ones.
-            for &source in &sources {
+            for &source in sources {
                 let candidate = Candidate {
                     source,
                     destination,
@@ -357,7 +399,12 @@ impl<'a, 'b> State<'a, 'b> {
             .map_while(|candidate| candidate.filter(|candidate| candidate.score >= min_score))
         {
             if self.pairs[candidate.destination].is_none() && !self.source_is_paired[candidate.source] {
-                self.pair(candidate.source, candidate.destination, candidate.score);
+                self.pair(
+                    candidate.source,
+                    candidate.destination,
+                    candidate.score,
+                    directories.as_deref_mut(),
+                );
             }
         }
         Ok(None)
@@ -387,9 +434,29 @@ impl<'a, 'b> State<'a, 'b> {
         Ok((copied as f64 * f64::from(MAX_SCORE) / max_size as f64) as u32)
     }
 
-    fn pair(&mut self, source: usize, destination: usize, score: u32) {
+    /// Pair `source` with `destination`, and count the rename in `directories`.
+    fn pair(
+        &mut self,
+        source: usize,
+        destination: usize,
+        score: u32,
+        directories: Option<&mut merge::Directories<'a, '_>>,
+    ) {
         self.source_is_paired[source] = true;
         self.pairs[destination] = Some((source, score));
+        if let Some(directories) = directories {
+            directories.count(
+                self.sources[source].entry.location,
+                self.destinations[destination].entry.location,
+            );
+        }
+    }
+
+    /// The sources that aren't paired yet, in their order.
+    fn unpaired_sources(&self) -> Vec<usize> {
+        (0..self.sources.len())
+            .filter(|&source| !self.source_is_paired[source])
+            .collect()
     }
 
     fn into_outcome(self, needed_limit: Option<usize>) -> Outcome {

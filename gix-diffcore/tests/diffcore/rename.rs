@@ -7,6 +7,8 @@ use gix_object::FindExt;
 use gix_odb::HeaderExt;
 use gix_testtools::TestResult;
 
+mod merge;
+
 /// The script that makes a repository with an old and a new tree for each case and records what `git diff -M` reports
 /// for them.
 const FIXTURE: &str = "make_renames.sh";
