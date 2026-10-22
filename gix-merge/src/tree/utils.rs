@@ -224,10 +224,19 @@ pub fn perform_blob_merge(
     }
     let (pick, resolution) = prep.merge(buf, labels, &options.blob_merge_command_ctx)?;
 
-    let merged_blob_id = prep
-        .id_by_pick(pick, buf, write_blob_to_odb)
-        .or_raise(|| message("Failed to write merged blob content as blob to the object database"))?
-        .ok_or_raise(|| crate::tree::Error::MissingBinaryMergeResult)?;
+    let write_error = || message("Failed to write merged blob content as blob to the object database");
+    let merged_blob_id = match prep
+        .id_by_pick(pick, buf, &mut *write_blob_to_odb)
+        .or_raise(write_error)?
+    {
+        // As in Git, a merge of merge-bases reads an absent ancestor as empty content, and keeps it as the result.
+        None if pick == crate::blob::platform::builtin_merge::Pick::Ancestor
+            && options.blob_merge.is_virtual_ancestor =>
+        {
+            write_blob_to_odb(&[]).or_raise(write_error)?
+        }
+        id => id.ok_or_raise(|| crate::tree::Error::MissingBinaryMergeResult)?,
+    };
     Ok((merged_blob_id, resolution))
 }
 

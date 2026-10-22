@@ -325,10 +325,11 @@ fn options(configuration: u8) -> Options {
         fail_on_conflict: (configuration & 0b1000_0000 != 0).then(TreatAsUnresolved::git),
         marker_size_multiplier: configuration % 4,
         symlink_conflicts: binary_resolution(configuration >> 2),
-        tree_conflicts: match (configuration >> 4) % 3 {
+        tree_conflicts: match (configuration >> 4) % 4 {
             0 => None,
             1 => Some(ResolveWith::Ancestor),
-            _ => Some(ResolveWith::Ours),
+            2 => Some(ResolveWith::Ours),
+            _ => Some(ResolveWith::VirtualMergeBase),
         },
         ..Default::default()
     };

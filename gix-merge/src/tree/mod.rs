@@ -7,7 +7,8 @@ use gix_error::ClassificationMarker;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// The selected binary merge resource is absent, such as the ancestor of an add/add conflict.
+    /// The selected binary merge resource is absent, such as the ancestor of an add/add conflict outside a merge of
+    /// [merge-bases](crate::blob::platform::merge::Options::is_virtual_ancestor), which reads it as empty content.
     /// Classified as [`gix_error::Class::NotFound`].
     MissingBinaryMergeResult,
 }
@@ -488,6 +489,16 @@ pub enum ResolveWith {
     /// Note that in order to get something equivalent to *theirs*, put *theirs* into the side of *ours*,
     /// swapping the sides essentially.
     Ours,
+    /// Resolve as Git's `merge-ort` does when it merges merge-bases into a virtual merge-base, one level of recursion
+    /// deeper than the merge that needs it.
+    ///
+    /// Changes involved in a conflict are applied as without forced resolution: a rename's source is removed, and a
+    /// non-directory entry at a path where the other side has a directory moves to a unique path. An entry that can't
+    /// be merged keeps the *ancestor* version at its path, or is absent where the ancestor has none, as for entries of
+    /// distinct types or submodules that both sides added. The destination of a rename whose source the other side
+    /// deleted gets the *ancestor* version of the source, unless the other side has an entry there as well, which is
+    /// then merged with the renamed one.
+    VirtualMergeBase,
 }
 
 pub(super) mod function;

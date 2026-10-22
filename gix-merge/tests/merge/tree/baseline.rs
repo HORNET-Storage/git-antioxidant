@@ -44,6 +44,8 @@ pub enum ConflictKind {
     RenameAddDelete,
     /// Two binary files were changed in different ways, which can never be merged (without a merge-driver)
     Binary,
+    /// A submodule was changed on both sides, but its repository isn't available to merge the two commits.
+    SubmoduleNotInitialized,
 }
 
 /// More loosely structured information about the `Conflict`.
@@ -287,6 +289,7 @@ fn parse_info<'a>(mut lines: impl Iterator<Item = &'a str>) -> Option<ConflictIn
         "CONFLICT (rename/rename)" => ConflictKind::RenameRename,
         "CONFLICT (rename/delete)" => ConflictKind::RenameAddDelete,
         "CONFLICT (binary)" => ConflictKind::Binary,
+        "CONFLICT (submodule not initialized)" => ConflictKind::SubmoduleNotInitialized,
         conflict_type => panic!("Unkonwn conflict type: {conflict_type}"),
     };
     let message = lines.next()?.to_owned();

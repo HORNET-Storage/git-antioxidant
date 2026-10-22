@@ -85,8 +85,10 @@ use super::change::{MatchKind, collect as collect_changes, matching as matching_
 /// ### Errors
 ///
 /// Selecting an absent binary merge resource, such as the ancestor in an add/add conflict, returns
-/// [`crate::tree::Error::MissingBinaryMergeResult`], classified as [`gix_error::Class::NotFound`].
-/// Downcast to [`crate::tree::Error`] and match this variant to distinguish it from missing object headers or data.
+/// [`crate::tree::Error::MissingBinaryMergeResult`], classified as [`gix_error::Class::NotFound`], unless the blob
+/// merge is that of [merge-bases](crate::blob::platform::merge::Options::is_virtual_ancestor), which reads the absent
+/// ancestor as empty content as Git does. Downcast to [`crate::tree::Error`] and match this variant to distinguish it
+/// from missing object headers or data.
 ///
 /// ### Performance
 ///
@@ -267,7 +269,7 @@ pub fn tree<'objects>(
                                     labels.other.unwrap_or_default(),
                                 )?;
                                 match resolve_tree_conflicts {
-                                    None => {
+                                    None | Some(ResolveWith::VirtualMergeBase) => {
                                         editor.upsert(toc(&renamed_location), mode.kind(), id.to_owned())?;
                                     }
                                     Some(ResolveWith::Ours) => {
@@ -484,6 +486,16 @@ pub fn tree<'objects>(
                                             }
                                         }
                                         Some(ResolveWith::Ancestor) => {}
+                                        // The modification stays, and the rename's destination gets the ancestor's
+                                        // version, as merge-ort does at that depth for a rename vs. a type change.
+                                        Some(ResolveWith::VirtualMergeBase) => {
+                                            editor.upsert(toc(our_location), our_mode.kind(), *our_id)?;
+                                            editor.upsert(
+                                                toc(their_location),
+                                                previous_entry_mode.kind(),
+                                                *previous_id,
+                                            )?;
+                                        }
                                     }
 
                                     if should_fail_on_conflict(Conflict::without_resolution(
@@ -599,8 +611,13 @@ pub fn tree<'objects>(
                                     theirs_disposition = ChangeDisposition::Applied;
                                 } else {
                                     // Like merge-ort, leave the conflict unresolved but put ours in the result tree when
-                                    // no forced resolution was requested. A later submodule-aware pass can replace it.
-                                    if !matches!(resolve_tree_conflicts, Some(ResolveWith::Ancestor)) {
+                                    // no forced resolution was requested. A later submodule-aware pass can replace it. A
+                                    // merged merge-base keeps the ancestor's commit, as merge-ort does at that depth
+                                    // when neither commit contains the other.
+                                    if !matches!(
+                                        resolve_tree_conflicts,
+                                        Some(ResolveWith::Ancestor | ResolveWith::VirtualMergeBase)
+                                    ) {
                                         apply_our_resolution(
                                             ours,
                                             theirs,
@@ -678,7 +695,8 @@ pub fn tree<'objects>(
                                         &mut ours_disposition,
                                         &mut theirs_disposition,
                                     )?,
-                                    Some(ResolveWith::Ancestor) => {}
+                                    // A merged merge-base keeps the ancestor's entry, as merge-ort does at that depth.
+                                    Some(ResolveWith::Ancestor | ResolveWith::VirtualMergeBase) => {}
                                 }
                                 if should_fail_on_conflict(conflict) {
                                     break 'outer;
@@ -764,7 +782,7 @@ pub fn tree<'objects>(
                                 );
 
                                 match resolve_tree_conflicts {
-                                    None => {
+                                    None | Some(ResolveWith::VirtualMergeBase) => {
                                         editor.remove_if_leaf(toc(source_location))?;
                                         editor.remove_if_leaf(toc(blocking_location))?;
                                         our_tree.remove_change(blocking_location.as_bstr());
@@ -825,7 +843,7 @@ pub fn tree<'objects>(
                                 );
 
                                 match resolve_tree_conflicts {
-                                    None => {
+                                    None | Some(ResolveWith::VirtualMergeBase) => {
                                         editor.remove_if_leaf(toc(blocking_location))?;
                                         our_tree.remove_change(blocking_location.as_bstr());
                                         editor.upsert(toc(&renamed_location), blocking_mode.kind(), *blocking_id)?;
@@ -864,8 +882,13 @@ pub fn tree<'objects>(
                                 },
                             ) if our_mode.is_commit() && their_mode.is_commit() => {
                                 // With no merge base at this path, merge-ort likewise keeps ours as the provisional
-                                // result while retaining the add/add conflict for a submodule-aware pass.
-                                if !matches!(resolve_tree_conflicts, Some(ResolveWith::Ancestor)) {
+                                // result while retaining the add/add conflict for a submodule-aware pass. A merged
+                                // merge-base has no entry here, as merge-ort's two-way gitlink merge then takes the
+                                // absent ancestor.
+                                if !matches!(
+                                    resolve_tree_conflicts,
+                                    Some(ResolveWith::Ancestor | ResolveWith::VirtualMergeBase)
+                                ) {
                                     apply_our_resolution(
                                         ours,
                                         theirs,
@@ -960,6 +983,16 @@ pub fn tree<'objects>(
                                             (&mut ours_disposition, &mut theirs_disposition),
                                             (ours_idx, theirs_idx),
                                         )?,
+                                        // A directory keeps its path at every depth, and the other entry moves.
+                                        Some(ResolveWith::VirtualMergeBase) if placement.involves_directory() => {
+                                            placement.apply(
+                                                &mut editor,
+                                                (&mut *our_tree, &mut *their_tree),
+                                                (&mut *our_changes, &mut *their_changes),
+                                                (&mut ours_disposition, &mut theirs_disposition),
+                                                (ours_idx, theirs_idx),
+                                            )?;
+                                        }
                                         Some(resolve) => {
                                             conflict.entries = Default::default();
                                             match resolve {
@@ -970,7 +1003,9 @@ pub fn tree<'objects>(
                                                     };
                                                     editor.upsert(toc(location), mode.kind(), *id)?;
                                                 }
-                                                ResolveWith::Ancestor => {
+                                                // A merged merge-base has no entry here either, as merge-ort keeps the
+                                                // absent ancestor version of entries of distinct types at that depth.
+                                                ResolveWith::Ancestor | ResolveWith::VirtualMergeBase => {
                                                     // Do nothing - this discards both sides.
                                                     // Note that one of these adds might be the result of a rename, which
                                                     // means we effectively loose the original and can't get it back as that information is degenerated.
@@ -1036,7 +1071,7 @@ pub fn tree<'objects>(
                                         None,
                                     ];
                                     match resolve_tree_conflicts {
-                                        None => {
+                                        None | Some(ResolveWith::VirtualMergeBase) => {
                                             let our_tree = pick_mut(side, our_tree, their_tree);
                                             let renamed_path = unique_path_in_tree(
                                                 location.as_bstr(),
@@ -1047,11 +1082,19 @@ pub fn tree<'objects>(
                                             editor.remove_if_leaf(toc(location))?;
                                             our_tree.remove_existing_change(location.as_bstr());
 
+                                            // A merged merge-base moves the ancestor's version, as merge-ort's
+                                            // modify/delete keeps it at that depth.
+                                            let (moved_mode, moved_id) = match resolve_tree_conflicts {
+                                                Some(ResolveWith::VirtualMergeBase) => {
+                                                    (previous_entry_mode, previous_id)
+                                                }
+                                                _ => (entry_mode, id),
+                                            };
                                             let new_change = Change::Addition {
                                                 location: renamed_path.clone(),
                                                 relation: None,
-                                                entry_mode: *entry_mode,
-                                                id: *id,
+                                                entry_mode: *moved_mode,
+                                                id: *moved_id,
                                             };
                                             let should_break = should_fail_on_conflict(Conflict::without_resolution(
                                                 ResolutionFailure::OursModifiedTheirsDirectoryThenOursRenamed {
@@ -1119,7 +1162,9 @@ pub fn tree<'objects>(
                                                 _ => unreachable!("parent-match assures this"),
                                             }
                                         }
-                                        Some(ResolveWith::Ancestor) => {}
+                                        // A merged merge-base keeps the ancestor's version, as merge-ort does at that
+                                        // depth.
+                                        Some(ResolveWith::Ancestor | ResolveWith::VirtualMergeBase) => {}
                                     }
                                     should_fail_on_conflict(Conflict::without_resolution(
                                         ResolutionFailure::OursModifiedTheirsDeleted,
@@ -1128,7 +1173,7 @@ pub fn tree<'objects>(
                                     ))
                                 };
                                 let deletion_was_applied = match resolve_tree_conflicts {
-                                    None => deletion_replaced_by_directory,
+                                    None | Some(ResolveWith::VirtualMergeBase) => deletion_replaced_by_directory,
                                     Some(ResolveWith::Ours) => side.to_global(outer_side).is_swapped(),
                                     Some(ResolveWith::Ancestor) => false,
                                 };
@@ -1155,7 +1200,7 @@ pub fn tree<'objects>(
                                 },
                             ) if ours.location() != theirs.location() => {
                                 match resolve_tree_conflicts {
-                                    None => {
+                                    None | Some(ResolveWith::VirtualMergeBase) => {
                                         // A file-to-directory diff can yield the descendant addition
                                         // before the deletion of the blocking base file. Defer it so
                                         // the modification/deletion pair can relocate the modification
@@ -1212,7 +1257,7 @@ pub fn tree<'objects>(
                                 );
 
                                 match resolve_tree_conflicts {
-                                    None => {
+                                    None | Some(ResolveWith::VirtualMergeBase) => {
                                         editor.remove_if_leaf(toc(source_location))?;
                                         editor.upsert(toc(&renamed_location), entry_mode.kind(), *id)?;
                                         their_tree.remove_existing_change(location.as_bstr());
@@ -1261,7 +1306,7 @@ pub fn tree<'objects>(
                                 // The leaf rename occupies a path vacated by the directory rename.
                                 // Descendant changes resolve the actual rename/delete conflict.
                                 match resolve_tree_conflicts {
-                                    None => {
+                                    None | Some(ResolveWith::VirtualMergeBase) => {
                                         apply_change_and_mark(&mut editor, theirs, &mut theirs_disposition)?;
                                     }
                                     Some(ResolveWith::Ours) => {
@@ -1334,7 +1379,7 @@ pub fn tree<'objects>(
                                 && !(our_mode.is_commit() && their_mode.is_commit()) =>
                             {
                                 match resolve_tree_conflicts {
-                                    None => {
+                                    None | Some(ResolveWith::VirtualMergeBase) => {
                                         editor.remove_if_leaf(toc(our_source_location))?;
                                         editor.remove_if_leaf(toc(their_source_location))?;
                                         our_tree.remove_change(our_source_location.as_bstr());
@@ -1363,6 +1408,19 @@ pub fn tree<'objects>(
                                                         merged_blob_id,
                                                     },
                                                 },
+                                                (ours, theirs, Original, outer_side),
+                                                [
+                                                    None,
+                                                    index_entry(our_mode, our_id),
+                                                    index_entry(their_mode, their_id),
+                                                ],
+                                            )
+                                        } else if matches!(resolve_tree_conflicts, Some(ResolveWith::VirtualMergeBase))
+                                        {
+                                            // A merged merge-base has no entry at the destination, as merge-ort keeps
+                                            // the absent ancestor version of entries of distinct types at that depth.
+                                            Conflict::without_resolution(
+                                                ResolutionFailure::OursRenamedTheirsRenamedToSameLocation,
                                                 (ours, theirs, Original, outer_side),
                                                 [
                                                     None,
@@ -1430,6 +1488,8 @@ pub fn tree<'objects>(
                             (
                                 Change::Rewrite {
                                     source_location,
+                                    source_entry_mode,
+                                    source_id,
                                     entry_mode: our_mode,
                                     id: our_id,
                                     location,
@@ -1451,6 +1511,8 @@ pub fn tree<'objects>(
                                 },
                                 Change::Rewrite {
                                     source_location,
+                                    source_entry_mode,
+                                    source_id,
                                     entry_mode: our_mode,
                                     id: our_id,
                                     location,
@@ -1470,10 +1532,21 @@ pub fn tree<'objects>(
                                     Swapped
                                 };
                                 match resolve_tree_conflicts {
-                                    None => {
+                                    None | Some(ResolveWith::VirtualMergeBase) => {
+                                        // A merged merge-base gives the rename's destination the version that the
+                                        // rename/delete rule decides, as the other side deleted the rename's source.
+                                        let (mode, id) = match resolve_tree_conflicts {
+                                            Some(ResolveWith::VirtualMergeBase) => rename_delete_entry_in_merge_base(
+                                                pick(side, their_tree, our_tree),
+                                                location,
+                                                (*our_mode, *our_id),
+                                                (*source_entry_mode, *source_id),
+                                            ),
+                                            _ => (*our_mode, *our_id),
+                                        };
                                         editor.remove_if_leaf(toc(source_location))?;
                                         pick_mut(side, our_tree, their_tree).remove_change(source_location.as_bstr());
-                                        editor.upsert(toc(location), our_mode.kind(), *our_id)?;
+                                        editor.upsert(toc(location), mode.kind(), id)?;
                                         editor.upsert(toc(add_location), their_mode.kind(), *their_id)?;
                                         ours_disposition = ChangeDisposition::Applied;
                                         theirs_disposition = ChangeDisposition::Applied;
@@ -1542,7 +1615,7 @@ pub fn tree<'objects>(
                                 );
 
                                 match resolve_tree_conflicts {
-                                    None => {
+                                    None | Some(ResolveWith::VirtualMergeBase) => {
                                         editor.remove_if_leaf(toc(blocking_source))?;
                                         editor.remove_if_leaf(toc(blocking_location))?;
                                         our_tree.remove_change(blocking_location.as_bstr());
@@ -1610,7 +1683,10 @@ pub fn tree<'objects>(
                                     (id, Some(resolution))
                                 };
 
-                                if matches!(resolve_tree_conflicts, None | Some(ResolveWith::Ours)) {
+                                if matches!(
+                                    resolve_tree_conflicts,
+                                    None | Some(ResolveWith::Ours | ResolveWith::VirtualMergeBase)
+                                ) {
                                     editor.remove_if_leaf(toc(source_location))?;
                                     our_tree.remove_change(source_location.as_bstr());
                                     their_tree.remove_change(source_location.as_bstr());
@@ -1662,7 +1738,7 @@ pub fn tree<'objects>(
                                         break 'outer;
                                     }
                                     match resolve_tree_conflicts {
-                                        None => {
+                                        None | Some(ResolveWith::VirtualMergeBase) => {
                                             let our_addition = Change::Addition {
                                                 location: our_location.into_owned(),
                                                 relation: None,
@@ -1739,6 +1815,8 @@ pub fn tree<'objects>(
                                 Change::Deletion { .. },
                                 Change::Rewrite {
                                     source_location,
+                                    source_entry_mode,
+                                    source_id,
                                     entry_mode: rewritten_mode,
                                     id: rewritten_id,
                                     location,
@@ -1748,6 +1826,8 @@ pub fn tree<'objects>(
                             | (
                                 Change::Rewrite {
                                     source_location,
+                                    source_entry_mode,
+                                    source_id,
                                     entry_mode: rewritten_mode,
                                     id: rewritten_id,
                                     location,
@@ -1762,7 +1842,7 @@ pub fn tree<'objects>(
                                 };
 
                                 match resolve_tree_conflicts {
-                                    None | Some(ResolveWith::Ours) => {
+                                    None | Some(ResolveWith::Ours | ResolveWith::VirtualMergeBase) => {
                                         editor.remove_if_leaf(toc(source_location))?;
                                         pick_mut(side, our_tree, their_tree).remove_change(source_location.as_bstr());
                                         match side {
@@ -1779,11 +1859,22 @@ pub fn tree<'objects>(
                                     pick(side, our_changes, their_changes),
                                 )
                                 .unwrap_or_else(|| location.to_owned());
+                                // A merged merge-base keeps the source's ancestor version at the destination, unless
+                                // the deleting side has an entry there to merge with, as merge-ort does at that depth.
+                                let (entry_mode, id) = match resolve_tree_conflicts {
+                                    Some(ResolveWith::VirtualMergeBase) => rename_delete_entry_in_merge_base(
+                                        pick(side, our_tree, their_tree),
+                                        &their_rewritten_location,
+                                        (*rewritten_mode, *rewritten_id),
+                                        (*source_entry_mode, *source_id),
+                                    ),
+                                    _ => (*rewritten_mode, *rewritten_id),
+                                };
                                 let our_addition = Change::Addition {
                                     location: their_rewritten_location,
                                     relation: None,
-                                    entry_mode: *rewritten_mode,
-                                    id: *rewritten_id,
+                                    entry_mode,
+                                    id,
                                 };
 
                                 if should_fail_on_conflict(Conflict::without_resolution(
@@ -1803,7 +1894,7 @@ pub fn tree<'objects>(
                                 }
 
                                 let ours_is_rewrite = side.is_swapped();
-                                if resolve_tree_conflicts.is_none()
+                                if matches!(resolve_tree_conflicts, None | Some(ResolveWith::VirtualMergeBase))
                                     || (matches!(resolve_tree_conflicts, Some(ResolveWith::Ours)) && ours_is_rewrite)
                                 {
                                     push_deferred((our_addition, None), pick_mut(side, their_changes, our_changes));
@@ -1855,15 +1946,25 @@ pub fn tree<'objects>(
                                 if our_mode.is_commit() && their_mode.is_commit() {
                                     // Keep Git's provisional global-ours tree while leaving the conflict unresolved.
                                     // `apply_change()` also removes the source when global ours is the rewrite.
-                                    if !matches!(resolve_tree_conflicts, Some(ResolveWith::Ancestor)) {
-                                        apply_our_resolution(
+                                    match resolve_tree_conflicts {
+                                        None | Some(ResolveWith::Ours) => apply_our_resolution(
                                             ours,
                                             theirs,
                                             outer_side,
                                             &mut editor,
                                             &mut ours_disposition,
                                             &mut theirs_disposition,
-                                        )?;
+                                        )?,
+                                        Some(ResolveWith::Ancestor) => {}
+                                        // A merged merge-base has neither entry, as merge-ort's two-way gitlink merge
+                                        // takes the absent ancestor, while the rename's source is removed as at any
+                                        // depth. The rename is already at `location` if it was applied before.
+                                        Some(ResolveWith::VirtualMergeBase) => {
+                                            editor.remove_if_leaf(toc(source_location))?;
+                                            pick_mut(side, our_tree, their_tree)
+                                                .remove_change(source_location.as_bstr());
+                                            editor.remove_if_leaf(toc(location))?;
+                                        }
                                     }
                                     if should_fail_on_conflict(Conflict::without_resolution(
                                         ResolutionFailure::SubmoduleAddAdd,
@@ -1877,7 +1978,7 @@ pub fn tree<'objects>(
                                     // Keep the replacement at the explicit source instead of relocating it with
                                     // the inferred directory rename and reporting a second conflict.
                                     match resolve_tree_conflicts {
-                                        None => {
+                                        None | Some(ResolveWith::VirtualMergeBase) => {
                                             editor.upsert(toc(add_location), their_mode.kind(), *their_id)?;
                                             ours_disposition = ChangeDisposition::Applied;
                                             theirs_disposition = ChangeDisposition::Applied;
@@ -1979,6 +2080,16 @@ pub fn tree<'objects>(
                                             (&mut ours_disposition, &mut theirs_disposition),
                                             (ours_idx, theirs_idx),
                                         )?,
+                                        // A directory keeps its path at every depth, and the other entry moves.
+                                        Some(ResolveWith::VirtualMergeBase) if placement.involves_directory() => {
+                                            placement.apply(
+                                                &mut editor,
+                                                (&mut *our_tree, &mut *their_tree),
+                                                (&mut *our_changes, &mut *their_changes),
+                                                (&mut ours_disposition, &mut theirs_disposition),
+                                                (ours_idx, theirs_idx),
+                                            )?;
+                                        }
                                         Some(ResolveWith::Ours) => {
                                             let (mode, id) = match outer_side {
                                                 Original => local_ours,
@@ -1986,8 +2097,10 @@ pub fn tree<'objects>(
                                             };
                                             editor.upsert(toc(location), mode.kind(), id)?;
                                         }
-                                        // Keep neither entry, removing the rename if it is already applied.
-                                        Some(ResolveWith::Ancestor) => {
+                                        // Keep neither entry, removing the rename if it is already applied. A merged
+                                        // merge-base has neither, as merge-ort keeps the absent ancestor version of
+                                        // entries of distinct types at that depth.
+                                        Some(ResolveWith::Ancestor | ResolveWith::VirtualMergeBase) => {
                                             editor.remove_if_leaf(toc(location))?;
                                         }
                                     }
@@ -2143,6 +2256,26 @@ fn pick_mut<'a, T: ?Sized>(side: ConflictMapping, ours: &'a mut T, theirs: &'a m
     }
 }
 
+/// Return the entry that a merged merge-base keeps at `location`, the destination of a rename of `renamed` whose source,
+/// with the ancestor entry `source`, the other side deleted. As Git's `merge-ort` does when it merges merge-bases, that's
+/// `source`, unless `deleting_side_tree` has an entry at `location` too, which `renamed` is then merged with like an
+/// addition.
+fn rename_delete_entry_in_merge_base(
+    deleting_side_tree: &TreeNodes,
+    location: &BString,
+    renamed: (EntryMode, ObjectId),
+    source: (EntryMode, ObjectId),
+) -> (EntryMode, ObjectId) {
+    if matches!(
+        deleting_side_tree.check_conflict(location.as_bstr()),
+        Some(PossibleConflict::Match { .. })
+    ) {
+        renamed
+    } else {
+        source
+    }
+}
+
 fn index_entry(mode: &gix_object::tree::EntryMode, id: &gix_hash::ObjectId) -> Option<ConflictIndexEntry> {
     Some(ConflictIndexEntry {
         mode: *mode,
@@ -2247,6 +2380,11 @@ impl DistinctTypes {
             Swapped => (&self.theirs, &self.ours),
         };
         (ours.unique_location.clone(), theirs.unique_location.clone())
+    }
+
+    /// Return `true` if one of the entries is a directory, which keeps the path at every depth of a recursive merge.
+    fn involves_directory(&self) -> bool {
+        self.ours.mode.is_tree() || self.theirs.mode.is_tree()
     }
 
     /// Return the index entry of the base `(mode, id)` if either entry has the base's type, in which case it

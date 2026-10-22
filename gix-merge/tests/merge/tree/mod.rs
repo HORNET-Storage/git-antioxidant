@@ -163,14 +163,10 @@ fn run_baseline() -> TestResult {
             continue;
         }
 
-        for tree_resolution in [
-            gix_merge::tree::ResolveWith::Ancestor,
-            gix_merge::tree::ResolveWith::Ours,
+        for (tree_resolution, resolution_name) in [
+            (gix_merge::tree::ResolveWith::Ancestor, "ancestor"),
+            (gix_merge::tree::ResolveWith::Ours, "ours"),
         ] {
-            let resolution_name = match tree_resolution {
-                gix_merge::tree::ResolveWith::Ancestor => "ancestor",
-                gix_merge::tree::ResolveWith::Ours => "ours",
-            };
             let basename = format!("resolve-{our_side_name}-{their_side_name}-with-{resolution_name}");
             let tree_path = root.join(".git").join(format!("{basename}.tree"));
             if !tree_path.exists() {
@@ -225,11 +221,11 @@ fn run_baseline() -> TestResult {
     }
 
     assert_eq!(
-        actual_cases, 191,
+        actual_cases, 203,
         "BUG: update this number, and don't forget to remove a filter in the end"
     );
     assert_eq!(
-        skipped_tree_resolve_cases, 170,
+        skipped_tree_resolve_cases, 182,
         "this is done when no case is skipped, and we don't want to accidentally skip them.\
         Some don't actually have conflicts.\
         The ones we skipped don't have irreconcilable conflicts"

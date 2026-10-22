@@ -28,8 +28,10 @@ pub(super) mod function {
     ///
     /// As in Git, the merged merge-bases keep their conflicts. Conflicting text keeps conflict markers, two
     /// characters longer for each level of recursion, in the conflict style of `options` if it keeps conflicts
-    /// and in the default style otherwise. Binary files, symbolic links and irreconcilable tree conflicts keep
-    /// the version of their merge-base, and merge-bases without a common ancestor are merged with the empty tree.
+    /// and in the default style otherwise. Conflicting binary files and symbolic links keep the version of their
+    /// merge-base: a binary file that both sides added becomes empty, and a symbolic link that both sides added is
+    /// absent. Tree conflicts are resolved as [`ResolveWith::VirtualMergeBase`](crate::tree::ResolveWith::VirtualMergeBase)
+    /// describes, and merge-bases without a common ancestor are merged with the empty tree.
     #[expect(clippy::too_many_arguments)]
     pub fn virtual_merge_base<'objects>(
         first_commit: gix_hash::ObjectId,
@@ -49,7 +51,7 @@ pub(super) mod function {
         options.marker_size_multiplier = options.marker_size_multiplier.saturating_add(1);
         // The merged merge-base must be complete, whatever the caller considers unresolved.
         options.fail_on_conflict = None;
-        options.tree_conflicts = Some(crate::tree::ResolveWith::Ancestor);
+        options.tree_conflicts = Some(crate::tree::ResolveWith::VirtualMergeBase);
         options.blob_merge.is_virtual_ancestor = true;
         let conflict = &mut options.blob_merge.text.conflict;
         if !matches!(conflict, builtin_driver::text::Conflict::Keep { .. }) {

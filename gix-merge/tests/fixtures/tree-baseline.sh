@@ -103,6 +103,40 @@ function make_resolve_tree() {
   git write-tree > ".git/${filename}.tree"
 }
 
+# Write a blob with the numbers <from> to <to>, one per line, the line at <position> replaced by
+# <text> if given, and print its id.
+function numbers_blob () {
+  local from=${1:?the first number} to=${2:?the last number} position=${3:-0} text=${4:-}
+  local number line=0
+  for number in $(seq "$from" "$to"); do
+    line=$((line + 1))
+    if [ "$line" -eq "$position" ]; then
+      echo "$text"
+    else
+      echo "$number"
+    fi
+  done | git hash-object -w --stdin
+}
+
+# Commit the index with the parents <parent>... and point the branch <name> at that commit.
+function commit_index () {
+  local name=${1:?the branch to point at the commit} message=${2:?the commit message}
+  local parent parents=
+  shift 2
+  for parent in "$@"; do
+    parents="$parents -p $parent"
+  done
+  git update-ref "refs/heads/$name" "$(git commit-tree $parents -m "$message" "$(git write-tree)")"
+}
+
+# Merge the merge-bases A1 and B1 crosswise: A merges B1 into A1 and keeps the tree of A1, and B merges
+# A1 into B1 and keeps the tree of B1. Merging A and B then merges A1 and B1 into a virtual merge-base
+# first, and the result shows how that merged merge-base resolved their conflicts.
+function make_criss_cross_merges () {
+  git update-ref refs/heads/A "$(git commit-tree -p A1 -p B1 -m "merge B1 into A1, keep the tree of A1" "A1^{tree}")"
+  git update-ref refs/heads/B "$(git commit-tree -p B1 -p A1 -m "merge A1 into B1, keep the tree of B1" "B1^{tree}")"
+}
+
 function baseline () (
   local dir=${1:?the directory to enter}
   local output_name=${2:?the basename of the output of the merge}
@@ -1767,6 +1801,243 @@ git init three-merge-bases-with-conflicting-content
   tick && git commit -am "merge Y"
 )
 
+git init multiple-merge-bases-with-unmergeable-entries
+(cd multiple-merge-bases-with-unmergeable-entries
+  # Each directory holds one conflict between A1 and B1, which A and B merge crosswise, so merging A
+  # and B merges A1 and B1 into a virtual merge-base first. As merge-ort does one level of recursion
+  # below the merge, that merged merge-base keeps the base version of each entry that can't be
+  # merged: of a modified file that the other side deleted, of entries of distinct types, of
+  # submodules, binary files and symlinks, and no entry where the base has none, except that a
+  # binary file both sides added becomes empty. Conflicting text keeps its markers, and of the
+  # executable bits that both sides set differently, that of 'Temporary merge branch 1' applies.
+  # The final merge then merges the changes of A and B against the merged merge-base.
+  #
+  # Every entry is written to the index directly, as for `distinct-types`. Each directory has its
+  # own sibling, and no two directories share content.
+  empty_tree=$(git mktree </dev/null)
+  for dir in modify-vs-delete delete-vs-modify link-vs-modify modify-vs-link added-file-vs-added-link \
+    added-link-vs-added-file added-link-vs-added-gitlink added-gitlink-vs-added-link modified-gitlinks \
+    added-gitlinks modified-binary-files added-binary-files modified-links added-links \
+    added-executable-vs-added-file added-file-vs-added-executable modified-text added-text; do
+    git update-index --add --cacheinfo 100644,"$(write_lines "$dir" | git hash-object -w --stdin)","$dir"/sibling
+  done
+  git update-index --add --index-info <<EOF
+100644 $(numbers_blob 101 120)	modify-vs-delete/f
+100644 $(numbers_blob 201 220)	delete-vs-modify/f
+100644 $(numbers_blob 301 320)	link-vs-modify/f
+100644 $(numbers_blob 401 420)	modify-vs-link/f
+160000 $(git commit-tree -m "modified-gitlinks base" "$empty_tree")	modified-gitlinks/f
+100644 $(printf 'base\0modified-binary-files\n' | git hash-object -w --stdin)	modified-binary-files/f
+120000 $(printf 'modified-links base' | git hash-object -w --stdin)	modified-links/f
+100644 $(numbers_blob 1701 1720)	modified-text/f
+EOF
+  commit_index main "base"
+
+  git update-index --force-remove delete-vs-modify/f
+  git update-index --add --index-info <<EOF
+100644 $(numbers_blob 101 120 10 A110)	modify-vs-delete/f
+120000 $(printf 'link-vs-modify A1' | git hash-object -w --stdin)	link-vs-modify/f
+100644 $(numbers_blob 401 420 10 A410)	modify-vs-link/f
+100644 $(numbers_blob 501 520)	added-file-vs-added-link/f
+120000 $(printf 'added-link-vs-added-file A1' | git hash-object -w --stdin)	added-link-vs-added-file/f
+120000 $(printf 'added-link-vs-added-gitlink A1' | git hash-object -w --stdin)	added-link-vs-added-gitlink/f
+160000 $(git commit-tree -m "added-gitlink-vs-added-link A1" "$empty_tree")	added-gitlink-vs-added-link/f
+160000 $(git commit-tree -m "modified-gitlinks A1" "$empty_tree")	modified-gitlinks/f
+160000 $(git commit-tree -m "added-gitlinks A1" "$empty_tree")	added-gitlinks/f
+100644 $(printf 'A1\0modified-binary-files\n' | git hash-object -w --stdin)	modified-binary-files/f
+100644 $(printf 'A1\0added-binary-files\n' | git hash-object -w --stdin)	added-binary-files/f
+120000 $(printf 'modified-links A1' | git hash-object -w --stdin)	modified-links/f
+120000 $(printf 'added-links A1' | git hash-object -w --stdin)	added-links/f
+100755 $(numbers_blob 1501 1520)	added-executable-vs-added-file/f
+100644 $(numbers_blob 1601 1620)	added-file-vs-added-executable/f
+100644 $(numbers_blob 1701 1720 10 A1710)	modified-text/f
+100644 $( (seq 1801 1820; echo A1) | git hash-object -w --stdin)	added-text/f
+EOF
+  commit_index A1 "A1 changes the entry of every directory" main
+
+  git read-tree main
+  git update-index --force-remove modify-vs-delete/f
+  git update-index --add --index-info <<EOF
+100644 $(numbers_blob 201 220 10 B210)	delete-vs-modify/f
+100644 $(numbers_blob 301 320 10 B310)	link-vs-modify/f
+120000 $(printf 'modify-vs-link B1' | git hash-object -w --stdin)	modify-vs-link/f
+120000 $(printf 'added-file-vs-added-link B1' | git hash-object -w --stdin)	added-file-vs-added-link/f
+100644 $(numbers_blob 601 620)	added-link-vs-added-file/f
+160000 $(git commit-tree -m "added-link-vs-added-gitlink B1" "$empty_tree")	added-link-vs-added-gitlink/f
+120000 $(printf 'added-gitlink-vs-added-link B1' | git hash-object -w --stdin)	added-gitlink-vs-added-link/f
+160000 $(git commit-tree -m "modified-gitlinks B1" "$empty_tree")	modified-gitlinks/f
+160000 $(git commit-tree -m "added-gitlinks B1" "$empty_tree")	added-gitlinks/f
+100644 $(printf 'B1\0modified-binary-files\n' | git hash-object -w --stdin)	modified-binary-files/f
+100644 $(printf 'B1\0added-binary-files\n' | git hash-object -w --stdin)	added-binary-files/f
+120000 $(printf 'modified-links B1' | git hash-object -w --stdin)	modified-links/f
+120000 $(printf 'added-links B1' | git hash-object -w --stdin)	added-links/f
+100644 $(numbers_blob 1501 1520)	added-executable-vs-added-file/f
+100755 $(numbers_blob 1601 1620)	added-file-vs-added-executable/f
+100644 $(numbers_blob 1701 1720 10 B1710)	modified-text/f
+100644 $( (seq 1801 1820; echo B1) | git hash-object -w --stdin)	added-text/f
+EOF
+  commit_index B1 "B1 changes the entry of every directory" main
+  make_criss_cross_merges
+)
+
+git init multiple-merge-bases-with-renames
+(cd multiple-merge-bases-with-renames
+  # Each directory holds one conflict between A1 and B1 that involves a rename, merged crosswise as in
+  # `multiple-merge-bases-with-unmergeable-entries`. Merging A1 and B1, merge-ort removes the sources
+  # of the renames as it does one level of recursion higher. A rename whose source the other side
+  # deleted leaves the base version of the source at the destination, unless the other side added an
+  # entry there, which is then merged with the renamed one. Entries of distinct types that meet at a
+  # rename's destination leave none there, and of a source that the other side changed to another
+  # type, the destination gets the base version while the source keeps the change.
+  #
+  # Each rename source has content that no other change of its side adds, so rename detection pairs
+  # it only with its own destination.
+  for dir in rename-vs-delete delete-vs-rename rename-and-modify-vs-delete delete-vs-rename-and-modify \
+    renames-to-different-paths renames-to-different-paths-with-changes renames-to-different-paths-with-conflict \
+    renames-to-same-path rename-vs-add add-vs-rename rename-vs-added-link added-link-vs-rename link-vs-rename \
+    rename-vs-link renames-of-file-and-link-to-same-path renames-of-link-and-file-to-same-path \
+    rename-vs-rename-and-add rename-and-add-vs-rename rename-vs-delete-and-add delete-and-add-vs-rename; do
+    git update-index --add --cacheinfo 100644,"$(write_lines "$dir" | git hash-object -w --stdin)","$dir"/sibling
+  done
+  git update-index --add --index-info <<EOF
+100644 $(numbers_blob 101 120)	rename-vs-delete/f
+100644 $(numbers_blob 201 220)	delete-vs-rename/f
+100644 $(numbers_blob 301 320)	rename-and-modify-vs-delete/f
+100644 $(numbers_blob 401 420)	delete-vs-rename-and-modify/f
+100644 $(numbers_blob 501 520)	renames-to-different-paths/f
+100644 $(numbers_blob 601 620)	renames-to-different-paths-with-changes/f
+100644 $(numbers_blob 701 720)	renames-to-different-paths-with-conflict/f
+100644 $(numbers_blob 801 820)	renames-to-same-path/f1
+100644 $(numbers_blob 851 870)	renames-to-same-path/f2
+100644 $(numbers_blob 901 920)	rename-vs-add/f
+100644 $(numbers_blob 1001 1020)	add-vs-rename/f
+100644 $(numbers_blob 1101 1120)	rename-vs-added-link/f
+100644 $(numbers_blob 1201 1220)	added-link-vs-rename/f
+100644 $(numbers_blob 1301 1320)	link-vs-rename/f
+100644 $(numbers_blob 1401 1420)	rename-vs-link/f
+100644 $(numbers_blob 1501 1520)	renames-of-file-and-link-to-same-path/f
+120000 $(printf 'renames-of-file-and-link-to-same-path' | git hash-object -w --stdin)	renames-of-file-and-link-to-same-path/l
+100644 $(numbers_blob 1601 1620)	renames-of-link-and-file-to-same-path/f
+120000 $(printf 'renames-of-link-and-file-to-same-path' | git hash-object -w --stdin)	renames-of-link-and-file-to-same-path/l
+100644 $(numbers_blob 1701 1720)	rename-vs-rename-and-add/f
+100644 $(numbers_blob 1801 1820)	rename-and-add-vs-rename/f
+100644 $(numbers_blob 1901 1920)	rename-vs-delete-and-add/f
+100644 $(numbers_blob 2001 2020)	delete-and-add-vs-rename/f
+EOF
+  commit_index main "base"
+
+  git update-index --force-remove rename-vs-delete/f delete-vs-rename/f rename-and-modify-vs-delete/f \
+    delete-vs-rename-and-modify/f renames-to-different-paths/f renames-to-different-paths-with-changes/f \
+    renames-to-different-paths-with-conflict/f renames-to-same-path/f1 rename-vs-add/f rename-vs-added-link/f \
+    rename-vs-link/f renames-of-file-and-link-to-same-path/f renames-of-link-and-file-to-same-path/l \
+    rename-vs-rename-and-add/f rename-and-add-vs-rename/f rename-vs-delete-and-add/f delete-and-add-vs-rename/f
+  git update-index --add --index-info <<EOF
+100644 $(numbers_blob 101 120)	rename-vs-delete/g
+100644 $(numbers_blob 301 320 10 A310)	rename-and-modify-vs-delete/g
+100644 $(numbers_blob 501 520)	renames-to-different-paths/g
+100644 $(numbers_blob 601 620 1 A601)	renames-to-different-paths-with-changes/g
+100644 $(numbers_blob 701 720 10 A710)	renames-to-different-paths-with-conflict/g
+100644 $(numbers_blob 801 820)	renames-to-same-path/g
+100644 $(numbers_blob 901 920)	rename-vs-add/g
+100644 $(numbers_blob 1051 1070)	add-vs-rename/g
+100644 $(numbers_blob 1101 1120)	rename-vs-added-link/g
+120000 $(printf 'added-link-vs-rename A1' | git hash-object -w --stdin)	added-link-vs-rename/g
+120000 $(printf 'link-vs-rename A1' | git hash-object -w --stdin)	link-vs-rename/f
+100644 $(numbers_blob 1401 1420)	rename-vs-link/g
+100644 $(numbers_blob 1501 1520)	renames-of-file-and-link-to-same-path/g
+120000 $(printf 'renames-of-link-and-file-to-same-path' | git hash-object -w --stdin)	renames-of-link-and-file-to-same-path/g
+100644 $(numbers_blob 1701 1720)	rename-vs-rename-and-add/g
+100644 $(numbers_blob 1801 1820)	rename-and-add-vs-rename/h
+100644 $(numbers_blob 1851 1870)	rename-and-add-vs-rename/g
+100644 $(numbers_blob 1901 1920 10 A1910)	rename-vs-delete-and-add/g
+100644 $(numbers_blob 2051 2070)	delete-and-add-vs-rename/g
+EOF
+  commit_index A1 "A1 renames, deletes and adds" main
+
+  git read-tree main
+  git update-index --force-remove rename-vs-delete/f delete-vs-rename/f rename-and-modify-vs-delete/f \
+    delete-vs-rename-and-modify/f renames-to-different-paths/f renames-to-different-paths-with-changes/f \
+    renames-to-different-paths-with-conflict/f renames-to-same-path/f2 add-vs-rename/f added-link-vs-rename/f \
+    link-vs-rename/f renames-of-file-and-link-to-same-path/l renames-of-link-and-file-to-same-path/f \
+    rename-vs-rename-and-add/f rename-and-add-vs-rename/f rename-vs-delete-and-add/f delete-and-add-vs-rename/f
+  git update-index --add --index-info <<EOF
+100644 $(numbers_blob 201 220)	delete-vs-rename/g
+100644 $(numbers_blob 401 420 10 B410)	delete-vs-rename-and-modify/g
+100644 $(numbers_blob 501 520)	renames-to-different-paths/h
+100644 $(numbers_blob 601 620 20 B620)	renames-to-different-paths-with-changes/h
+100644 $(numbers_blob 701 720 10 B710)	renames-to-different-paths-with-conflict/h
+100644 $(numbers_blob 851 870)	renames-to-same-path/g
+100644 $(numbers_blob 951 970)	rename-vs-add/g
+100644 $(numbers_blob 1001 1020)	add-vs-rename/g
+120000 $(printf 'rename-vs-added-link B1' | git hash-object -w --stdin)	rename-vs-added-link/g
+100644 $(numbers_blob 1201 1220)	added-link-vs-rename/g
+100644 $(numbers_blob 1301 1320)	link-vs-rename/g
+120000 $(printf 'rename-vs-link B1' | git hash-object -w --stdin)	rename-vs-link/f
+120000 $(printf 'renames-of-file-and-link-to-same-path' | git hash-object -w --stdin)	renames-of-file-and-link-to-same-path/g
+100644 $(numbers_blob 1601 1620)	renames-of-link-and-file-to-same-path/g
+100644 $(numbers_blob 1701 1720)	rename-vs-rename-and-add/h
+100644 $(numbers_blob 1751 1770)	rename-vs-rename-and-add/g
+100644 $(numbers_blob 1801 1820)	rename-and-add-vs-rename/g
+100644 $(numbers_blob 1951 1970)	rename-vs-delete-and-add/g
+100644 $(numbers_blob 2001 2020 10 B2010)	delete-and-add-vs-rename/g
+EOF
+  commit_index B1 "B1 renames, deletes and adds" main
+  make_criss_cross_merges
+)
+
+git init multiple-merge-bases-with-file-directory-conflicts
+(cd multiple-merge-bases-with-file-directory-conflicts
+  # Each directory holds a file and a directory at the same path in A1 and B1, merged crosswise as in
+  # `multiple-merge-bases-with-unmergeable-entries`. Merging A1 and B1, merge-ort moves the file to a
+  # unique path named after its side, such as `d~Temporary merge branch 2`, as it does one level of
+  # recursion higher, while the directory keeps the path. A file there that one side modified and the
+  # other deleted keeps its base version.
+  for dir in modify-vs-directory directory-vs-modify added-file-vs-added-directory added-directory-vs-added-file \
+    modify-in-directory-vs-file file-vs-modify-in-directory modify-and-rename-vs-directory \
+    directory-vs-modify-and-rename; do
+    git update-index --add --cacheinfo 100644,"$(write_lines "$dir" | git hash-object -w --stdin)","$dir"/sibling
+  done
+  git update-index --add --index-info <<EOF
+100644 $(numbers_blob 101 120)	modify-vs-directory/d
+100644 $(numbers_blob 201 220)	directory-vs-modify/d
+100644 $(numbers_blob 501 520)	modify-in-directory-vs-file/d/x
+100644 $(numbers_blob 601 620)	file-vs-modify-in-directory/d/x
+100644 $(numbers_blob 701 720)	modify-and-rename-vs-directory/d
+100644 $(numbers_blob 801 820)	directory-vs-modify-and-rename/d
+EOF
+  commit_index main "base"
+
+  git update-index --force-remove directory-vs-modify/d file-vs-modify-in-directory/d/x \
+    modify-and-rename-vs-directory/d directory-vs-modify-and-rename/d
+  git update-index --add --index-info <<EOF
+100644 $(numbers_blob 101 120 10 A110)	modify-vs-directory/d
+100644 $(write_lines 'directory-vs-modify A1' | git hash-object -w --stdin)	directory-vs-modify/d/x
+100644 $(numbers_blob 301 320)	added-file-vs-added-directory/d
+100644 $(write_lines 'added-directory-vs-added-file A1' | git hash-object -w --stdin)	added-directory-vs-added-file/d/x
+100644 $(numbers_blob 501 520 10 A510)	modify-in-directory-vs-file/d/x
+100644 $(numbers_blob 651 670)	file-vs-modify-in-directory/d
+100644 $(numbers_blob 701 720 10 A710)	modify-and-rename-vs-directory/e
+100644 $(write_lines 'directory-vs-modify-and-rename A1' | git hash-object -w --stdin)	directory-vs-modify-and-rename/d/x
+EOF
+  commit_index A1 "A1 replaces files and directories" main
+
+  git read-tree main
+  git update-index --force-remove modify-vs-directory/d modify-in-directory-vs-file/d/x \
+    modify-and-rename-vs-directory/d directory-vs-modify-and-rename/d
+  git update-index --add --index-info <<EOF
+100644 $(write_lines 'modify-vs-directory B1' | git hash-object -w --stdin)	modify-vs-directory/d/x
+100644 $(numbers_blob 201 220 10 B210)	directory-vs-modify/d
+100644 $(write_lines 'added-file-vs-added-directory B1' | git hash-object -w --stdin)	added-file-vs-added-directory/d/x
+100644 $(numbers_blob 401 420)	added-directory-vs-added-file/d
+100644 $(numbers_blob 551 570)	modify-in-directory-vs-file/d
+100644 $(numbers_blob 601 620 10 B610)	file-vs-modify-in-directory/d/x
+100644 $(write_lines 'modify-and-rename-vs-directory B1' | git hash-object -w --stdin)	modify-and-rename-vs-directory/d/x
+100644 $(numbers_blob 801 820 10 B810)	directory-vs-modify-and-rename/e
+EOF
+  commit_index B1 "B1 replaces files and directories" main
+  make_criss_cross_merges
+)
+
 git init rename-and-modification
 (cd rename-and-modification
   mkdir a && write_lines original 1 2 3 4 5 >a/x.f
@@ -2581,6 +2852,12 @@ baseline multiple-merge-bases-with-conflicting-content A-B A B
 baseline multiple-merge-bases-with-conflicting-content A-B-diff3 A B
 baseline three-merge-bases-with-conflicting-content A-B A B
 baseline three-merge-bases-with-conflicting-content A-B-diff3 A B
+baseline multiple-merge-bases-with-unmergeable-entries A-B A B
+baseline multiple-merge-bases-with-unmergeable-entries A-B-diff3 A B
+baseline multiple-merge-bases-with-renames A-B A B
+baseline multiple-merge-bases-with-renames A-B-diff3 A B
+baseline multiple-merge-bases-with-file-directory-conflicts A-B A B
+baseline multiple-merge-bases-with-file-directory-conflicts A-B-diff3 A B
 
 baseline rename-and-modification A-B A B
 baseline symlink-modification A-B A B
@@ -3620,6 +3897,45 @@ EOF
   rm .git/index
   # 'B' applies the deletion to get an empty tree.
   make_resolve_tree ours B A
+)
+
+(cd multiple-merge-bases-with-file-directory-conflicts
+  # The merged merge-base keeps the file of each file/directory conflict at a path such as
+  # `d~Temporary merge branch 1`. The side that kept the file has it at the original path, so the
+  # final merge finds a rename there that the deletion of the other side conflicts with. Git also
+  # puts the version of the merged merge-base at stage 1 of the rename's destination; as in the other
+  # rename/delete cases, gix records only the side that kept the file. The reversed merges exchange
+  # stages 2 and 3.
+  for name in A-B A-B-diff3 A-B-reversed A-B-diff3-reversed; do
+    stage_of_a=2 stage_of_b=3
+    if [[ "$name" == *-reversed ]]; then
+      stage_of_a=3 stage_of_b=2
+    fi
+    IFS= read -r -d '' merged_tree_id <"$name.merge-info"
+    rm .git/index
+    git read-tree "$merged_tree_id"
+    git update-index --force-remove added-directory-vs-added-file/d added-file-vs-added-directory/d \
+      directory-vs-modify-and-rename/e directory-vs-modify/d file-vs-modify-in-directory/d/x \
+      file-vs-modify-in-directory/d~A modify-and-rename-vs-directory/e modify-in-directory-vs-file/d/x \
+      modify-in-directory-vs-file/d~B modify-vs-directory/d
+    git update-index --index-info <<EOF
+100644 blob $(git rev-parse B:added-directory-vs-added-file/d) $stage_of_b	added-directory-vs-added-file/d
+100644 blob $(git rev-parse A:added-file-vs-added-directory/d) $stage_of_a	added-file-vs-added-directory/d
+100644 blob $(git rev-parse main:directory-vs-modify-and-rename/d) 1	directory-vs-modify-and-rename/e
+100644 blob $(git rev-parse B:directory-vs-modify-and-rename/e) $stage_of_b	directory-vs-modify-and-rename/e
+100644 blob $(git rev-parse B:directory-vs-modify/d) $stage_of_b	directory-vs-modify/d
+100644 blob $(git rev-parse main:file-vs-modify-in-directory/d/x) 1	file-vs-modify-in-directory/d/x
+100644 blob $(git rev-parse B:file-vs-modify-in-directory/d/x) $stage_of_b	file-vs-modify-in-directory/d/x
+100644 blob $(git rev-parse A:file-vs-modify-in-directory/d) $stage_of_a	file-vs-modify-in-directory/d~A
+100644 blob $(git rev-parse main:modify-and-rename-vs-directory/d) 1	modify-and-rename-vs-directory/e
+100644 blob $(git rev-parse A:modify-and-rename-vs-directory/e) $stage_of_a	modify-and-rename-vs-directory/e
+100644 blob $(git rev-parse main:modify-in-directory-vs-file/d/x) 1	modify-in-directory-vs-file/d/x
+100644 blob $(git rev-parse A:modify-in-directory-vs-file/d/x) $stage_of_a	modify-in-directory-vs-file/d/x
+100644 blob $(git rev-parse B:modify-in-directory-vs-file/d) $stage_of_b	modify-in-directory-vs-file/d~B
+100644 blob $(git rev-parse A:modify-vs-directory/d) $stage_of_a	modify-vs-directory/d
+EOF
+    make_conflict_index "multiple-merge-bases-with-file-directory-conflicts-$name"
+  done
 )
 
 (cd non-tree-to-tree
