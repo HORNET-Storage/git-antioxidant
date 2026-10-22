@@ -1045,6 +1045,20 @@ See its [README.md](https://github.com/GitoxideLabs/gitoxide/blob/main/gix-lock/
 * [x] API documentation
     * [ ] Some examples
 
+### gix-repack
+* [ ] repack the objects of a repository as `git repack` does
+    * [x] combine the smallest packs and the loose objects into one pack, so that the packs form a geometric progression
+      as with `--geometric`, and leave kept, promisor and cruft packs as they are
+    * [x] copy deltas whose bases go into the new pack, breaking cycles and chains that are longer than the delta depth
+    * [x] remove the combined packs, the multi-pack-indices that list them and the loose objects that a pack holds
+    * [x] decide whether a repository needs a repack, as the auto condition of the `geometric-repack` task of
+      `git maintenance` does
+    * [ ] select objects by reachability, and write cruft packs
+    * [ ] compute deltas
+    * [ ] write multi-pack-indices and bitmaps
+* [x] API documentation
+    * [ ] Some examples
+
 ### gix-validate
 * [x] validate ref names
 * [x] validate submodule names

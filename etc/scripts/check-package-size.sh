@@ -21,6 +21,7 @@ echo 'in root: gitoxide CLI'
 (enter gix-write-tree && indent cargo diet -n --package-size-limit 15KB)
 (enter gix-add && indent cargo diet -n --package-size-limit 25KB)
 (enter gix-switch && indent cargo diet -n --package-size-limit 25KB)
+(enter gix-repack && indent cargo diet -n --package-size-limit 25KB)
 (enter gix-actor && indent cargo diet -n --package-size-limit 10KB)
 (enter gix-archive && indent cargo diet -n --package-size-limit 10KB)
 (enter gix-worktree-stream && indent cargo diet -n --package-size-limit 40KB)

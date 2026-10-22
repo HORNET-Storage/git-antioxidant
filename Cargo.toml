@@ -298,6 +298,7 @@ members = [
     "gix-write-tree",
     "gix-add",
     "gix-switch",
+    "gix-repack",
     "tests/tools",
     "tests/it",
     "gix-shallow"
