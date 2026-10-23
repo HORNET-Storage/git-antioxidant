@@ -218,6 +218,11 @@ pub struct TrackedChange {
     /// The `ours_idx_to_ignore` assures that the same rewrite won't be used as matching side, which
     /// would lead to strange effects. Only set if it's a rewrite though.
     pub needs_tree_insertion: Option<Option<usize>>,
+    /// The entry that the merge-base has at the source of a rename whose source the other side deleted, if this is the
+    /// addition that the merge deferred to the destination of that rename. As Git's `merge-ort` does, the conflict that
+    /// places the renamed entry stages this entry as its merge-base, at the destination or at the unique path that the
+    /// renamed entry moves to.
+    pub rename_source_base: Option<(EntryMode, ObjectId)>,
 }
 
 /// The lifecycle of a [`TrackedChange`] while reconciling the two side-diffs.
@@ -270,6 +275,26 @@ impl TrackedChange {
             inner,
             state: ChangeState::Pending,
             needs_tree_insertion,
+            rename_source_base: None,
+        }
+    }
+
+    /// Return `destination`, the addition at the destination of a rename whose source the other side deleted, deferred
+    /// to be placed into the tree before it's handled, with `source_base`, the merge-base's entry of the source that the
+    /// renamed entry keeps as its merge-base, if it keeps one.
+    pub(super) fn rename_destination(destination: Change, source_base: Option<(EntryMode, ObjectId)>) -> Self {
+        TrackedChange {
+            rename_source_base: source_base,
+            ..TrackedChange::new(destination, Some(None))
+        }
+    }
+
+    /// Return a pending copy of this change, to be placed into the tree and handled again once the change at `ours_idx`
+    /// of the other side, which it waits for, is resolved, and to ignore that change then.
+    pub(super) fn retry_after(&self, ours_idx: usize) -> Self {
+        TrackedChange {
+            rename_source_base: self.rename_source_base,
+            ..TrackedChange::new(self.inner.clone(), Some(Some(ours_idx)))
         }
     }
 

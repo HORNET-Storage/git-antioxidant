@@ -33,7 +33,6 @@ function oid () {
     092bfb9bdf74dd8cfd22e812151281ee9aa6f01a) echo d246bf89e9d0f356301a75184ab79e68cfcb0aac1a7acbf3d4de81400b5ee231 ;;
     09c277aa66897c58157f57a374eacc63a407dcab) echo cf8aedf347c947abf6c6e2c4ecaa2e086ea61ce81f52491c453b81c6455f305e ;;
     0a6a0ba83635bc00e7c79a4b5b6e50381385c1af) echo be45c0023fb9c5e05387235ef07be7e7e2034838216cd24cca06840cc01bc771 ;;
-    0cde534c2fca6c92c07b3e7a696665e844b9b933) echo cc0d90a1291b62ffbf9288fad4e290e3a85160cef42c708be3b8a90ac13d501b ;;
     19102815663d23f8b75a47e7a01965dcdc96468c) echo a65ca4376b51e98097fec3a009b7e5adce3255aecaa1a6da7b1cdc92b90e025e ;;
     1a2664a9924754c698e323f756f9f87f3f2fb337) echo cff0bb6fba5633bd804f0a15fed6329ede0a9dfc4a7f53e31581f3d1a2005e0f ;;
     257cc5642cb1a054f08cc83f2d943e56fd3ebe99) echo 47d6aca82756ff2e61e53520bfdf1faa6c86d933be4854eb34840c57d12e0c85 ;;
@@ -52,7 +51,6 @@ function oid () {
     a4ae6e4709228b5da6001cb9d1cfa7736851e2a6) echo c3ae6188533b9bea9ad1049892c6b5488fffe5cfc518b30ba21b64a124bc7afe ;;
     b414108e81e5091fe0974a1858b4d0d22b107f70) echo f5f52958fe19d6073227d52208826e0d189bfdb9d0c428984244075155e57c71 ;;
     d0549c3d3c96a464289f3b820b7d96aedc58924b) echo 7960eaf2c5f3ac192aa208323a78bf4b0f2fb21d79813af79a78674698689442 ;;
-    d5f7fc3f74f7dec08280f370a975b112e8f60818) echo ffc23e0956239fed93c95c4cf3d3152a887825f756309251d71bb16f261afabd ;;
     df967b96a579e45a18b8251732d16804b2e56a55) echo abed979e3cd3667c5a295c2641f8319f950860c65cc168eebd1571c51bb4f6fc ;;
     e29fa63dae4ccf0788897a7025da868083178fdf) echo 577603f537e595c5324b5987646cb9073d159a4f0c9e73f820d2ee83c8926acf ;;
     e33f5e94470d3b5fa0220ff6a9cabb78a3f72fa3) echo 72a7259eef0664ef8dae2039c11c61ec4dd039f94eee87a21c6ee1c637b7cca0 ;;
@@ -899,34 +897,6 @@ git init super-2
   git add foo
   git mv foo olddir/bar
   git commit -m "Modify foo & rename foo -> olddir/bar"
-
-  rm .git/index
-  git update-index --index-info <<EOF
-100644 $(oid 78981922613b2afb6025042ff6bd878ac1994e85) 0	newdir/a
-100644 $(oid 61780798228d17af2d34fce4cfbdf35556832472) 0	newdir/b
-100644 $(oid e69de29bb2d1d6434b8b29ae775ad8c2e48c5391) 0	newdir/bar/file
-100644 $(oid b414108e81e5091fe0974a1858b4d0d22b107f70) 3	newdir/bar~B
-100644 $(oid f2ad6c76f0115a6ba5b00456a849810e7ec0af20) 0	newdir/c
-EOF
-  # Git also has
-  # 100644 b414108e81e5091fe0974a1858b4d0d22b107f70 1	newdir/bar~B
-  # which then looks like "deleted by us: newdir/bar-B`
-  # Our index here doesn't manage to track the base across so many renames, but it ends up looking like
-  # `added by them: newdir/bar~B` which to my mind is more helpful, in a situation where the index simply
-  # cannot properly show what happened.
-  make_conflict_index super-2-A-B
-  make_conflict_index super-2-A-B-diff3
-
-  rm .git/index
-  git update-index --index-info <<EOF
-100644 $(oid 78981922613b2afb6025042ff6bd878ac1994e85) 0	newdir/a
-100644 $(oid 61780798228d17af2d34fce4cfbdf35556832472) 0	newdir/b
-100644 $(oid e69de29bb2d1d6434b8b29ae775ad8c2e48c5391) 0	newdir/bar/file
-100644 $(oid b414108e81e5091fe0974a1858b4d0d22b107f70) 2	newdir/bar~B
-100644 $(oid f2ad6c76f0115a6ba5b00456a849810e7ec0af20) 0	newdir/c
-EOF
-  make_conflict_index super-2-A-B-reversed
-  make_conflict_index super-2-A-B-diff3-reversed
 )
 
 git init rename-within-rename
@@ -1044,32 +1014,6 @@ git init conflicting-rename-complex
   git rm -r a
   git mv tmp a
   git commit -am "change something in subdirectory, then overwrite directory with subdirectory"
-
-  # Git also puts the base of `a/x.f` at stage 1 of `a-renamed/x.f`, where A renamed the file
-  # that B deleted; gix records only A's side.
-  rm .git/index
-  git update-index --index-info <<EOF
-100644 $(oid b414108e81e5091fe0974a1858b4d0d22b107f70) 2	a-renamed/sub/y.f
-100644 $(oid e69de29bb2d1d6434b8b29ae775ad8c2e48c5391) 0	a-renamed/sub/z
-100644 $(oid e69de29bb2d1d6434b8b29ae775ad8c2e48c5391) 0	a-renamed/w
-100644 $(oid 8a1218a1024a212bb3db30becd860315f9f3ac52) 2	a-renamed/x.f
-100644 $(oid b414108e81e5091fe0974a1858b4d0d22b107f70) 3	a-renamed/y.f
-100644 $(oid e69de29bb2d1d6434b8b29ae775ad8c2e48c5391) 3	a-renamed/z
-100644 $(oid 44065282f89b9bd6439ed2e4674721383fd987eb) 1	a/sub/y.f
-EOF
-  make_conflict_index conflicting-rename-complex-A-B
-
-  rm .git/index
-  git update-index --index-info <<EOF
-100644 $(oid b414108e81e5091fe0974a1858b4d0d22b107f70) 3	a-renamed/sub/y.f
-100644 $(oid e69de29bb2d1d6434b8b29ae775ad8c2e48c5391) 0	a-renamed/sub/z
-100644 $(oid e69de29bb2d1d6434b8b29ae775ad8c2e48c5391) 0	a-renamed/w
-100644 $(oid 8a1218a1024a212bb3db30becd860315f9f3ac52) 3	a-renamed/x.f
-100644 $(oid b414108e81e5091fe0974a1858b4d0d22b107f70) 2	a-renamed/y.f
-100644 $(oid e69de29bb2d1d6434b8b29ae775ad8c2e48c5391) 2	a-renamed/z
-100644 $(oid 44065282f89b9bd6439ed2e4674721383fd987eb) 1	a/sub/y.f
-EOF
-  make_conflict_index conflicting-rename-complex-A-B-reversed
 )
 
 git init same-rename-different-mode
@@ -1716,9 +1660,11 @@ git init multiple-merge-bases-with-renames
   # `multiple-merge-bases-with-unmergeable-entries`. Merging A1 and B1, merge-ort removes the sources
   # of the renames as it does one level of recursion higher. A rename whose source the other side
   # deleted leaves the base version of the source at the destination, unless the other side added an
-  # entry there, which is then merged with the renamed one. Entries of distinct types that meet at a
-  # rename's destination leave none there, and of a source that the other side changed to another
-  # type, the destination gets the base version while the source keeps the change.
+  # entry other than a directory there, which is then merged with the renamed one. A directory there
+  # that the other side added keeps its path while the base version moves to a unique path beside it,
+  # and one that the other side deleted leaves the base version in its place. Entries of distinct types
+  # that meet at a rename's destination leave none there, and of a source that the other side changed
+  # to another type, the destination gets the base version while the source keeps the change.
   #
   # Each rename source has content that no other change of its side adds, so rename detection pairs
   # it only with its own destination.
@@ -1726,7 +1672,9 @@ git init multiple-merge-bases-with-renames
     renames-to-different-paths renames-to-different-paths-with-changes renames-to-different-paths-with-conflict \
     renames-to-same-path rename-vs-add add-vs-rename rename-vs-added-link added-link-vs-rename link-vs-rename \
     rename-vs-link renames-of-file-and-link-to-same-path renames-of-link-and-file-to-same-path \
-    rename-vs-rename-and-add rename-and-add-vs-rename rename-vs-delete-and-add delete-and-add-vs-rename; do
+    rename-vs-rename-and-add rename-and-add-vs-rename rename-vs-delete-and-add delete-and-add-vs-rename \
+    rename-vs-delete-and-add-directory delete-and-add-directory-vs-rename rename-over-directory-vs-delete \
+    delete-vs-rename-over-directory; do
     git update-index --add --cacheinfo 100644,"$(write_lines "$dir" | git hash-object -w --stdin)","$dir"/sibling
   done
   git update-index --add --index-info <<EOF
@@ -1753,6 +1701,12 @@ git init multiple-merge-bases-with-renames
 100644 $(numbers_blob 1801 1820)	rename-and-add-vs-rename/f
 100644 $(numbers_blob 1901 1920)	rename-vs-delete-and-add/f
 100644 $(numbers_blob 2001 2020)	delete-and-add-vs-rename/f
+100644 $(numbers_blob 2101 2120)	rename-vs-delete-and-add-directory/f
+100644 $(numbers_blob 2201 2220)	delete-and-add-directory-vs-rename/f
+100644 $(numbers_blob 2301 2320)	rename-over-directory-vs-delete/f
+100644 $(write_lines 'rename-over-directory-vs-delete base' | git hash-object -w --stdin)	rename-over-directory-vs-delete/g/x
+100644 $(numbers_blob 2401 2420)	delete-vs-rename-over-directory/f
+100644 $(write_lines 'delete-vs-rename-over-directory base' | git hash-object -w --stdin)	delete-vs-rename-over-directory/g/x
 EOF
   commit_index main "base"
 
@@ -1760,7 +1714,9 @@ EOF
     delete-vs-rename-and-modify/f renames-to-different-paths/f renames-to-different-paths-with-changes/f \
     renames-to-different-paths-with-conflict/f renames-to-same-path/f1 rename-vs-add/f rename-vs-added-link/f \
     rename-vs-link/f renames-of-file-and-link-to-same-path/f renames-of-link-and-file-to-same-path/l \
-    rename-vs-rename-and-add/f rename-and-add-vs-rename/f rename-vs-delete-and-add/f delete-and-add-vs-rename/f
+    rename-vs-rename-and-add/f rename-and-add-vs-rename/f rename-vs-delete-and-add/f delete-and-add-vs-rename/f \
+    rename-vs-delete-and-add-directory/f delete-and-add-directory-vs-rename/f rename-over-directory-vs-delete/f \
+    rename-over-directory-vs-delete/g/x delete-vs-rename-over-directory/f delete-vs-rename-over-directory/g/x
   git update-index --add --index-info <<EOF
 100644 $(numbers_blob 101 120)	rename-vs-delete/g
 100644 $(numbers_blob 301 320 10 A310)	rename-and-modify-vs-delete/g
@@ -1781,6 +1737,9 @@ EOF
 100644 $(numbers_blob 1851 1870)	rename-and-add-vs-rename/g
 100644 $(numbers_blob 1901 1920 10 A1910)	rename-vs-delete-and-add/g
 100644 $(numbers_blob 2051 2070)	delete-and-add-vs-rename/g
+100644 $(numbers_blob 2101 2120 10 A2110)	rename-vs-delete-and-add-directory/g
+100644 $(write_lines 'delete-and-add-directory-vs-rename A1' | git hash-object -w --stdin)	delete-and-add-directory-vs-rename/g/x
+100644 $(numbers_blob 2301 2320 10 A2310)	rename-over-directory-vs-delete/g
 EOF
   commit_index A1 "A1 renames, deletes and adds" main
 
@@ -1789,7 +1748,9 @@ EOF
     delete-vs-rename-and-modify/f renames-to-different-paths/f renames-to-different-paths-with-changes/f \
     renames-to-different-paths-with-conflict/f renames-to-same-path/f2 add-vs-rename/f added-link-vs-rename/f \
     link-vs-rename/f renames-of-file-and-link-to-same-path/l renames-of-link-and-file-to-same-path/f \
-    rename-vs-rename-and-add/f rename-and-add-vs-rename/f rename-vs-delete-and-add/f delete-and-add-vs-rename/f
+    rename-vs-rename-and-add/f rename-and-add-vs-rename/f rename-vs-delete-and-add/f delete-and-add-vs-rename/f \
+    rename-vs-delete-and-add-directory/f delete-and-add-directory-vs-rename/f rename-over-directory-vs-delete/f \
+    rename-over-directory-vs-delete/g/x delete-vs-rename-over-directory/f delete-vs-rename-over-directory/g/x
   git update-index --add --index-info <<EOF
 100644 $(numbers_blob 201 220)	delete-vs-rename/g
 100644 $(numbers_blob 401 420 10 B410)	delete-vs-rename-and-modify/g
@@ -1810,6 +1771,9 @@ EOF
 100644 $(numbers_blob 1801 1820)	rename-and-add-vs-rename/g
 100644 $(numbers_blob 1951 1970)	rename-vs-delete-and-add/g
 100644 $(numbers_blob 2001 2020 10 B2010)	delete-and-add-vs-rename/g
+100644 $(write_lines 'rename-vs-delete-and-add-directory B1' | git hash-object -w --stdin)	rename-vs-delete-and-add-directory/g/x
+100644 $(numbers_blob 2201 2220 10 B2210)	delete-and-add-directory-vs-rename/g
+100644 $(numbers_blob 2401 2420 10 B2410)	delete-vs-rename-over-directory/g
 EOF
   commit_index B1 "B1 renames, deletes and adds" main
   make_criss_cross_merges
@@ -1821,7 +1785,10 @@ git init multiple-merge-bases-with-file-directory-conflicts
   # `multiple-merge-bases-with-unmergeable-entries`. Merging A1 and B1, merge-ort moves the file to a
   # unique path named after its side, such as `d~Temporary merge branch 2`, as it does one level of
   # recursion higher, while the directory keeps the path. A file there that one side modified and the
-  # other deleted keeps its base version.
+  # other deleted keeps its base version. In the final merge, the side that kept the file has it at the
+  # original path again: a rename from the unique path, which the other side deleted. merge-ort stages
+  # the version of the merged merge-base as the base of that rename/delete conflict, at the path of the
+  # renamed file.
   for dir in modify-vs-directory directory-vs-modify added-file-vs-added-directory added-directory-vs-added-file \
     modify-in-directory-vs-file file-vs-modify-in-directory modify-and-rename-vs-directory \
     directory-vs-modify-and-rename; do
@@ -3115,25 +3082,6 @@ baseline rename-to-self-kept A-B-dir-renames-false A B
 )
 
 (cd directory-rename-vs-renamed-file-replacement
-  # Git retains the original file as stage 1 at its rename destination. Like the
-  # other rename/delete cases, gix records only the side that kept the file.
-  IFS= read -r -d '' merged_tree_id <A-B.merge-info
-  rm .git/index
-  git read-tree "$merged_tree_id"
-  git update-index --force-remove f/a
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse A:f/a) 2	f/a
-EOF
-  make_conflict_index directory-rename-vs-renamed-file-replacement-A-B
-
-  rm .git/index
-  git read-tree "$merged_tree_id"
-  git update-index --force-remove f/a
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse A:f/a) 3	f/a
-EOF
-  make_conflict_index directory-rename-vs-renamed-file-replacement-A-B-reversed
-
   # The rename/delete of `h/h/a` is the only conflict; B's rename of `a` to `h/h` is clean.
   # FIXME: ancestor resolution keeps `h/h/a`, but B's clean rename onto `h/h` then replaces it,
   # so the ancestor's `h/h/a` is lost and the result is B's tree.
@@ -3143,6 +3091,7 @@ EOF
 
   # With A as ours, A's rename of `h/h/a` to `f/a` stays beside B's `h/h`: Git's merged tree.
   # With B as ours, B's deletion of `h/h/a` leaves B's tree.
+  IFS= read -r -d '' merged_tree_id <A-B.merge-info
   git read-tree "$merged_tree_id"
   make_resolve_tree ours A B
   git read-tree B
@@ -3211,25 +3160,6 @@ EOF
 )
 
 (cd renamed-file-vs-file-to-directory-with-siblings
-  # Git retains the base file as stage 1 at its rename destination. As in the
-  # other rename/delete cases, gix records only the side that kept the file.
-  IFS= read -r -d '' merged_tree_id <A-B.merge-info
-  rm .git/index
-  git read-tree "$merged_tree_id"
-  git update-index --force-remove h
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse A:h) 2	h
-EOF
-  make_conflict_index renamed-file-vs-file-to-directory-with-siblings-A-B
-
-  rm .git/index
-  git read-tree "$merged_tree_id"
-  git update-index --force-remove h
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse A:h) 3	h
-EOF
-  make_conflict_index renamed-file-vs-file-to-directory-with-siblings-A-B-reversed
-
   # Ancestor resolution rejects the rename and the file-to-directory
   # replacement, restoring the base file.
   git read-tree main
@@ -3248,24 +3178,6 @@ EOF
 )
 
 (cd gitlink-vs-renamed-symlink-directory-with-siblings
-  # Git also puts the base of the symlink at stage 1 of `h/a`, where B renamed the symlink
-  # that A deleted; gix records only B's side.
-  rm .git/index
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse A:a/b)	a/b
-120000 blob $(git rev-parse B:h/a) 3	h/a
-100644 blob $(git rev-parse B:h/b/a)	h/b/a
-EOF
-  make_conflict_index gitlink-vs-renamed-symlink-directory-with-siblings-A-B
-
-  rm .git/index
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse A:a/b)	a/b
-120000 blob $(git rev-parse B:h/a) 2	h/a
-100644 blob $(git rev-parse B:h/b/a)	h/b/a
-EOF
-  make_conflict_index gitlink-vs-renamed-symlink-directory-with-siblings-A-B-reversed
-
   # The rename/delete of `a/a/a` is the only conflict. Ancestor keeps the symlink at its base
   # path, and the other changes of both sides apply.
   IFS= read -r -d '' merged_tree_id <A-B.merge-info
@@ -3282,58 +3194,6 @@ EOF
   make_resolve_tree ours A B
   git read-tree "$merged_tree_id"
   make_resolve_tree ours B A
-)
-
-(cd rename-delete-after-consumed-path
-  # Git also puts the base of `h/d/a` at stage 1 of `a/d/a`, where A renamed the file that B
-  # deleted; gix records only A's side.
-  IFS= read -r -d '' merged_tree_id <A-B.merge-info
-  rm .git/index
-  git read-tree "$merged_tree_id"
-  git update-index --force-remove a/d/a b/a/a e f
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse A:a/d/a) 2	a/d/a
-100644 blob $(git rev-parse B:b/a/a) 3	b/a/a
-100644 blob $(git rev-parse A:e) 2	e
-100644 blob $(git rev-parse B:e) 3	e
-100644 blob $(git rev-parse A:f) 2	f
-100644 blob $(git rev-parse B:f) 3	f
-EOF
-  make_conflict_index rename-delete-after-consumed-path-A-B
-
-  rm .git/index
-  git read-tree "$merged_tree_id"
-  git update-index --force-remove a/d/a b/a/a e f
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse A:a/d/a) 3	a/d/a
-100644 blob $(git rev-parse B:b/a/a) 2	b/a/a
-100644 blob $(git rev-parse B:e) 2	e
-100644 blob $(git rev-parse A:e) 3	e
-100644 blob $(git rev-parse B:f) 2	f
-100644 blob $(git rev-parse A:f) 3	f
-EOF
-  make_conflict_index rename-delete-after-consumed-path-A-B-reversed
-)
-
-(cd rename-to-self-deleted
-  # With `merge.directoryRenames=false`, Git also puts the base of `x/f` at stage 1 of `x/y/f`, where A renamed the
-  # file that B deleted; gix records only A's side.
-  IFS= read -r -d '' merged_tree_id <A-B-dir-renames-false.merge-info
-  rm .git/index
-  git read-tree "$merged_tree_id"
-  git update-index --force-remove x/y/f
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse A:x/y/f) 2	x/y/f
-EOF
-  make_conflict_index rename-to-self-deleted-A-B-dir-renames-false
-
-  rm .git/index
-  git read-tree "$merged_tree_id"
-  git update-index --force-remove x/y/f
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse A:x/y/f) 3	x/y/f
-EOF
-  make_conflict_index rename-to-self-deleted-A-B-dir-renames-false-reversed
 )
 
 (cd distinct-types
@@ -3364,40 +3224,8 @@ EOF
 )
 
 (cd conflicts-when-ours-is-processed-first
-  # Git retains the original `d` and `e` as stage 1 at their rename destinations. Like the other rename/delete
-  # cases, gix records only the side that kept the file. The other conflicts have Git's stages, whichever side
-  # the merge processes first.
   IFS= read -r -d '' merged_tree_id <A-B.merge-info
-  rm .git/index
-  git read-tree "$merged_tree_id"
-  git update-index --force-remove d2 e2 m2 r-A r-B
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse B:d2) 3	d2
-100644 blob $(git rev-parse A:e2) 2	e2
-100644 blob $(git rev-parse main:m) 1	m2
-100644 blob $(git rev-parse A:m) 2	m2
-100644 blob $(git rev-parse B:m2) 3	m2
-100644 blob $(git rev-parse main:r) 1	r
-100644 blob $(git rev-parse A:r-A) 2	r-A
-100644 blob $(git rev-parse B:r-B) 3	r-B
-EOF
-  make_conflict_index conflicts-when-ours-is-processed-first-A-B
-
   IFS= read -r -d '' merged_reversed_tree_id <A-B-reversed.merge-info
-  rm .git/index
-  git read-tree "$merged_reversed_tree_id"
-  git update-index --force-remove d2 e2 m2 r-A r-B
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse B:d2) 2	d2
-100644 blob $(git rev-parse A:e2) 3	e2
-100644 blob $(git rev-parse main:m) 1	m2
-100644 blob $(git rev-parse B:m2) 2	m2
-100644 blob $(git rev-parse A:m) 3	m2
-100644 blob $(git rev-parse main:r) 1	r
-100644 blob $(git rev-parse B:r-B) 2	r-B
-100644 blob $(git rev-parse A:r-A) 3	r-A
-EOF
-  make_conflict_index conflicts-when-ours-is-processed-first-A-B-reversed
 
   # Choosing the ancestor rejects the rename/delete and rename/rename conflicts and keeps `d`, `e` and `r`. The
   # content of `m` is still merged at B's destination, with conflict markers, and A's renames of the identical
@@ -3548,21 +3376,6 @@ EOF
 
 (cd deleted-file-added-dir-with-rename
   rm .git/index
-  # Unlike Git, we don't retain the base stage at the rename destination.
-  git update-index --index-info <<EOF
-100644 blob $(oid df967b96a579e45a18b8251732d16804b2e56a55) 3	renamed
-100644 blob $(oid d5f7fc3f74f7dec08280f370a975b112e8f60818)	x/a
-EOF
-  make_conflict_index deleted-file-added-dir-with-rename-A-B
-
-  rm .git/index
-  git update-index --index-info <<EOF
-100644 blob $(oid df967b96a579e45a18b8251732d16804b2e56a55) 2	renamed
-100644 blob $(oid d5f7fc3f74f7dec08280f370a975b112e8f60818)	x/a
-EOF
-  make_conflict_index deleted-file-added-dir-with-rename-A-B-reversed
-
-  rm .git/index
   git update-index --index-info <<EOF
 100644 blob $(oid df967b96a579e45a18b8251732d16804b2e56a55)	x
 EOF
@@ -3578,69 +3391,6 @@ EOF
 
   git read-tree B
   make_resolve_tree ours B A
-)
-
-(cd rename-change-matrix
-  # `different-renames` needs Git's content-conflicted blob at both rename destinations.
-  # The first NUL-delimited field is the merged tree written by `git merge-tree`.
-  IFS= read -r -d '' merged_tree_id <A-B.merge-info
-  different_merged_id=$(git rev-parse "$merged_tree_id:different-renames/ours")
-  IFS= read -r -d '' merged_reversed_tree_id <A-B-reversed.merge-info
-  different_merged_reversed_id=$(git rev-parse "$merged_reversed_tree_id:different-renames/theirs")
-
-  # Expected A/B index, grouped by the matrix above. It differs from Git only for delete-source,
-  # without altering the merged tree: only A's renamed side remains. Git also places the source's
-  # base blob at stage 1 of the renamed path; gix doesn't invent that path for the base entry.
-  #
-  # The other matrix entries match Git's index:
-  # * add-destination: A's rename and B's addition occupy stages 2 and 3 at `target`.
-  # * delete-destination: the old target is stage 1 and A's replacement is stage 2.
-  # * different-renames: retain the base source and put the merged conflict blob at both destinations.
-  # * directory-old: A's directory rename moves B's added child, a file location conflict that
-  #   records the moved child at stage 3.
-  # * modify-destination: the old destination and both replacements occupy stages 1, 2, and 3.
-  # * modify-source: the edit follows the rename and resolves cleanly at stage 0.
-  rm .git/index
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse main:.gitattributes)	.gitattributes
-100644 blob $(git rev-parse A:add-destination/target) 2	add-destination/target
-100644 blob $(git rev-parse B:add-destination/target) 3	add-destination/target
-100644 blob $(git rev-parse main:delete-destination/target) 1	delete-destination/target
-100644 blob $(git rev-parse A:delete-destination/target) 2	delete-destination/target
-100644 blob $(git rev-parse A:delete-source/renamed) 2	delete-source/renamed
-100644 blob $(git rev-parse main:different-renames/file) 1	different-renames/file
-100644 blob $different_merged_id 2	different-renames/ours
-100644 blob $different_merged_id 3	different-renames/theirs
-100644 blob $(git rev-parse B:directory-old/added) 3	directory-renamed/added
-100644 blob $(git rev-parse A:directory-renamed/file)	directory-renamed/file
-100644 blob $(git rev-parse main:modify-destination/target) 1	modify-destination/target
-100644 blob $(git rev-parse A:modify-destination/target) 2	modify-destination/target
-100644 blob $(git rev-parse B:modify-destination/target) 3	modify-destination/target
-100644 blob $(git rev-parse B:modify-source/file)	modify-source/renamed
-EOF
-  make_conflict_index rename-change-matrix-A-B
-
-  # The reversed index has the same shape, with stages 2 and 3 exchanged and directional
-  # content-conflict labels reversed.
-  rm .git/index
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse main:.gitattributes)	.gitattributes
-100644 blob $(git rev-parse B:add-destination/target) 2	add-destination/target
-100644 blob $(git rev-parse A:add-destination/target) 3	add-destination/target
-100644 blob $(git rev-parse main:delete-destination/target) 1	delete-destination/target
-100644 blob $(git rev-parse A:delete-destination/target) 3	delete-destination/target
-100644 blob $(git rev-parse A:delete-source/renamed) 3	delete-source/renamed
-100644 blob $(git rev-parse main:different-renames/file) 1	different-renames/file
-100644 blob $different_merged_reversed_id 3	different-renames/ours
-100644 blob $different_merged_reversed_id 2	different-renames/theirs
-100644 blob $(git rev-parse B:directory-old/added) 2	directory-renamed/added
-100644 blob $(git rev-parse A:directory-renamed/file)	directory-renamed/file
-100644 blob $(git rev-parse main:modify-destination/target) 1	modify-destination/target
-100644 blob $(git rev-parse B:modify-destination/target) 2	modify-destination/target
-100644 blob $(git rev-parse A:modify-destination/target) 3	modify-destination/target
-100644 blob $(git rev-parse B:modify-source/file)	modify-source/renamed
-EOF
-  make_conflict_index rename-change-matrix-A-B-reversed
 )
 
 (cd renames-to-same-destination
@@ -4051,45 +3801,6 @@ EOF
   rm .git/index
   # 'B' applies the deletion to get an empty tree.
   make_resolve_tree ours B A
-)
-
-(cd multiple-merge-bases-with-file-directory-conflicts
-  # The merged merge-base keeps the file of each file/directory conflict at a path such as
-  # `d~Temporary merge branch 1`. The side that kept the file has it at the original path, so the
-  # final merge finds a rename there that the deletion of the other side conflicts with. Git also
-  # puts the version of the merged merge-base at stage 1 of the rename's destination; as in the other
-  # rename/delete cases, gix records only the side that kept the file. The reversed merges exchange
-  # stages 2 and 3.
-  for name in A-B A-B-diff3 A-B-reversed A-B-diff3-reversed; do
-    stage_of_a=2 stage_of_b=3
-    if [[ "$name" == *-reversed ]]; then
-      stage_of_a=3 stage_of_b=2
-    fi
-    IFS= read -r -d '' merged_tree_id <"$name.merge-info"
-    rm .git/index
-    git read-tree "$merged_tree_id"
-    git update-index --force-remove added-directory-vs-added-file/d added-file-vs-added-directory/d \
-      directory-vs-modify-and-rename/e directory-vs-modify/d file-vs-modify-in-directory/d/x \
-      file-vs-modify-in-directory/d~A modify-and-rename-vs-directory/e modify-in-directory-vs-file/d/x \
-      modify-in-directory-vs-file/d~B modify-vs-directory/d
-    git update-index --index-info <<EOF
-100644 blob $(git rev-parse B:added-directory-vs-added-file/d) $stage_of_b	added-directory-vs-added-file/d
-100644 blob $(git rev-parse A:added-file-vs-added-directory/d) $stage_of_a	added-file-vs-added-directory/d
-100644 blob $(git rev-parse main:directory-vs-modify-and-rename/d) 1	directory-vs-modify-and-rename/e
-100644 blob $(git rev-parse B:directory-vs-modify-and-rename/e) $stage_of_b	directory-vs-modify-and-rename/e
-100644 blob $(git rev-parse B:directory-vs-modify/d) $stage_of_b	directory-vs-modify/d
-100644 blob $(git rev-parse main:file-vs-modify-in-directory/d/x) 1	file-vs-modify-in-directory/d/x
-100644 blob $(git rev-parse B:file-vs-modify-in-directory/d/x) $stage_of_b	file-vs-modify-in-directory/d/x
-100644 blob $(git rev-parse A:file-vs-modify-in-directory/d) $stage_of_a	file-vs-modify-in-directory/d~A
-100644 blob $(git rev-parse main:modify-and-rename-vs-directory/d) 1	modify-and-rename-vs-directory/e
-100644 blob $(git rev-parse A:modify-and-rename-vs-directory/e) $stage_of_a	modify-and-rename-vs-directory/e
-100644 blob $(git rev-parse main:modify-in-directory-vs-file/d/x) 1	modify-in-directory-vs-file/d/x
-100644 blob $(git rev-parse A:modify-in-directory-vs-file/d/x) $stage_of_a	modify-in-directory-vs-file/d/x
-100644 blob $(git rev-parse B:modify-in-directory-vs-file/d) $stage_of_b	modify-in-directory-vs-file/d~B
-100644 blob $(git rev-parse A:modify-vs-directory/d) $stage_of_a	modify-vs-directory/d
-EOF
-    make_conflict_index "multiple-merge-bases-with-file-directory-conflicts-$name"
-  done
 )
 
 (cd non-tree-to-tree

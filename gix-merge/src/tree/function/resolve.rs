@@ -214,6 +214,7 @@ pub fn tree<'objects>(
                     needs_tree_insertion,
                     ..
                 } = &their_changes[theirs_idx];
+                let rename_source_base = their_changes[theirs_idx].rename_source_base;
                 if theirs.entry_mode().is_tree() || !their_changes[theirs_idx].is_pending() {
                     continue;
                 }
@@ -273,7 +274,12 @@ pub fn tree<'objects>(
                                     },
                                     (theirs, theirs, Original, outer_side),
                                     [
-                                        None,
+                                        // A renamed entry of a rename/delete conflict takes the merge-base's entry of
+                                        // its source along, as merge-ort moves the whole path.
+                                        source_base_entry(
+                                            rename_source_base,
+                                            ConflictIndexEntryPathHint::RenamedOrTheirs,
+                                        ),
                                         None,
                                         index_entry_at_path(
                                             &mode.kind().into(),
@@ -387,17 +393,11 @@ pub fn tree<'objects>(
                                         // destination it had before the move, unless the modifying side has a file at
                                         // the moved destination: merge-ort then merges the rename first, under the moved
                                         // destination, and then the result with that file.
-                                        let collision = match pick(side, &*our_tree, &*their_tree)
-                                            .check_conflict(their_location.as_bstr())
-                                        {
-                                            Some(PossibleConflict::Match { change_idx }) => {
-                                                !pick(side, &*our_changes, &*their_changes)[change_idx]
-                                                    .inner
-                                                    .entry_mode()
-                                                    .is_tree()
-                                            }
-                                            _ => false,
-                                        };
+                                        let collision = has_non_tree_at(
+                                            pick(side, &*our_tree, &*their_tree),
+                                            pick(side, &*our_changes, &*their_changes),
+                                            their_location.as_bstr(),
+                                        );
                                         let rename_pathname = if collision {
                                             their_location.as_bstr()
                                         } else {
@@ -729,7 +729,7 @@ pub fn tree<'objects>(
                                 if matches!(match_kind, Some(MatchKind::EraseLeaf))
                                     && !our_changes[ours_idx].was_processed_without_application() =>
                             {
-                                push_deferred((theirs.clone(), Some(ours_idx)), their_changes);
+                                their_changes.push(their_changes[theirs_idx].retry_after(ours_idx));
                             }
                             // A deletion processed without application retained its base leaf due to an earlier forced
                             // resolution, so its related child cannot be added. For example, choosing the ancestor for a
@@ -749,7 +749,7 @@ pub fn tree<'objects>(
                                     && needs_tree_insertion.is_none()
                                     && !matches!(resolve_tree_conflicts, Some(ResolveWith::Ancestor)) =>
                             {
-                                push_deferred((theirs.clone(), Some(ours_idx)), their_changes);
+                                their_changes.push(their_changes[theirs_idx].retry_after(ours_idx));
                             }
                             // A rewritten non-tree blocks a directory introduced by the other side. Preserve the
                             // directory and relocate the blocking entry to a unique, side-qualified path. For example,
@@ -837,7 +837,12 @@ pub fn tree<'objects>(
                                     },
                                     (ours, theirs, Swapped, outer_side),
                                     [
-                                        None,
+                                        // A renamed entry of a rename/delete conflict takes the merge-base's entry of
+                                        // its source along, as merge-ort moves the whole path.
+                                        source_base_entry(
+                                            our_changes[ours_idx].rename_source_base,
+                                            ConflictIndexEntryPathHint::RenamedOrTheirs,
+                                        ),
                                         None,
                                         index_entry_at_path(
                                             blocking_mode,
@@ -983,7 +988,15 @@ pub fn tree<'objects>(
                                             their_unique_location,
                                         },
                                         (ours, theirs, Original, outer_side),
-                                        placement.index_entries(None, outer_side),
+                                        // A renamed entry of a rename/delete conflict takes the merge-base's entry of
+                                        // its source along, as merge-ort moves the whole path.
+                                        placement.index_entries(
+                                            source_base_entry(
+                                                rename_source_base,
+                                                type_mismatch_path_hint(Swapped, outer_side),
+                                            ),
+                                            outer_side,
+                                        ),
                                     );
                                     match resolve_tree_conflicts {
                                         None => placement.apply(
@@ -1215,7 +1228,7 @@ pub fn tree<'objects>(
                                         // before the deletion of the blocking base file. Defer it so
                                         // the modification/deletion pair can relocate the modification
                                         // and remove this structural match first.
-                                        push_deferred((theirs.clone(), Some(ours_idx)), their_changes);
+                                        their_changes.push(their_changes[theirs_idx].retry_after(ours_idx));
                                     }
                                     Some(ResolveWith::Ancestor) => {}
                                     Some(ResolveWith::Ours) => {
@@ -1450,12 +1463,15 @@ pub fn tree<'objects>(
                                         // A merged merge-base gives the rename's destination the version that the
                                         // rename/delete rule decides, as the other side deleted the rename's source.
                                         let (mode, id) = match resolve_tree_conflicts {
-                                            Some(ResolveWith::VirtualMergeBase) => rename_delete_entry_in_merge_base(
-                                                pick(side, their_tree, our_tree),
-                                                location,
-                                                (*our_mode, *our_id),
-                                                (*source_entry_mode, *source_id),
-                                            ),
+                                            Some(ResolveWith::VirtualMergeBase)
+                                                if !has_non_tree_at(
+                                                    pick(side, &*their_tree, &*our_tree),
+                                                    pick(side, &*their_changes, &*our_changes),
+                                                    location.as_bstr(),
+                                                ) =>
+                                            {
+                                                (*source_entry_mode, *source_id)
+                                            }
                                             _ => (*our_mode, *our_id),
                                         };
                                         editor.remove_if_leaf(toc(source_location))?;
@@ -1771,15 +1787,18 @@ pub fn tree<'objects>(
                                     Some(ResolveWith::Ancestor) => {}
                                 }
 
-                                // A merged merge-base keeps the source's ancestor version at the destination, unless
-                                // the deleting side has an entry there to merge with, as merge-ort does at that depth.
-                                let (entry_mode, id) = match resolve_tree_conflicts {
-                                    Some(ResolveWith::VirtualMergeBase) => rename_delete_entry_in_merge_base(
-                                        pick(side, our_tree, their_tree),
-                                        location,
-                                        (*rewritten_mode, *rewritten_id),
-                                        (*source_entry_mode, *source_id),
-                                    ),
+                                // The renamed entry keeps the merge-base's entry of the source as its merge-base,
+                                // which a merged merge-base keeps at the destination, unless the deleting side has an
+                                // entry other than a directory there: merge-ort then merges the two like additions,
+                                // without a merge-base.
+                                let collision = has_non_tree_at(
+                                    pick(side, &*our_tree, &*their_tree),
+                                    pick(side, &*our_changes, &*their_changes),
+                                    location.as_bstr(),
+                                );
+                                let source_base = (!collision).then_some((*source_entry_mode, *source_id));
+                                let (entry_mode, id) = match (resolve_tree_conflicts, source_base) {
+                                    (Some(ResolveWith::VirtualMergeBase), Some(source_base)) => source_base,
                                     _ => (*rewritten_mode, *rewritten_id),
                                 };
                                 let our_addition = Change::Addition {
@@ -1793,7 +1812,7 @@ pub fn tree<'objects>(
                                     ResolutionFailure::OursDeletedTheirsRenamed,
                                     (ours, theirs, side, outer_side),
                                     [
-                                        None,
+                                        source_base_entry(source_base, ConflictIndexEntryPathHint::RenamedOrTheirs),
                                         None,
                                         index_entry_at_path(
                                             rewritten_mode,
@@ -1809,7 +1828,8 @@ pub fn tree<'objects>(
                                 if matches!(resolve_tree_conflicts, None | Some(ResolveWith::VirtualMergeBase))
                                     || (matches!(resolve_tree_conflicts, Some(ResolveWith::Ours)) && ours_is_rewrite)
                                 {
-                                    push_deferred((our_addition, None), pick_mut(side, their_changes, our_changes));
+                                    pick_mut(side, their_changes, our_changes)
+                                        .push(TrackedChange::rename_destination(our_addition, source_base));
                                 } else {
                                     // The dropped rename leaves nothing at its destination for the other side's changes
                                     // to meet. For example, theirs renames `foo` to `dir/bar` while ours deletes `foo` and
@@ -2182,24 +2202,25 @@ fn pick_mut<'a, T: ?Sized>(side: ConflictMapping, ours: &'a mut T, theirs: &'a m
     }
 }
 
-/// Return the entry that a merged merge-base keeps at `location`, the destination of a rename of `renamed` whose source,
-/// with the ancestor entry `source`, the other side deleted. As Git's `merge-ort` does when it merges merge-bases, that's
-/// `source`, unless `deleting_side_tree` has an entry at `location` too, which `renamed` is then merged with like an
-/// addition.
-fn rename_delete_entry_in_merge_base(
-    deleting_side_tree: &TreeNodes,
-    location: &BString,
-    renamed: (EntryMode, ObjectId),
-    source: (EntryMode, ObjectId),
-) -> (EntryMode, ObjectId) {
-    if matches!(
-        deleting_side_tree.check_conflict(location.as_bstr()),
-        Some(PossibleConflict::Match { .. })
-    ) {
-        renamed
-    } else {
-        source
+/// Return `true` if one of `changes`, which `tree` indexes, leaves an entry other than a directory at `location`. Git's
+/// `merge-ort` calls this a collision if `location` is the destination of a rename of the other side.
+fn has_non_tree_at(tree: &TreeNodes, changes: &[TrackedChange], location: &BStr) -> bool {
+    match tree.check_conflict(location) {
+        Some(PossibleConflict::Match { change_idx }) => {
+            let change = &changes[change_idx].inner;
+            !matches!(change, Change::Deletion { .. }) && !change.entry_mode().is_tree()
+        }
+        _ => false,
     }
+}
+
+/// Return the index entry of `source_base`, the merge-base's entry of the source of a rename, at the path that `hint`
+/// finds, if there is such an entry.
+fn source_base_entry(
+    source_base: Option<(EntryMode, ObjectId)>,
+    hint: ConflictIndexEntryPathHint,
+) -> Option<ConflictIndexEntry> {
+    source_base.and_then(|(mode, id)| index_entry_at_path(&mode, &id, hint))
 }
 
 fn index_entry(mode: &gix_object::tree::EntryMode, id: &gix_hash::ObjectId) -> Option<ConflictIndexEntry> {

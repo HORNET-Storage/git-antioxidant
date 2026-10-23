@@ -426,6 +426,11 @@ pub enum ResolutionFailure {
     /// Here we keep both versions of the file.
     OursModifiedTheirsRenamedTypeMismatch,
     /// *ours* was deleted, but *theirs* was renamed.
+    ///
+    /// As Git does, the conflict stages the merge-base's entry of the source and the renamed entry at the destination.
+    /// If *ours* has a directory there, both move with the renamed entry to a unique path, which the conflict that
+    /// records the move stages. If *ours* has another entry there, the renamed entry meets it as two additions do,
+    /// without a merge-base entry.
     OursDeletedTheirsRenamed,
     /// *ours* was modified and *theirs* was deleted. We keep the modified one and ignore the deletion.
     OursModifiedTheirsDeleted,
@@ -526,8 +531,8 @@ pub enum ResolveWith {
     /// non-directory entry at a path where the other side has a directory moves to a unique path. An entry that can't
     /// be merged keeps the *ancestor* version at its path, or is absent where the ancestor has none, as for entries of
     /// distinct types or submodules that both sides added. The destination of a rename whose source the other side
-    /// deleted gets the *ancestor* version of the source, unless the other side has an entry there as well, which is
-    /// then merged with the renamed one.
+    /// deleted gets the *ancestor* version of the source, unless the other side has an entry other than a directory
+    /// there as well, which is then merged with the renamed one.
     VirtualMergeBase,
 }
 
