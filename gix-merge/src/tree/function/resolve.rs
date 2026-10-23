@@ -1893,7 +1893,7 @@ pub fn tree<'objects>(
                                     break 'outer;
                                 }
 
-                                let ours_is_rewrite = side.is_swapped();
+                                let ours_is_rewrite = side.to_global(outer_side).is_swapped();
                                 if matches!(resolve_tree_conflicts, None | Some(ResolveWith::VirtualMergeBase))
                                     || (matches!(resolve_tree_conflicts, Some(ResolveWith::Ours)) && ours_is_rewrite)
                                 {

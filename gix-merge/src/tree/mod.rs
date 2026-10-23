@@ -558,26 +558,26 @@ pub mod apply_index_entries {
             let len = index.entries().len();
             let mut idx_by_path_stage = HashMap::<(gix_index::entry::Stage, &BStr), usize>::default();
             for conflict in conflicts.iter().filter(|c| c.is_unresolved(how)) {
+                // The changes in the order in which the description of the conflict names them, which the path
+                // hints of its entries refer to.
+                let (ours, theirs) = conflict.changes_in_resolution();
                 let (renamed_path, current_path): (Option<&BStr>, &BStr) = match &conflict.resolution {
                     Ok(success) => match success {
                         Resolution::Forced(_) => continue,
                         Resolution::SourceLocationAffectedByRename { final_location } => {
                             (Some(final_location.as_bstr()), final_location.as_bstr())
                         }
-                        Resolution::OursModifiedTheirsRenamedAndChangedThenRename { final_location, .. } => (
-                            final_location.as_ref().map(|p| p.as_bstr()),
-                            conflict.changes_in_resolution().1.location(),
-                        ),
-                        Resolution::OursModifiedTheirsModifiedThenBlobContentMerge { .. } => {
-                            (None, conflict.ours.location())
+                        Resolution::OursModifiedTheirsRenamedAndChangedThenRename { final_location, .. } => {
+                            (final_location.as_ref().map(|p| p.as_bstr()), theirs.location())
                         }
+                        Resolution::OursModifiedTheirsModifiedThenBlobContentMerge { .. } => (None, ours.location()),
                     },
                     Err(failure) => match failure {
                         ResolutionFailure::OursDirectoryTheirsNonDirectoryTheirsRenamed {
                             renamed_unique_path_of_theirs,
-                        } => (Some(renamed_unique_path_of_theirs.as_bstr()), conflict.ours.location()),
+                        } => (Some(renamed_unique_path_of_theirs.as_bstr()), ours.location()),
                         ResolutionFailure::OursRenamedTheirsRenamedDifferently { .. } => {
-                            (Some(conflict.theirs.location()), conflict.ours.location())
+                            (Some(theirs.location()), ours.location())
                         }
                         ResolutionFailure::OursModifiedTheirsRenamedTypeMismatch
                         | ResolutionFailure::SubmoduleMerge
@@ -585,13 +585,10 @@ pub mod apply_index_entries {
                         | ResolutionFailure::OursRenamedTheirsRenamedToSameLocation
                         | ResolutionFailure::OursDeletedTheirsRenamed
                         | ResolutionFailure::OursModifiedTheirsDeleted
-                        | ResolutionFailure::Unknown => (None, conflict.ours.location()),
+                        | ResolutionFailure::Unknown => (None, ours.location()),
                         ResolutionFailure::OursModifiedTheirsDirectoryThenOursRenamed {
                             renamed_unique_path_to_modified_blob,
-                        } => (
-                            Some(renamed_unique_path_to_modified_blob.as_bstr()),
-                            conflict.ours.location(),
-                        ),
+                        } => (Some(renamed_unique_path_to_modified_blob.as_bstr()), ours.location()),
                         ResolutionFailure::OursAddedTheirsAddedTypeMismatch {
                             our_unique_location,
                             their_unique_location,
@@ -602,7 +599,7 @@ pub mod apply_index_entries {
                         } => {
                             // Both changes are at the contested location, which an entry without a unique
                             // location kept.
-                            let location = conflict.ours.location();
+                            let location = ours.location();
                             (
                                 Some(their_unique_location.as_ref().map_or(location, |path| path.as_bstr())),
                                 our_unique_location.as_ref().map_or(location, |path| path.as_bstr()),
@@ -610,7 +607,7 @@ pub mod apply_index_entries {
                         }
                     },
                 };
-                let source_path = conflict.ours.source_location();
+                let source_path = ours.source_location();
 
                 let entries_with_stage = conflict.entries().into_iter().enumerate().filter_map(|(idx, entry)| {
                     entry.filter(|e| e.mode.is_no_tree()).map(|e| {
@@ -626,7 +623,7 @@ pub mod apply_index_entries {
                                 Some(ConflictIndexEntryPathHint::Source) => source_path,
                                 Some(ConflictIndexEntryPathHint::Current) => current_path,
                                 Some(ConflictIndexEntryPathHint::RenamedOrTheirs) => {
-                                    renamed_path.unwrap_or_else(|| conflict.changes_in_resolution().1.location())
+                                    renamed_path.unwrap_or_else(|| theirs.location())
                                 }
                             },
                             e,

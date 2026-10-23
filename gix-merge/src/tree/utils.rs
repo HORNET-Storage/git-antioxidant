@@ -729,11 +729,20 @@ impl Conflict {
         Conflict::maybe_resolved(Ok(resolution), changes, entries)
     }
 
+    /// Record `ours` and `theirs`, the changes of the pass that found the conflict, as the changes of the merge's sides.
+    ///
+    /// `map` tells how the description of `resolution` and `entries` relates to the pass's sides, and `outer_map` how
+    /// the pass's sides relate to the merge's sides: a pass processes the merge's *ours* as its *theirs* when
+    /// `outer_map` is swapped.
     fn maybe_resolved(
         resolution: std::result::Result<Resolution, ResolutionFailure>,
         (ours, theirs, map, outer_map): (&Change, &Change, ConflictMapping, ConflictMapping),
         entries: [Option<ConflictIndexEntry>; 3],
     ) -> Self {
+        let (ours, theirs) = match outer_map {
+            ConflictMapping::Original => (ours, theirs),
+            ConflictMapping::Swapped => (theirs, ours),
+        };
         Conflict {
             resolution,
             ours: ours.clone(),

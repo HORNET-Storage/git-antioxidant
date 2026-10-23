@@ -2771,6 +2771,45 @@ EOF
   git commit -m "B changes and adds entries of other types and renames gitlinks"
 )
 
+git init conflicts-when-ours-is-processed-first
+(cd conflicts-when-ours-is-processed-first
+  write_lines same >x
+  write_lines same >y
+  seq 10 >m
+  write_lines one two three >d
+  write_lines four five six >e
+  write_lines renamed >r
+  git add .
+  git commit -m "base with two identical files"
+
+  git branch A
+  git branch B
+
+  # A renames the two identical files, which gives rename detection two equally valid pairings. Merges then
+  # process the changes of the same side first in both directions, so in one of them the conflicts below are
+  # found while the changes of ours are processed against those of theirs. A also changes `m`, deletes `d`
+  # and renames `e` and `r`.
+  git checkout A
+  git mv x x2
+  git mv y y2
+  write_lines 1 2 3 4 five-A 6 7 8 9 10 >m
+  git rm d
+  git mv e e2
+  git mv r r-A
+  git add m
+  git commit -m "rename the identical files, e and r, change m and delete d"
+
+  # B renames `m` with a change of its own, renames `d` and `r` and deletes `e`.
+  git checkout B
+  git mv m m2
+  write_lines 1 2 3 4 five-B 6 7 8 9 10 >m2
+  git mv d d2
+  git rm e
+  git mv r r-B
+  git add m2
+  git commit -m "rename and change m, rename d and r and delete e"
+)
+
 
 
 baseline non-tree-to-tree A-B A B
@@ -2881,6 +2920,7 @@ baseline identical-deletions-with-different-relations A-B A B
 baseline identical-rewrites-with-different-relations A-B A B
 baseline type-change-to-symlink A-B A B
 baseline distinct-types A-B A B
+baseline conflicts-when-ours-is-processed-first A-B A B
 
 ##
 ## Only once the tree-merges were performed can we refer to their objects
@@ -3227,6 +3267,72 @@ EOF
   git read-tree B
   git update-index --force-remove renamed-file-vs-added-gitlink/source renamed-link-vs-added-gitlink/source \
     renamed-gitlink-vs-added-file/source
+  make_resolve_tree ours B A
+)
+
+(cd conflicts-when-ours-is-processed-first
+  # Git retains the original `d` and `e` as stage 1 at their rename destinations. Like the other rename/delete
+  # cases, gix records only the side that kept the file. The other conflicts have Git's stages, whichever side
+  # the merge processes first.
+  IFS= read -r -d '' merged_tree_id <A-B.merge-info
+  rm .git/index
+  git read-tree "$merged_tree_id"
+  git update-index --force-remove d2 e2 m2 r-A r-B
+  git update-index --index-info <<EOF
+100644 blob $(git rev-parse B:d2) 3	d2
+100644 blob $(git rev-parse A:e2) 2	e2
+100644 blob $(git rev-parse main:m) 1	m2
+100644 blob $(git rev-parse A:m) 2	m2
+100644 blob $(git rev-parse B:m2) 3	m2
+100644 blob $(git rev-parse main:r) 1	r
+100644 blob $(git rev-parse A:r-A) 2	r-A
+100644 blob $(git rev-parse B:r-B) 3	r-B
+EOF
+  make_conflict_index conflicts-when-ours-is-processed-first-A-B
+
+  IFS= read -r -d '' merged_reversed_tree_id <A-B-reversed.merge-info
+  rm .git/index
+  git read-tree "$merged_reversed_tree_id"
+  git update-index --force-remove d2 e2 m2 r-A r-B
+  git update-index --index-info <<EOF
+100644 blob $(git rev-parse B:d2) 2	d2
+100644 blob $(git rev-parse A:e2) 3	e2
+100644 blob $(git rev-parse main:m) 1	m2
+100644 blob $(git rev-parse B:m2) 2	m2
+100644 blob $(git rev-parse A:m) 3	m2
+100644 blob $(git rev-parse main:r) 1	r
+100644 blob $(git rev-parse B:r-B) 2	r-B
+100644 blob $(git rev-parse A:r-A) 3	r-A
+EOF
+  make_conflict_index conflicts-when-ours-is-processed-first-A-B-reversed
+
+  # Choosing the ancestor rejects the rename/delete and rename/rename conflicts and keeps `d`, `e` and `r`. The
+  # content of `m` is still merged at B's destination, with conflict markers, and A's renames of the identical
+  # files apply.
+  git read-tree "$merged_tree_id"
+  git update-index --force-remove d2 e2 r-A r-B
+  git update-index --add --cacheinfo "100644,$(git rev-parse main:d),d"
+  git update-index --add --cacheinfo "100644,$(git rev-parse main:e),e"
+  git update-index --add --cacheinfo "100644,$(git rev-parse main:r),r"
+  make_resolve_tree ancestor A B
+  git read-tree "$merged_reversed_tree_id"
+  git update-index --force-remove d2 e2 r-A r-B
+  git update-index --add --cacheinfo "100644,$(git rev-parse main:d),d"
+  git update-index --add --cacheinfo "100644,$(git rev-parse main:e),e"
+  git update-index --add --cacheinfo "100644,$(git rev-parse main:r),r"
+  make_resolve_tree ancestor B A
+
+  # Choosing ours keeps A's deletion of `d` and its renames of `e` and `r` with A as ours, and B's renames of `d`
+  # and `r` and its deletion of `e` with B as ours. `m` is merged at B's destination with the content of ours
+  # where both sides changed it.
+  git read-tree A
+  git update-index --force-remove m
+  git update-index --add --cacheinfo "100644,$(git rev-parse A:m),m2"
+  make_resolve_tree ours A B
+  git read-tree B
+  git update-index --force-remove x y
+  git update-index --add --cacheinfo "100644,$(git rev-parse A:x2),x2"
+  git update-index --add --cacheinfo "100644,$(git rev-parse A:y2),y2"
   make_resolve_tree ours B A
 )
 

@@ -221,7 +221,7 @@ fn run_baseline() -> TestResult {
     }
 
     assert_eq!(
-        actual_cases, 203,
+        actual_cases, 205,
         "BUG: update this number, and don't forget to remove a filter in the end"
     );
     assert_eq!(
