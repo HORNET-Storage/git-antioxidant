@@ -386,18 +386,20 @@ pub fn tree<'objects>(
                                         side.to_global(outer_side),
                                     );
                                     let renamed_without_change = their_source_id == their_id;
+                                    // A file of the modifying side at the destination collides with the rename: merge-ort
+                                    // merges the rename first, under the destination and with conflict markers one
+                                    // character longer, and then merges the result with that file. Only the second merge
+                                    // records conflicting stages at the destination.
+                                    let collision = has_non_tree_at(
+                                        pick(side, &*our_tree, &*their_tree),
+                                        pick(side, &*our_changes, &*their_changes),
+                                        their_location.as_bstr(),
+                                    );
                                     let (merged_blob_id, resolution) = if renamed_without_change {
                                         (*our_id, identical_content_resolution(modes_merged_cleanly))
                                     } else {
                                         // The conflict markers give a rename that a directory rename moved the
-                                        // destination it had before the move, unless the modifying side has a file at
-                                        // the moved destination: merge-ort then merges the rename first, under the moved
-                                        // destination, and then the result with that file.
-                                        let collision = has_non_tree_at(
-                                            pick(side, &*our_tree, &*their_tree),
-                                            pick(side, &*our_changes, &*their_changes),
-                                            their_location.as_bstr(),
-                                        );
+                                        // destination it had before the move, unless the rename collides.
                                         let rename_pathname = if collision {
                                             their_location.as_bstr()
                                         } else {
@@ -444,7 +446,7 @@ pub fn tree<'objects>(
                                             (their_location, *their_id, *their_mode),
                                             (source_location, *previous_id, *previous_entry_mode),
                                             pathnames,
-                                            (0, outer_side),
+                                            (u8::from(collision), outer_side),
                                             &options,
                                         )?;
                                         let resolution = content_resolution(resolution, modes_merged_cleanly);
@@ -468,11 +470,15 @@ pub fn tree<'objects>(
                                             }),
                                         },
                                         (ours, theirs, side, outer_side),
-                                        [
-                                            index_entry(previous_entry_mode, previous_id),
-                                            index_entry(our_mode, our_id),
-                                            index_entry(their_mode, their_id),
-                                        ],
+                                        if collision {
+                                            [None, None, None]
+                                        } else {
+                                            [
+                                                index_entry(previous_entry_mode, previous_id),
+                                                index_entry(our_mode, our_id),
+                                                index_entry(their_mode, their_id),
+                                            ]
+                                        },
                                     )) {
                                         break 'outer;
                                     }

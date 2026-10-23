@@ -433,10 +433,14 @@ git init rename-change-matrix
   # * directory-old:
   #   A renames the directory; B adds a child below its old name.
   #   The child follows the directory rename and the result is clean below `directory-renamed`.
+  # * collide-destination:
+  #   A modifies `file` and renames it to `target`; B modifies `file` and adds an unrelated `target`.
+  #   The rename's content merge conflicts and then collides with B's `target`: its conflict markers are
+  #   one character longer than those of the add/add conflict that contains them.
   #
   # Distinct repeated words keep rename similarity pairing local to each case.
   mkdir -p modify-source delete-source add-destination modify-destination delete-destination \
-    different-renames directory-old
+    different-renames directory-old collide-destination
   write_lines alpha alpha alpha alpha alpha >modify-source/file
   write_lines bravo bravo bravo bravo bravo >delete-source/file
   write_lines charlie charlie charlie charlie charlie >add-destination/file
@@ -446,6 +450,7 @@ git init rename-change-matrix
   write_lines echo-target echo-target echo-target echo-target echo-target >delete-destination/target
   write_lines golf golf golf golf golf >different-renames/file
   write_lines juliet juliet juliet juliet juliet >directory-old/file
+  write_lines hotel hotel hotel hotel hotel >collide-destination/file
   echo 'different-renames/* conflict-marker-size=10' >.gitattributes
   git add . && git commit -m "base"
 
@@ -463,6 +468,8 @@ git init rename-change-matrix
   echo changed-by-A >>different-renames/file
   git mv different-renames/file different-renames/ours
   git mv directory-old directory-renamed
+  echo changed-by-A >>collide-destination/file
+  git mv collide-destination/file collide-destination/target
   git commit -am "rename one side of each matrix entry"
 
   git checkout B
@@ -474,6 +481,8 @@ git init rename-change-matrix
   echo changed-by-B >>different-renames/file
   git mv different-renames/file different-renames/theirs
   echo added-by-B >directory-old/added
+  echo changed-by-B >>collide-destination/file
+  echo added-by-B >collide-destination/target
   git add . && git commit -m "apply the other change in each matrix entry"
 
 )

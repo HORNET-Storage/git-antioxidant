@@ -43,6 +43,9 @@ pub enum ConflictKind {
     RenameRename,
     /// Deleted in ours with a new file added, renamed to new file in theirs with original content.
     RenameAddDelete,
+    /// A renamed file whose content conflicts with the other side's changes of its source, at a destination that collides
+    /// with another path, so that the conflict markers of the two merges may nest.
+    RenameCollision,
     /// Two binary files were changed in different ways, which can never be merged (without a merge-driver)
     Binary,
     /// A submodule was changed on both sides, but its repository isn't available to merge the two commits.
@@ -312,6 +315,7 @@ fn parse_info<'a>(mut lines: impl Iterator<Item = &'a str>) -> Option<ConflictIn
         "CONFLICT (distinct modes)" => ConflictKind::DistinctModes,
         "CONFLICT (rename/rename)" => ConflictKind::RenameRename,
         "CONFLICT (rename/delete)" => ConflictKind::RenameAddDelete,
+        "CONFLICT (rename involved in collision)" => ConflictKind::RenameCollision,
         "CONFLICT (binary)" => ConflictKind::Binary,
         "CONFLICT (submodule not initialized)" => ConflictKind::SubmoduleNotInitialized,
         "Directory rename skipped since directory was renamed on both sides" => ConflictKind::DirectoryRenameSkipped,
