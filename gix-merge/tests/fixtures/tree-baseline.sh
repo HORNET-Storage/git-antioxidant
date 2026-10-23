@@ -2992,29 +2992,6 @@ baseline conflicts-when-ours-is-processed-first A-B A B
   make_resolve_tree ours B A
 )
 
-(cd nested-rename-blocks-relocated-addition
-  # gix keeps the rename/rename stages in addition to the file/directory stages
-  # that Git reports. The resulting tree and retained side content are identical.
-  blob=$(git rev-parse main:a/a)
-  rm .git/index
-  git update-index --index-info <<EOF
-100644 blob $blob 2	a
-100644 blob $blob 1	a/a
-100644 blob $blob 3	a/a/a
-100644 blob $blob 2	a~A
-EOF
-  make_conflict_index nested-rename-blocks-relocated-addition-A-B
-
-  rm .git/index
-  git update-index --index-info <<EOF
-100644 blob $blob 3	a
-100644 blob $blob 1	a/a
-100644 blob $blob 2	a/a/a
-100644 blob $blob 3	a~A
-EOF
-  make_conflict_index nested-rename-blocks-relocated-addition-A-B-reversed
-)
-
 (cd directory-rename-vs-directory-to-file
   # Ancestor resolution applies neither rename and restores `a/a`.
   git read-tree main

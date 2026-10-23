@@ -525,7 +525,7 @@ pub mod apply_index_entries {
     pub(super) mod function {
         use std::collections::{HashMap, hash_map};
 
-        use bstr::{BStr, ByteSlice};
+        use bstr::{BStr, BString, ByteSlice};
 
         use crate::tree::{
             Conflict, ConflictIndexEntryPathHint, Resolution, ResolutionFailure, TreatAsUnresolved,
@@ -609,29 +609,38 @@ pub mod apply_index_entries {
                 };
                 let source_path = ours.source_location();
 
-                let entries_with_stage = conflict.entries().into_iter().enumerate().filter_map(|(idx, entry)| {
-                    entry.filter(|e| e.mode.is_no_tree()).map(|e| {
-                        (
-                            match idx {
-                                0 => gix_index::entry::Stage::Base,
-                                1 => gix_index::entry::Stage::Ours,
-                                2 => gix_index::entry::Stage::Theirs,
-                                _ => unreachable!("fixed size array with three items"),
-                            },
-                            match e.path_hint {
-                                None => renamed_path.unwrap_or(current_path),
-                                Some(ConflictIndexEntryPathHint::Source) => source_path,
-                                Some(ConflictIndexEntryPathHint::Current) => current_path,
-                                Some(ConflictIndexEntryPathHint::RenamedOrTheirs) => {
-                                    renamed_path.unwrap_or_else(|| theirs.location())
-                                }
-                            },
-                            e,
-                        )
+                let entries_with_stage = conflict
+                    .entries()
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(idx, entry)| {
+                        entry.filter(|e| e.mode.is_no_tree()).map(|e| {
+                            (
+                                match idx {
+                                    0 => gix_index::entry::Stage::Base,
+                                    1 => gix_index::entry::Stage::Ours,
+                                    2 => gix_index::entry::Stage::Theirs,
+                                    _ => unreachable!("fixed size array with three items"),
+                                },
+                                match e.path_hint {
+                                    None => renamed_path.unwrap_or(current_path),
+                                    Some(ConflictIndexEntryPathHint::Source) => source_path,
+                                    Some(ConflictIndexEntryPathHint::Current) => current_path,
+                                    Some(ConflictIndexEntryPathHint::RenamedOrTheirs) => {
+                                        renamed_path.unwrap_or_else(|| theirs.location())
+                                    }
+                                },
+                                e,
+                            )
+                        })
                     })
-                });
+                    // merge-ort has no entry at a path that is a directory of the merged tree: it drops a file
+                    // that only the base has there and moves a file of a side to a unique path, which has its
+                    // own conflict.
+                    .filter(|(_, path, _)| !is_directory_bounded(index, path, len))
+                    .collect::<Vec<_>>();
 
-                if !entries_with_stage.clone().any(|(_, path, _)| {
+                if !entries_with_stage.iter().any(|(_, path, _)| {
                     index
                         .entry_index_by_path_and_stage_bounded(path, gix_index::entry::Stage::Unconflicted, len)
                         .is_some()
@@ -680,6 +689,18 @@ pub mod apply_index_entries {
             }
             index.sort_entries();
             res
+        }
+
+        /// Return `true` if `path` is a directory of the entries in `index.entries()[..len]`, which are sorted by their
+        /// paths.
+        fn is_directory_bounded(index: &gix_index::State, path: &BStr, len: usize) -> bool {
+            let mut prefix = BString::from(path);
+            prefix.push(b'/');
+            let entries = &index.entries()[..len];
+            let pos = entries.partition_point(|entry| entry.path(index) < prefix.as_bstr());
+            entries
+                .get(pos)
+                .is_some_and(|entry| entry.path(index).starts_with(prefix.as_slice()))
         }
     }
 }
