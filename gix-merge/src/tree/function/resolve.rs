@@ -2,10 +2,11 @@
 //!
 //! See [`tree()`] for the main entrypoint and how it works.
 
-use gix_error::Result;
-use std::borrow::Cow;
+use std::collections::HashMap;
 
-use bstr::{BString, ByteSlice};
+use gix_error::Result;
+
+use bstr::{BStr, BString, ByteSlice};
 use gix_diff::tree_with_rewrites::Change;
 use gix_hash::ObjectId;
 use gix_object::{FindExt, tree, tree::EntryMode};
@@ -13,15 +14,17 @@ use gix_object::{FindExt, tree, tree::EntryMode};
 use crate::tree::{
     Conflict, ConflictIndexEntry, ConflictIndexEntryPathHint, ConflictMapping,
     ConflictMapping::{Original, Swapped},
-    ContentMerge, Options, Outcome, Resolution, ResolutionFailure, ResolveWith,
+    ContentMerge, DirectoryRenames, Options, Outcome, Resolution, ResolutionFailure, ResolveWith,
     utils::{
         ChangeDisposition, ChangeList, PossibleConflict, TrackedChange, TreeNodes, apply_change, perform_blob_merge,
-        possibly_rewritten_location, rewrite_location_with_renamed_directory, to_components, unique_path_in_tree,
-        unique_path_in_tree_avoiding,
+        to_components, unique_path_in_tree, unique_path_in_tree_avoiding,
     },
 };
 
-use super::change::{MatchKind, collect as collect_changes, matching as matching_change, pair as pair_candidate};
+use super::{
+    change::{MatchKind, SideState, collect as collect_changes, matching as matching_change, pair as pair_candidate},
+    renames,
+};
 
 /// Perform a merge between `our_tree` and `their_tree`, using `base_tree` as merge-base.
 /// Note that `base_tree` can be an empty tree to indicate 'no common ancestor between the two sides'.
@@ -33,12 +36,13 @@ use super::change::{MatchKind, collect as collect_changes, matching as matching_
 /// * `write_blob_to_odb` persists content produced by a blob merge and returns the object ID to place in the result
 ///   tree. Existing input blobs are reused without calling it.
 /// * `diff_state` is reusable scratch space for both ancestor-to-side tree diffs and blob-content merges.
-/// * `diff_resource_cache` loads and caches blob resources used to determine rename similarity when [`options.rewrites`](Options::rewrites)
-///   enables rewrite tracking.
+/// * `diff_resource_cache` provides the attributes and diff drivers that decide which blobs are binary when
+///   [`options.rewrites`](Options::rewrites) enables rename detection.
 /// * `blob_merge` is a pre-configured platform used when both sides changed compatible non-tree entries. It must not
 ///   fall back to worktree data: all merge inputs come from the supplied trees and `objects` database.
-/// * [`options`](Options) configures rewrite tracking, blob and symlink conflict handling, merge-driver context, conflict-marker
-///   size, forced tree-conflict resolution, and whether to stop at the first selected kind of unresolved conflict.
+/// * [`options`](Options) configures rename detection and directory renames, blob and symlink conflict handling,
+///   merge-driver context, conflict-marker size, forced tree-conflict resolution, and whether to stop at the first
+///   selected kind of unresolved conflict.
 ///
 /// ### Side handling
 ///
@@ -49,12 +53,13 @@ use super::change::{MatchKind, collect as collect_changes, matching as matching_
 ///
 /// ### Algorithm
 ///
-/// 1. Diff the ancestor against each side, including rename detection, to obtain two flat lists of tracked changes.
-/// 2. Build a path tree for each list. Its nodes point back to list entries and make same-path, tree/non-tree,
-///    and renamed-directory interactions discoverable.
+/// 1. Diff the ancestor against each side to obtain two flat lists of tracked changes. Find the renames among them
+///    as `merge-ort` does, and move the files that one side added or renamed into a directory the other side renamed.
+/// 2. Build a path tree for each list. Its nodes point back to list entries and make same-path and tree/non-tree
+///    interactions discoverable.
 /// 3. Start an editor at the ancestor tree and process pending changes from one list against the other list's path tree.
 ///    A change can be applied directly, paired with another change and merged, consumed only as part of a conflict, or
-///    transformed into a deferred change at a rewritten or unique path.
+///    transformed into a deferred change at another path, like a rename's destination.
 /// 4. Append deferred changes as pending work, then swap the two side-lists and repeat until neither side has pending
 ///    changes. Swapping roles lets the same scheduling and resolution code process both inputs.
 ///
@@ -74,8 +79,8 @@ use super::change::{MatchKind, collect as collect_changes, matching as matching_
 /// interactions between those lists, and applies resolved changes to an ancestor-backed sparse tree editor. It writes
 /// newly merged blobs through `write_blob_to_odb`, but leaves serialization of the returned editor to the caller.
 ///
-/// If `gix-diff` reports a copy, it is normalized to an addition because the source remains in place. By comparison,
-/// `merge-ort` configures its diffcore pass for rename detection, not copy detection.
+/// Renames are found as `merge-ort` finds them, never as copies, and directory renames are applied as
+/// [`options.directory_renames`](Options::directory_renames) selects.
 ///
 /// Both produce an as-merged-as-possible tree and retain conflict information. Here a conflict records either an
 /// automatic [`Resolution`] or a [`ResolutionFailure`]; [`TreatAsUnresolved`](crate::tree::TreatAsUnresolved) determines
@@ -114,34 +119,43 @@ pub fn tree<'objects>(
     };
     let resolve_tree_conflicts = options.tree_conflicts;
 
-    let mut ours = collect_changes(
-        base_tree,
-        our_tree,
-        &base_buf,
-        &mut side_buf,
-        objects,
-        diff_resource_cache,
-        diff_state,
-        options.rewrites,
-    )?;
-    let mut theirs = collect_changes(
-        base_tree,
-        their_tree,
-        &base_buf,
-        &mut side_buf,
-        objects,
-        diff_resource_cache,
-        diff_state,
-        options.rewrites,
-    )?;
+    let mut changes = [
+        collect_changes(
+            base_tree,
+            our_tree,
+            &base_buf,
+            &mut side_buf,
+            objects,
+            diff_resource_cache,
+            diff_state,
+        )?,
+        collect_changes(
+            base_tree,
+            their_tree,
+            &base_buf,
+            &mut side_buf,
+            objects,
+            diff_resource_cache,
+            diff_state,
+        )?,
+    ];
+    let renames = match options.rewrites {
+        Some(rewrites) => renames::find(
+            [base_tree, our_tree, their_tree],
+            &mut changes,
+            objects,
+            diff_resource_cache,
+            rewrites,
+            options.directory_renames,
+        )?,
+        None => renames::Outcome::default(),
+    };
+    let [ours, theirs] = changes;
+    let (mut ours, mut theirs) = (SideState::from_changes(ours), SideState::from_changes(theirs));
     let mut conflicts = Vec::new();
     let mut failed_on_first_conflict = false;
-    let mut should_fail_on_conflict = |mut conflict: Conflict| -> bool {
-        if resolve_tree_conflicts.is_some()
-            && let Err(failure) = conflict.resolution
-        {
-            conflict.resolution = Ok(Resolution::Forced(failure));
-        }
+    let mut should_fail_on_conflict = |conflict: Conflict| -> bool {
+        let conflict = with_forced_resolution(conflict, resolve_tree_conflicts);
         if let Some(how) = options.fail_on_conflict
             && (conflict.resolution.is_err() || conflict.is_unresolved(how))
         {
@@ -150,6 +164,25 @@ pub fn tree<'objects>(
         conflicts.push(conflict);
         failed_on_first_conflict
     };
+
+    // The conflicts found with the renames come before those of the merge below, as merge-ort reports them while it
+    // processes renames. Files that directory renames moved are recorded after the merge, so that their conflicts can
+    // take the index entries of a conflict at their final location, unless each move is an unresolved conflict of its
+    // own and the merge stops at the first one.
+    let renames::Outcome {
+        conflicts: mut early_conflicts,
+        moves,
+    } = renames;
+    let moves_before_resolver =
+        options.fail_on_conflict.is_some() && options.directory_renames == DirectoryRenames::MoveAsConflict;
+    if moves_before_resolver {
+        early_conflicts.extend(moves.iter().map(|moved| moved.record(options.directory_renames, &[])));
+    }
+    // A change that a directory rename moved keeps the location it had before the move in the conflict markers of the
+    // content merges at its new location, as merge-ort keeps it in the `pathnames` of the conflict there.
+    let moved_from = renames::locations_before_moves(&moves);
+    let resolver_start = early_conflicts.len();
+    let stopped = early_conflicts.into_iter().any(&mut should_fail_on_conflict);
 
     // Ambiguous rewrite identities otherwise make the side processed first decide
     // which repeated additions are paired. Give both directions the same schedule.
@@ -167,19 +200,18 @@ pub fn tree<'objects>(
     // length so only work appended during that batch is visited next. Resolution may also append to the opposite
     // side, which the swap below makes active. Once the swapped-in side has no pending change, both lists are drained,
     // and the merge is complete.
-    'outer: while their_changes.iter().rev().any(TrackedChange::is_pending) {
+    'outer: while !stopped && their_changes.iter().rev().any(TrackedChange::is_pending) {
         let mut batch_start = 0;
         let mut batch_end = their_changes.len();
 
         while batch_start != batch_end {
             for theirs_idx in batch_start..batch_end {
                 // Tree changes are structural index entries, not work items: their descendant leaf changes carry the
-                // actual edits. They remain in the side's path index so matching can detect file/directory overlaps and
-                // paths crossing a renamed directory after the scheduler swaps sides and searches this side's index.
+                // actual edits. They remain in the side's path index so matching can detect file/directory overlaps
+                // after the scheduler swaps sides and searches this side's index.
                 let TrackedChange {
                     inner: theirs,
                     needs_tree_insertion,
-                    rewritten_location,
                     ..
                 } = &their_changes[theirs_idx];
                 if theirs.entry_mode().is_tree() || !their_changes[theirs_idx].is_pending() {
@@ -190,60 +222,13 @@ pub fn tree<'objects>(
                     their_tree.insert(theirs, theirs_idx);
                 }
 
-                match matching_change(
-                    theirs,
-                    *needs_tree_insertion,
-                    rewritten_location.as_ref(),
-                    our_tree,
-                    our_changes,
-                ) {
+                match matching_change(theirs, *needs_tree_insertion, our_tree, our_changes) {
                     None => {
-                        if let Some((rewritten_location, ours_idx)) = rewritten_location {
-                            // The deferred change has no conflict at its directory-rewritten destination. Record the
-                            // relocation for callers, but attach no unmerged index stages because the editor contains
-                            // the complete resolved result.
-                            if should_fail_on_conflict(Conflict::with_resolution(
-                                Resolution::SourceLocationAffectedByRename {
-                                    final_location: rewritten_location.to_owned(),
-                                },
-                                (&our_changes[*ours_idx].inner, theirs, Original, outer_side),
-                                [None, None, None],
-                            )) {
-                                break 'outer;
-                            }
-                            editor.remove_if_leaf(to_components(theirs.location()))?;
-                        }
-                        apply_change(&mut editor, theirs, rewritten_location.as_ref().map(|t| &t.0))?;
+                        apply_change(&mut editor, theirs)?;
                         their_changes[theirs_idx].mark_applied();
                     }
                     Some(candidate) => {
                         use crate::tree::utils::to_components_bstring_ref as toc;
-
-                        if let PossibleConflict::PassedRewrittenDirectory { change_idx } = candidate {
-                            let ours = &our_changes[change_idx];
-                            // This path passed through a directory renamed on the other side: for `a -> b`, translate
-                            // `a/file` to `b/file`. `None` means the candidate cannot provide that directory rewrite.
-                            let location_after_passed_rename =
-                                rewrite_location_with_renamed_directory(theirs.location(), &ours.inner);
-                            if let Some(new_location) = location_after_passed_rename {
-                                // The translated destination may have conflicts of its own, so retry there instead of
-                                // applying now. Remove the old scheduling node (which another structural conflict may
-                                // already have consumed) and ignore this same directory rewrite on the retry.
-                                their_tree.remove_change(theirs.location());
-                                push_deferred_with_rewrite(
-                                    (theirs.clone(), Some(change_idx)),
-                                    Some((new_location, change_idx)),
-                                    their_changes,
-                                );
-                            } else {
-                                // The passed node did not yield a directory rewrite for this path, so there is no
-                                // translated destination to retry. Apply the change at its original location.
-                                apply_change(&mut editor, theirs, None)?;
-                                their_changes[theirs_idx].mark_applied();
-                            }
-                            their_changes[theirs_idx].mark_processed();
-                            continue;
-                        }
 
                         let (ours_idx, match_kind) = pair_candidate(&candidate, our_changes);
                         // A path overlap need not identify a change that the resolution matrix can pair with `theirs`.
@@ -315,7 +300,7 @@ pub fn tree<'objects>(
                                         Original => ours,
                                         Swapped => theirs,
                                     };
-                                    apply_change(&mut editor, selected, None)?;
+                                    apply_change(&mut editor, selected)?;
                                     match (outer_side, candidate_ours_idx) {
                                         (Original, Some(ours_idx)) => our_changes[ours_idx].mark_applied(),
                                         _ => their_changes[theirs_idx].mark_applied(),
@@ -344,9 +329,7 @@ pub fn tree<'objects>(
                             // rename also changed it. Incompatible entry types retain both paths unless policy chooses a
                             // side. For example, ours modifies `file` while theirs only renames it to `moved`; if theirs
                             // also edits it, merge both edits at `moved`. If ours changes `file` into a symlink while
-                            // theirs renames it as a blob, retain the symlink at `file` and the blob at `moved`. A directory
-                            // rename on the modifying side can further relocate a destination such as `dir/moved` to
-                            // `new/moved`.
+                            // theirs renames it as a blob, retain the symlink at `file` and the blob at `moved`.
                             (
                                 Change::Modification {
                                     previous_id,
@@ -396,15 +379,42 @@ pub fn tree<'objects>(
                                         Some(*previous_entry_mode),
                                         side.to_global(outer_side),
                                     );
-                                    let their_rewritten_location = possibly_rewritten_location(
-                                        pick(side, our_tree, their_tree),
-                                        their_location.as_ref(),
-                                        pick(side, our_changes, their_changes),
-                                    );
                                     let renamed_without_change = their_source_id == their_id;
                                     let (merged_blob_id, resolution) = if renamed_without_change {
                                         (*our_id, identical_content_resolution(modes_merged_cleanly))
                                     } else {
+                                        // The conflict markers give a rename that a directory rename moved the
+                                        // destination it had before the move, unless the modifying side has a file at
+                                        // the moved destination: merge-ort then merges the rename first, under the moved
+                                        // destination, and then the result with that file.
+                                        let collision = match pick(side, &*our_tree, &*their_tree)
+                                            .check_conflict(their_location.as_bstr())
+                                        {
+                                            Some(PossibleConflict::Match { change_idx }) => {
+                                                !pick(side, &*our_changes, &*their_changes)[change_idx]
+                                                    .inner
+                                                    .entry_mode()
+                                                    .is_tree()
+                                            }
+                                            _ => false,
+                                        };
+                                        let rename_pathname = if collision {
+                                            their_location.as_bstr()
+                                        } else {
+                                            pathname(
+                                                &moved_from,
+                                                side.to_global(outer_side).swapped(),
+                                                their_location.as_bstr(),
+                                            )
+                                        };
+                                        let pathnames = match side {
+                                            Original => {
+                                                [source_location.as_bstr(), our_location.as_bstr(), rename_pathname]
+                                            }
+                                            Swapped => {
+                                                [source_location.as_bstr(), rename_pathname, our_location.as_bstr()]
+                                            }
+                                        };
                                         let (our_location, our_id, our_mode, their_location, their_id, their_mode) =
                                             match side {
                                                 Original => (
@@ -433,6 +443,7 @@ pub fn tree<'objects>(
                                             (our_location, *our_id, *our_mode),
                                             (their_location, *their_id, *their_mode),
                                             (source_location, *previous_id, *previous_entry_mode),
+                                            pathnames,
                                             (0, outer_side),
                                             &options,
                                         )?;
@@ -442,9 +453,8 @@ pub fn tree<'objects>(
 
                                     editor.remove_if_leaf(toc(our_location))?;
                                     pick_mut(side, our_tree, their_tree).remove_existing_change(our_location.as_bstr());
-                                    let final_location = their_rewritten_location.clone();
                                     let new_change = Change::Addition {
-                                        location: their_rewritten_location.unwrap_or_else(|| their_location.to_owned()),
+                                        location: their_location.clone(),
                                         relation: None,
                                         entry_mode: merged_mode,
                                         id: merged_blob_id,
@@ -456,7 +466,6 @@ pub fn tree<'objects>(
                                                 resolution,
                                                 merged_blob_id,
                                             }),
-                                            final_location,
                                         },
                                         (ours, theirs, side, outer_side),
                                         [
@@ -562,6 +571,11 @@ pub fn tree<'objects>(
                                         (location, *our_id, *our_mode),
                                         (location, *their_id, *their_mode),
                                         (location, merge_base_id, merge_base_mode),
+                                        [
+                                            location.as_bstr(),
+                                            pathname(&moved_from, outer_side, location.as_bstr()),
+                                            pathname(&moved_from, outer_side.swapped(), location.as_bstr()),
+                                        ],
                                         (0, outer_side),
                                         &options,
                                     )?;
@@ -736,15 +750,6 @@ pub fn tree<'objects>(
                                     && !matches!(resolve_tree_conflicts, Some(ResolveWith::Ancestor)) =>
                             {
                                 push_deferred((theirs.clone(), Some(ours_idx)), their_changes);
-                            }
-                            // An explicit file rename wins over an inferred directory relocation at the same destination;
-                            // keep the rename and apply the addition at its original path. For example, `file` is renamed
-                            // explicitly to `new`, while a directory rename would place an added child below `new/`.
-                            (Change::Rewrite { .. }, Change::Addition { .. })
-                                if matches!(match_kind, Some(MatchKind::EraseLeaf)) && rewritten_location.is_some() =>
-                            {
-                                apply_change_and_mark(&mut editor, ours, &mut ours_disposition)?;
-                                apply_change_and_mark(&mut editor, theirs, &mut theirs_disposition)?;
                             }
                             // A rewritten non-tree blocks a directory introduced by the other side. Preserve the
                             // directory and relocate the blocking entry to a unique, side-qualified path. For example,
@@ -940,6 +945,11 @@ pub fn tree<'objects>(
                                             (location, *our_id, merged_mode),
                                             (location, *their_id, merged_mode),
                                             (location, their_id.kind().null(), merged_mode),
+                                            [
+                                                location.as_bstr(),
+                                                pathname(&moved_from, outer_side, location.as_bstr()),
+                                                pathname(&moved_from, outer_side.swapped(), location.as_bstr()),
+                                            ],
                                             (0, outer_side),
                                             &options,
                                         )?
@@ -1217,111 +1227,6 @@ pub fn tree<'objects>(
                                     }
                                 }
                             }
-                            // A file rename lands at a renamed directory's destination. Keep the directory there and
-                            // relocate the file rename to a unique path. For example, a directory moves from `old` to
-                            // `new` while a file moves from `file` to `new`.
-                            (
-                                Change::Rewrite {
-                                    entry_mode: tree_mode,
-                                    location: tree_location,
-                                    ..
-                                },
-                                Change::Rewrite {
-                                    source_location,
-                                    entry_mode,
-                                    id,
-                                    location,
-                                    ..
-                                },
-                            ) if tree_mode.is_tree() && tree_location == location => {
-                                let renamed_location = unique_path_in_tree(
-                                    location.as_bstr(),
-                                    &editor,
-                                    our_tree,
-                                    labels.other.unwrap_or_default(),
-                                )?;
-                                let conflict = Conflict::without_resolution(
-                                    ResolutionFailure::OursDirectoryTheirsNonDirectoryTheirsRenamed {
-                                        renamed_unique_path_of_theirs: renamed_location.clone(),
-                                    },
-                                    (ours, theirs, Original, outer_side),
-                                    [
-                                        None,
-                                        None,
-                                        index_entry_at_path(
-                                            entry_mode,
-                                            id,
-                                            ConflictIndexEntryPathHint::RenamedOrTheirs,
-                                        ),
-                                    ],
-                                );
-
-                                match resolve_tree_conflicts {
-                                    None | Some(ResolveWith::VirtualMergeBase) => {
-                                        editor.remove_if_leaf(toc(source_location))?;
-                                        editor.upsert(toc(&renamed_location), entry_mode.kind(), *id)?;
-                                        their_tree.remove_existing_change(location.as_bstr());
-                                        ours_disposition = ChangeDisposition::Applied;
-                                        theirs_disposition = ChangeDisposition::Applied;
-                                    }
-                                    Some(ResolveWith::Ours) => {
-                                        apply_our_resolution(
-                                            ours,
-                                            theirs,
-                                            outer_side,
-                                            &mut editor,
-                                            &mut ours_disposition,
-                                            &mut theirs_disposition,
-                                        )?;
-                                        match outer_side {
-                                            Original => {
-                                                their_tree.remove_existing_change(location.as_bstr());
-                                            }
-                                            Swapped => {
-                                                our_tree.remove_existing_change(tree_location.as_bstr());
-                                            }
-                                        }
-                                    }
-                                    Some(ResolveWith::Ancestor) => {}
-                                }
-
-                                if should_fail_on_conflict(conflict) {
-                                    break 'outer;
-                                }
-                            }
-                            // A file rename targets the source vacated by a directory rename. Accept it there; descendant
-                            // changes perform the directory's actual rename or deletion. For example, directory `old`
-                            // moves to `new` while file `file` moves to `old`.
-                            (
-                                Change::Rewrite {
-                                    source_location,
-                                    entry_mode: tree_mode,
-                                    ..
-                                },
-                                Change::Rewrite { location, .. },
-                            ) if tree_mode.is_tree()
-                                && location == source_location
-                                && matches!(match_kind, Some(MatchKind::EraseTree)) =>
-                            {
-                                // The leaf rename occupies a path vacated by the directory rename.
-                                // Descendant changes resolve the actual rename/delete conflict.
-                                match resolve_tree_conflicts {
-                                    None | Some(ResolveWith::VirtualMergeBase) => {
-                                        apply_change_and_mark(&mut editor, theirs, &mut theirs_disposition)?;
-                                    }
-                                    Some(ResolveWith::Ours) => {
-                                        apply_our_resolution(
-                                            ours,
-                                            theirs,
-                                            outer_side,
-                                            &mut editor,
-                                            &mut ours_disposition,
-                                            &mut theirs_disposition,
-                                        )?;
-                                    }
-                                    Some(ResolveWith::Ancestor) => {}
-                                }
-                            }
                             // Different sources renamed to the same destination with identical type and content collapse
                             // cleanly into one entry while both sources are removed. For example, ours renames `a` to
                             // `dst` and theirs renames an identical `b` to `dst`.
@@ -1396,6 +1301,15 @@ pub fn tree<'objects>(
                                                 (location, *our_id, *our_mode),
                                                 (location, *their_id, *their_mode),
                                                 (location, our_id.kind().null(), merged_mode),
+                                                [
+                                                    location.as_bstr(),
+                                                    pathname(&moved_from, outer_side, location.as_bstr()),
+                                                    pathname(
+                                                        &moved_from,
+                                                        outer_side.swapped(),
+                                                        their_location.as_bstr(),
+                                                    ),
+                                                ],
                                                 (0, outer_side),
                                                 &options,
                                             )?;
@@ -1667,6 +1581,22 @@ pub fn tree<'objects>(
                                 let (merged_blob_id, mut resolution) = if our_id == their_id {
                                     (*our_id, identical_content_resolution(modes_merged_cleanly))
                                 } else {
+                                    // Renames to one destination keep the destinations they had before a directory
+                                    // rename moved them, while renames to two destinations are merged under their moved
+                                    // destinations, as merge-ort merges those while it processes the renames.
+                                    let pathnames = if our_location == their_location {
+                                        [
+                                            our_location.as_bstr(),
+                                            pathname(&moved_from, outer_side, our_location.as_bstr()),
+                                            pathname(&moved_from, outer_side.swapped(), their_location.as_bstr()),
+                                        ]
+                                    } else {
+                                        [
+                                            source_location.as_bstr(),
+                                            our_location.as_bstr(),
+                                            their_location.as_bstr(),
+                                        ]
+                                    };
                                     let (id, resolution) = perform_blob_merge(
                                         labels,
                                         objects,
@@ -1676,19 +1606,13 @@ pub fn tree<'objects>(
                                         (our_location, *our_id, *our_mode),
                                         (their_location, *their_id, *their_mode),
                                         (source_location, *source_id, *source_entry_mode),
+                                        pathnames,
                                         (u8::from(our_location != their_location), outer_side),
                                         &options,
                                     )?;
                                     let resolution = content_resolution(resolution, modes_merged_cleanly);
                                     (id, Some(resolution))
                                 };
-
-                                let their_location =
-                                    possibly_rewritten_location(our_tree, their_location.as_bstr(), our_changes)
-                                        .map_or(Cow::Borrowed(their_location.as_bstr()), Cow::Owned);
-                                let our_location =
-                                    possibly_rewritten_location(their_tree, our_location.as_bstr(), their_changes)
-                                        .map_or(Cow::Borrowed(our_location.as_bstr()), Cow::Owned);
 
                                 // Both sides renamed the source away. Only renames to two destinations conflict, and
                                 // only the resolution of that conflict with the ancestor keeps the source.
@@ -1707,7 +1631,7 @@ pub fn tree<'objects>(
                                     (
                                         None,
                                         Some(Change::Addition {
-                                            location: our_location.into_owned(),
+                                            location: our_location.clone(),
                                             relation: None,
                                             entry_mode: merged_mode,
                                             id: merged_blob_id,
@@ -1745,13 +1669,13 @@ pub fn tree<'objects>(
                                     match resolve_tree_conflicts {
                                         None | Some(ResolveWith::VirtualMergeBase) => {
                                             let our_addition = Change::Addition {
-                                                location: our_location.into_owned(),
+                                                location: our_location.clone(),
                                                 relation: None,
                                                 entry_mode: merged_mode,
                                                 id: merged_blob_id,
                                             };
                                             let their_addition = Change::Addition {
-                                                location: their_location.into_owned(),
+                                                location: their_location.clone(),
                                                 relation: None,
                                                 entry_mode: merged_mode,
                                                 id: merged_blob_id,
@@ -1765,7 +1689,7 @@ pub fn tree<'objects>(
                                                     Original => our_location,
                                                     Swapped => their_location,
                                                 }
-                                                .into_owned(),
+                                                .clone(),
                                                 relation: None,
                                                 entry_mode: merged_mode,
                                                 id: merged_blob_id,
@@ -1803,9 +1727,8 @@ pub fn tree<'objects>(
                                 }
                             }
                             // Rename/delete: remove the common source and report the conflict, then defer the renamed
-                            // entry at its destination (adjusted for a containing directory rename) when policy keeps it.
-                            // For example, ours deletes `dir/file` while theirs renames it to `dir/moved`; if ours also
-                            // renames containing `dir` to `new`, that destination is adjusted to `new/moved`.
+                            // entry at its destination when policy keeps it. For example, ours deletes `dir/file` while
+                            // theirs renames it to `dir/moved`.
                             (
                                 Change::Deletion { .. },
                                 Change::Rewrite {
@@ -1848,25 +1771,19 @@ pub fn tree<'objects>(
                                     Some(ResolveWith::Ancestor) => {}
                                 }
 
-                                let their_rewritten_location = possibly_rewritten_location(
-                                    pick_mut(side, our_tree, their_tree),
-                                    location.as_ref(),
-                                    pick(side, our_changes, their_changes),
-                                )
-                                .unwrap_or_else(|| location.to_owned());
                                 // A merged merge-base keeps the source's ancestor version at the destination, unless
                                 // the deleting side has an entry there to merge with, as merge-ort does at that depth.
                                 let (entry_mode, id) = match resolve_tree_conflicts {
                                     Some(ResolveWith::VirtualMergeBase) => rename_delete_entry_in_merge_base(
                                         pick(side, our_tree, their_tree),
-                                        &their_rewritten_location,
+                                        location,
                                         (*rewritten_mode, *rewritten_id),
                                         (*source_entry_mode, *source_id),
                                     ),
                                     _ => (*rewritten_mode, *rewritten_id),
                                 };
                                 let our_addition = Change::Addition {
-                                    location: their_rewritten_location,
+                                    location: location.clone(),
                                     relation: None,
                                     entry_mode,
                                     id,
@@ -1893,12 +1810,15 @@ pub fn tree<'objects>(
                                     || (matches!(resolve_tree_conflicts, Some(ResolveWith::Ours)) && ours_is_rewrite)
                                 {
                                     push_deferred((our_addition, None), pick_mut(side, their_changes, our_changes));
+                                } else {
+                                    // The dropped rename leaves nothing at its destination for the other side's changes
+                                    // to meet. For example, theirs renames `foo` to `dir/bar` while ours deletes `foo` and
+                                    // adds `dir/bar/file`, which then needs no conflict.
+                                    pick_mut(side, their_tree, our_tree).remove_change(location.as_bstr());
                                 }
                             }
-                            // Rename/add: if directory `old` moves to `new` while the other side adds a file at vacated
-                            // `old`, leaf changes already represent the result. Otherwise, two gitlinks require a
-                            // submodule-aware follow-up, compatible blobs are content-merged, and entries of distinct
-                            // types are both kept, placed as for add/add.
+                            // Rename/add: two gitlinks require a submodule-aware follow-up, compatible blobs are
+                            // content-merged, and entries of distinct types are both kept, placed as for add/add.
                             (
                                 Change::Rewrite {
                                     source_location,
@@ -1912,7 +1832,6 @@ pub fn tree<'objects>(
                                 Change::Addition {
                                     id: their_id,
                                     entry_mode: their_mode,
-                                    location: add_location,
                                     ..
                                 },
                             )
@@ -1920,7 +1839,6 @@ pub fn tree<'objects>(
                                 Change::Addition {
                                     id: their_id,
                                     entry_mode: their_mode,
-                                    location: add_location,
                                     ..
                                 },
                                 Change::Rewrite {
@@ -1968,28 +1886,6 @@ pub fn tree<'objects>(
                                     )) {
                                         break 'outer;
                                     }
-                                } else if our_mode.is_tree() && add_location == source_location {
-                                    // The leaf changes already represent the directory rename and its replacement.
-                                    // Keep the replacement at the explicit source instead of relocating it with
-                                    // the inferred directory rename and reporting a second conflict.
-                                    match resolve_tree_conflicts {
-                                        None | Some(ResolveWith::VirtualMergeBase) => {
-                                            editor.upsert(toc(add_location), their_mode.kind(), *their_id)?;
-                                            ours_disposition = ChangeDisposition::Applied;
-                                            theirs_disposition = ChangeDisposition::Applied;
-                                        }
-                                        Some(ResolveWith::Ours) => {
-                                            apply_our_resolution(
-                                                ours,
-                                                theirs,
-                                                outer_side,
-                                                &mut editor,
-                                                &mut ours_disposition,
-                                                &mut theirs_disposition,
-                                            )?;
-                                        }
-                                        Some(ResolveWith::Ancestor) => {}
-                                    }
                                 } else if modes_are_compatible(*our_mode, *their_mode) {
                                     // The rename destination and the addition have no common ancestor entry. The `our_*`
                                     // bindings belong to the rename, which `side` maps to its global side for the modes, the
@@ -2008,6 +1904,15 @@ pub fn tree<'objects>(
                                             (location, *our_id, *our_mode),
                                             (location, *their_id, *their_mode),
                                             (source_location, source_id.kind().null(), *source_entry_mode),
+                                            [
+                                                location.as_bstr(),
+                                                pathname(&moved_from, side.to_global(outer_side), location.as_bstr()),
+                                                pathname(
+                                                    &moved_from,
+                                                    side.to_global(outer_side).swapped(),
+                                                    location.as_bstr(),
+                                                ),
+                                            ],
                                             (0, side.to_global(outer_side)),
                                             &options,
                                         )?;
@@ -2145,6 +2050,20 @@ pub fn tree<'objects>(
         outer_side = outer_side.swapped();
     }
 
+    if !failed_on_first_conflict && !moves_before_resolver {
+        let resolver_conflicts = &conflicts[resolver_start..];
+        let records: Vec<_> = moves
+            .iter()
+            .map(|moved| {
+                with_forced_resolution(
+                    moved.record(options.directory_renames, resolver_conflicts),
+                    resolve_tree_conflicts,
+                )
+            })
+            .collect();
+        conflicts.extend(records);
+    }
+
     Ok(Outcome {
         tree: editor,
         conflicts,
@@ -2152,12 +2071,22 @@ pub fn tree<'objects>(
     })
 }
 
+/// Return `conflict`, resolved by force with the failure it records if `resolve_tree_conflicts` selects a resolution.
+fn with_forced_resolution(mut conflict: Conflict, resolve_tree_conflicts: Option<ResolveWith>) -> Conflict {
+    if resolve_tree_conflicts.is_some()
+        && let Err(failure) = conflict.resolution
+    {
+        conflict.resolution = Ok(Resolution::Forced(failure));
+    }
+    conflict
+}
+
 fn apply_change_and_mark(
     editor: &mut tree::Editor<'_>,
     change: &Change,
     disposition: &mut ChangeDisposition,
 ) -> Result {
-    apply_change(editor, change, None)?;
+    apply_change(editor, change)?;
     *disposition = ChangeDisposition::Applied;
     Ok(())
 }
@@ -2225,16 +2154,18 @@ fn identical_content_resolution(modes_merged_cleanly: bool) -> Option<crate::blo
     (!modes_merged_cleanly).then_some(crate::blob::Resolution::Conflict)
 }
 
-fn push_deferred(change_and_idx: (Change, Option<usize>), changes: &mut ChangeList) {
-    push_deferred_with_rewrite(change_and_idx, None, changes);
+fn push_deferred((change, ours_idx): (Change, Option<usize>), changes: &mut ChangeList) {
+    changes.push(TrackedChange::new(change, Some(ours_idx)));
 }
 
-fn push_deferred_with_rewrite(
-    (change, ours_idx): (Change, Option<usize>),
-    new_location: Option<(BString, usize)>,
-    changes: &mut ChangeList,
-) {
-    changes.push(TrackedChange::new(change, Some(ours_idx), new_location));
+/// Return the path that the conflict markers of a content merge at `location` give the change of `side` there, which
+/// is `Original` for *our* change and `Swapped` for *theirs*: the location that a directory rename moved the change
+/// from, or `location`.
+fn pathname<'a>(moved_from: &[HashMap<&'a BStr, &'a BStr>; 2], side: ConflictMapping, location: &'a BStr) -> &'a BStr {
+    moved_from[usize::from(side.is_swapped())]
+        .get(location)
+        .copied()
+        .unwrap_or(location)
 }
 
 fn pick<'a, T: ?Sized>(side: ConflictMapping, ours: &'a T, theirs: &'a T) -> &'a T {

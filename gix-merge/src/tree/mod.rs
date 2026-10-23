@@ -131,7 +131,9 @@ impl Outcome<'_> {
     /// their conflicted counterparts.
     /// It's important that `index` is at the state of [`Self::tree`].
     ///
-    /// Note that in practice, whenever there is a single [conflict](Conflict), this function will return `true`.
+    /// A [conflict](Conflict) changes the index only if it has [entries](Conflict::entries()). Conflicts that Git reports
+    /// without conflicting stages, such as an [unclear directory rename split](ResolutionFailure::DirectoryRenameSplit),
+    /// leave it unchanged.
     pub fn index_changed_after_applying_conflicts(
         &self,
         index: &mut gix_index::State,
@@ -251,11 +253,9 @@ impl Conflict {
                                     .content_merge()
                                     .is_some_and(|merged_blob| content_merge_unresolved(&merged_blob))
                         }
-                        Resolution::OursModifiedTheirsRenamedAndChangedThenRename {
-                            merged_blob,
-                            final_location,
-                            ..
-                        } => final_location.is_some() || merged_blob.as_ref().is_some_and(content_merge_unresolved),
+                        Resolution::OursModifiedTheirsRenamedAndChangedThenRename { merged_blob, .. } => {
+                            merged_blob.as_ref().is_some_and(content_merge_unresolved)
+                        }
                         Resolution::OursModifiedTheirsModifiedThenBlobContentMerge { merged_blob } => {
                             content_merge_unresolved(merged_blob)
                         }
@@ -312,7 +312,11 @@ impl Conflict {
                 }
                 | ResolutionFailure::OursAddedTheirsAddedTypeMismatch { .. }
                 | ResolutionFailure::OursModifiedTheirsModifiedTypeMismatch { .. }
-                | ResolutionFailure::OursDeletedTheirsRenamed => None,
+                | ResolutionFailure::OursDeletedTheirsRenamed
+                | ResolutionFailure::DirectoryRenameSplit
+                | ResolutionFailure::FileInWayOfDirectoryRename { .. }
+                | ResolutionFailure::DirectoryRenameCollision { .. }
+                | ResolutionFailure::SourceLocationAffectedByRename { .. } => None,
             }
         }
         match &self.resolution {
@@ -333,8 +337,10 @@ impl Conflict {
 /// Also note that symlink merges are always done via binary merge, using the same logic.
 #[derive(Debug, Clone)]
 pub enum Resolution {
-    /// *ours* had a renamed directory and *theirs* made a change in the now renamed directory.
-    /// We moved that change into its location.
+    /// *ours* renamed a directory into which *theirs* added a file or renamed one. The file was moved into the renamed
+    /// directory, as [`DirectoryRenames::Move`] selects. With [`DirectoryRenames::MoveAsConflict`] as well, a move that
+    /// returned a file that *theirs* renamed to its source is resolved if *ours* renamed that source too: merge-ort
+    /// skips such a rename to itself, and *their* version of the file is merged at the destination of *our* rename.
     SourceLocationAffectedByRename {
         /// The repository-relative path to the location that the change ended up in after
         /// being affected by a renamed directory.
@@ -342,16 +348,12 @@ pub enum Resolution {
     },
     /// *ours* was a modified blob and *theirs* renamed that blob.
     /// We moved the changed blob from *ours* to its new location, and merged it successfully.
-    /// If this is a `copy`, the source of the copy was set to be the changed blob as well so both match.
     OursModifiedTheirsRenamedAndChangedThenRename {
         /// The mode of the merged result if it differs from the mode of the renamed blob, as the modifying side
         /// changed the executable bit.
         merged_mode: Option<gix_object::tree::EntryMode>,
         /// If `Some(…)`, the content of the involved blob had to be merged.
         merged_blob: Option<ContentMerge>,
-        /// The repository relative path to the location the blob finally ended up in.
-        /// It's `Some()` only if *they* rewrote the blob into a directory which *we* renamed on *our* side.
-        final_location: Option<BString>,
     },
     /// *ours* and *theirs* carried changes and where content-merged.
     ///
@@ -427,6 +429,28 @@ pub enum ResolutionFailure {
     OursDeletedTheirsRenamed,
     /// *ours* was modified and *theirs* was deleted. We keep the modified one and ignore the deletion.
     OursModifiedTheirsDeleted,
+    /// One side renamed the files of a directory into several other directories, none of which received more of them
+    /// than every other, so it's unclear where the directory went and no directory rename applies to it. Both changes
+    /// are the removal of that directory.
+    DirectoryRenameSplit,
+    /// *ours* renamed a directory into which *theirs* added a file or renamed one, but a file or directory is in the
+    /// way at the path that the directory rename would move it to, so it stays where *theirs* put it.
+    FileInWayOfDirectoryRename {
+        /// The path that the directory rename would have moved *their* file to.
+        destination: BString,
+    },
+    /// *ours* renamed directories into which *theirs* added or renamed several files that these directory renames
+    /// would all move to one path. None of these files is moved, and each has a conflict of this kind.
+    DirectoryRenameCollision {
+        /// The path that the directory renames would have moved these files to.
+        destination: BString,
+    },
+    /// *ours* renamed a directory into which *theirs* added a file or renamed one. The file was moved into the renamed
+    /// directory, but as [`DirectoryRenames::MoveAsConflict`] selects, the move is left for the user to confirm.
+    SourceLocationAffectedByRename {
+        /// The repository-relative path that the file was moved to.
+        final_location: BString,
+    },
     /// *ours* and *theirs* are in an untested state so it can't be handled yet, and is considered a conflict
     /// without adding our *or* their side to the resulting tree.
     Unknown,
@@ -448,10 +472,16 @@ pub struct ContentMerge {
 /// A way to configure [`tree()`](crate::tree()).
 #[derive(Default, Debug, Clone)]
 pub struct Options {
-    /// If *not* `None`, rename tracking will be performed when determining the changes of each side of the merge.
-    ///
-    /// Note that [empty blobs](Rewrites::track_empty) should not be tracked for best results.
+    /// If *not* `None`, renames are found among the changes of each side of the merge as Git's `merge-ort` finds them:
+    /// files with identical content are always paired, and other files only where the merge needs to know about
+    /// their rename. [`percentage`](Rewrites::percentage) is the minimal similarity of a rename, and
+    /// [`limit`](Rewrites::limit) bounds the search for renames of changed files as Git's rename limit does. Copies are
+    /// never detected, and empty files are only paired if [`track_empty`](Rewrites::track_empty) is set.
     pub rewrites: Option<Rewrites>,
+    /// What happens to files that one side added to a directory the other side renamed, or renamed into it.
+    ///
+    /// It has no effect if [`rewrites`](Self::rewrites) is `None`, as directory renames are inferred from renames.
+    pub directory_renames: DirectoryRenames,
     /// Decide how blob-merges should be done. This relates to if conflicts can be resolved or not.
     pub blob_merge: crate::blob::platform::merge::Options,
     /// The context to use when invoking merge-drivers.
@@ -501,6 +531,27 @@ pub enum ResolveWith {
     VirtualMergeBase,
 }
 
+/// Decide what happens to a file that one side adds to a directory the other side renamed, or renames into it, as
+/// Git's `merge.directoryRenames` does.
+///
+/// A side renamed a directory if the directory is gone on that side, and more of its files were renamed into one
+/// other directory than into any other. No directory rename applies to a directory that both sides renamed, or in
+/// merges of merge-bases, which `merge-ort` performs without directory renames.
+#[derive(Default, Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum DirectoryRenames {
+    /// Leave such files where their side put them, as `merge.directoryRenames=false` does.
+    Ignore,
+    /// Move such files into the renamed directory, and record each move as
+    /// [`Resolution::SourceLocationAffectedByRename`], as `merge.directoryRenames=true` does.
+    Move,
+    /// Move such files into the renamed directory, but record each move as the unresolved conflict
+    /// [`ResolutionFailure::SourceLocationAffectedByRename`], as `merge.directoryRenames=conflict`, Git's default,
+    /// does. A move that returns a renamed file to a source that the other side renamed as well is
+    /// [resolved](Resolution::SourceLocationAffectedByRename) in this mode too.
+    #[default]
+    MoveAsConflict,
+}
+
 pub(super) mod function;
 mod utils;
 ///
@@ -543,7 +594,9 @@ pub mod apply_index_entries {
         /// brought about `conflicts`, or else this function will fail if it cannot find the path matching
         /// the conflicting entries.
         ///
-        /// Note that in practice, whenever there is a single [conflict](Conflict), this function will return `true`.
+        /// A [conflict](Conflict) changes the index only if it has [entries](Conflict::entries()). Conflicts that Git
+        /// reports without conflicting stages, such as an
+        /// [unclear directory rename split](ResolutionFailure::DirectoryRenameSplit), leave it unchanged.
         /// Errors can only occour if `index` isn't the one created from the merged tree that produced the `conflicts`.
         pub fn apply_index_entries(
             conflicts: &[Conflict],
@@ -567,9 +620,7 @@ pub mod apply_index_entries {
                         Resolution::SourceLocationAffectedByRename { final_location } => {
                             (Some(final_location.as_bstr()), final_location.as_bstr())
                         }
-                        Resolution::OursModifiedTheirsRenamedAndChangedThenRename { final_location, .. } => {
-                            (final_location.as_ref().map(|p| p.as_bstr()), theirs.location())
-                        }
+                        Resolution::OursModifiedTheirsRenamedAndChangedThenRename { .. } => (None, theirs.location()),
                         Resolution::OursModifiedTheirsModifiedThenBlobContentMerge { .. } => (None, ours.location()),
                     },
                     Err(failure) => match failure {
@@ -585,7 +636,13 @@ pub mod apply_index_entries {
                         | ResolutionFailure::OursRenamedTheirsRenamedToSameLocation
                         | ResolutionFailure::OursDeletedTheirsRenamed
                         | ResolutionFailure::OursModifiedTheirsDeleted
+                        | ResolutionFailure::DirectoryRenameSplit
+                        | ResolutionFailure::FileInWayOfDirectoryRename { .. }
+                        | ResolutionFailure::DirectoryRenameCollision { .. }
                         | ResolutionFailure::Unknown => (None, ours.location()),
+                        ResolutionFailure::SourceLocationAffectedByRename { final_location } => {
+                            (Some(final_location.as_bstr()), final_location.as_bstr())
+                        }
                         ResolutionFailure::OursModifiedTheirsDirectoryThenOursRenamed {
                             renamed_unique_path_to_modified_blob,
                         } => (Some(renamed_unique_path_to_modified_blob.as_bstr()), ours.location()),

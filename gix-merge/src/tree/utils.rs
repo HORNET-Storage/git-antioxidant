@@ -25,49 +25,6 @@ use crate::{
     },
 };
 
-/// Assuming that `their_location` is the destination of *their* rewrite, check if *it* passes
-/// over a directory rewrite in *our* tree. If so, rewrite it so that we get the path
-/// it would have had if it had been renamed along with *our* directory.
-///
-/// For example, if ours renames directory `old` to `new` and theirs renames a file to `old/file`, return
-/// `new/file` so their destination follows our directory rename.
-pub fn possibly_rewritten_location(
-    check_tree: &TreeNodes,
-    their_location: &BStr,
-    our_changes: &ChangeListRef,
-) -> Option<BString> {
-    check_tree.check_conflict(their_location).and_then(|pc| match pc {
-        PossibleConflict::PassedRewrittenDirectory { change_idx } => {
-            let passed_change = &our_changes[change_idx];
-            rewrite_location_with_renamed_directory(their_location, &passed_change.inner)
-        }
-        _ => None,
-    })
-}
-
-/// Translate `their_location` through the directory rewrite in `passed_change`.
-///
-/// For example, a rewrite from `a` to `b` maps `a/file` to `b/file`. Returns `None` unless `passed_change` is a
-/// [`Change::Rewrite`] whose destination is a tree and `their_location` starts with its source location. The caller must
-/// establish that the prefix ends at a path-component boundary, as [`TreeNodes::check_conflict()`] does.
-pub fn rewrite_location_with_renamed_directory(their_location: &BStr, passed_change: &Change) -> Option<BString> {
-    match passed_change {
-        Change::Rewrite {
-            source_location,
-            location,
-            ..
-        } if passed_change.entry_mode().is_tree() => {
-            // This is safe even without dealing with slashes as we found this rewrite
-            // by walking each component, and we know it's a tree for added safety.
-            let suffix = their_location.strip_prefix(source_location.as_bytes())?;
-            let mut rewritten = location.to_owned();
-            rewritten.push_str(suffix);
-            Some(rewritten)
-        }
-        _ => None,
-    }
-}
-
 /// Produce a side-qualified path for `file_path` like `a/b`, using `editor` and `tree` to assure uniqueness.
 ///
 /// This normally keeps the file in its directory, as in `a/b~side`. If a non-tree component blocks that directory,
@@ -121,7 +78,7 @@ pub fn unique_path_in_tree_avoiding(
             }
             if reserved.is_none_or(|reserved| reserved != buf.as_bstr())
                 && editor.get(to_components_bstring_ref(&buf)).is_none()
-                && conflict.is_none_or(|conflict| matches!(conflict, PossibleConflict::PassedRewrittenDirectory { .. }))
+                && conflict.is_none()
             {
                 return Ok(buf);
             }
@@ -136,6 +93,9 @@ pub fn unique_path_in_tree_avoiding(
 }
 
 /// Perform a merge between two blobs and return the result of its object id.
+///
+/// `pathnames` are the paths of the ancestor, ours and theirs that the conflict markers give after the labels if the
+/// paths of ours and theirs differ, as merge-ort gives the `pathnames` of a conflict.
 #[expect(clippy::too_many_arguments)]
 pub fn perform_blob_merge(
     mut labels: crate::blob::builtin_driver::text::Labels<'_>,
@@ -146,6 +106,7 @@ pub fn perform_blob_merge(
     (our_location, our_id, our_mode): (&BString, ObjectId, EntryMode),
     (their_location, their_id, their_mode): (&BString, ObjectId, EntryMode),
     (previous_location, previous_id, previous_mode): (&BString, ObjectId, EntryMode),
+    [previous_pathname, our_pathname, their_pathname]: [&BStr; 3],
     (extra_markers, outer_side): (u8, ConflictMapping),
     options: &Options,
 ) -> Result<(ObjectId, crate::blob::Resolution)> {
@@ -190,27 +151,27 @@ pub fn perform_blob_merge(
         objects,
     )?;
 
-    fn combined(side: &BStr, location: &BString) -> BString {
+    fn combined(side: &BStr, pathname: &BStr) -> BString {
         let mut buf = side.to_owned();
         buf.push_byte(b':');
-        buf.push_str(location);
+        buf.push_str(pathname);
         buf
     }
 
-    let (current_location, other_location) = if outer_side.is_swapped() {
+    let (current_pathname, other_pathname) = if outer_side.is_swapped() {
         (labels.current, labels.other) = (labels.other, labels.current);
-        (their_location, our_location)
+        (their_pathname, our_pathname)
     } else {
-        (our_location, their_location)
+        (our_pathname, their_pathname)
     };
 
     let (ancestor, current, other);
-    let labels = if our_location == their_location {
+    let labels = if our_pathname == their_pathname {
         labels
     } else {
-        ancestor = labels.ancestor.map(|side| combined(side, previous_location));
-        current = labels.current.map(|side| combined(side, current_location));
-        other = labels.other.map(|side| combined(side, other_location));
+        ancestor = labels.ancestor.map(|side| combined(side, previous_pathname));
+        current = labels.current.map(|side| combined(side, current_pathname));
+        other = labels.other.map(|side| combined(side, other_pathname));
         crate::blob::builtin_driver::text::Labels {
             ancestor: ancestor.as_ref().map(|n| n.as_bstr()),
             current: current.as_ref().map(|n| n.as_bstr()),
@@ -257,11 +218,6 @@ pub struct TrackedChange {
     /// The `ours_idx_to_ignore` assures that the same rewrite won't be used as matching side, which
     /// would lead to strange effects. Only set if it's a rewrite though.
     pub needs_tree_insertion: Option<Option<usize>>,
-    /// A new `(location, change_idx)` pair for the change that can happen if the location is touching a rewrite in a parent
-    /// directory, but otherwise doesn't have a match. This means we shall redo the operation but with
-    /// the changed path.
-    /// The second tuple entry `change_idx` is the change-idx we passed over, which refers to the other side that interfered.
-    pub rewritten_location: Option<(BString, usize)>,
 }
 
 /// The lifecycle of a [`TrackedChange`] while reconciling the two side-diffs.
@@ -309,16 +265,11 @@ pub(super) enum ChangeDisposition {
 }
 
 impl TrackedChange {
-    pub(super) fn new(
-        inner: Change,
-        needs_tree_insertion: Option<Option<usize>>,
-        rewritten_location: Option<(BString, usize)>,
-    ) -> Self {
+    pub(super) fn new(inner: Change, needs_tree_insertion: Option<Option<usize>>) -> Self {
         TrackedChange {
             inner,
             state: ChangeState::Pending,
             needs_tree_insertion,
-            rewritten_location,
         }
     }
 
@@ -361,45 +312,26 @@ impl TrackedChange {
 pub type ChangeList = Vec<TrackedChange>;
 pub type ChangeListRef = [TrackedChange];
 
-/// Only keep leaf nodes, or trees that are the renamed, pushing `change` on `changes`.
-/// Doing so makes it easy to track renamed or rewritten or copied directories, and properly
-/// handle *their* changes that fall within them.
-/// Note that it also rewrites `change` if it is a copy, turning it into an addition so copies don't have an effect
-/// on the merge algorithm.
+/// Push `change` onto `changes` unless it is the modification of a tree.
+///
+/// Trees that were added or deleted stay as structural nodes for tree/non-tree conflicts.
 pub fn track(change: ChangeRef<'_>, changes: &mut ChangeList) {
     if change.entry_mode().is_tree() && matches!(change, ChangeRef::Modification { .. }) {
         return;
     }
-    let is_tree = change.entry_mode().is_tree();
-    let inner = match change.into_owned() {
-        Change::Rewrite {
-            id,
-            entry_mode,
-            location,
-            relation,
-            copy,
-            ..
-        } if copy => Change::Addition {
-            location,
-            relation,
-            entry_mode,
-            id,
-        },
-        other => other,
-    };
-    let mut tracked = TrackedChange::new(inner, None, None);
-    if is_tree {
-        // Tree changes are structural nodes used to detect directory renames and tree/non-tree
-        // conflicts, not work items of their own. Git has no empty directories, so descendant
-        // leaf changes carry every observable editor update (`apply_change()` is a no-op for
-        // trees). Mark the tree applied to keep it available for matching without scheduling it.
+    let mut tracked = TrackedChange::new(change.into_owned(), None);
+    if tracked.inner.entry_mode().is_tree() {
+        // Tree changes are structural nodes used to detect tree/non-tree conflicts, not work items of their own.
+        // Git has no empty directories, so descendant leaf changes carry every observable editor update
+        // (`apply_change()` is a no-op for trees). Mark the tree applied to keep it available for matching
+        // without scheduling it.
         tracked.mark_applied();
     }
     changes.push(tracked);
 }
 
 /// Unconditionally apply `change` to `editor`.
-pub fn apply_change(editor: &mut tree::Editor<'_>, change: &Change, alternative_location: Option<&BString>) -> Result {
+pub fn apply_change(editor: &mut tree::Editor<'_>, change: &Change) -> Result {
     use to_components_bstring_ref as to_components;
     if change.entry_mode().is_tree() {
         return Ok(());
@@ -419,7 +351,7 @@ pub fn apply_change(editor: &mut tree::Editor<'_>, change: &Change, alternative_
             ..
         } => (location, entry_mode, id),
         Change::Deletion { location, .. } => {
-            editor.remove_if_leaf(to_components(alternative_location.unwrap_or(location)))?;
+            editor.remove_if_leaf(to_components(location))?;
             return Ok(());
         }
         Change::Rewrite {
@@ -437,11 +369,7 @@ pub fn apply_change(editor: &mut tree::Editor<'_>, change: &Change, alternative_
         }
     };
 
-    editor.upsert(
-        to_components(alternative_location.unwrap_or(location)),
-        mode.kind(),
-        *id,
-    )?;
+    editor.upsert(to_components(location), mode.kind(), *id)?;
     Ok(())
 }
 
@@ -465,9 +393,6 @@ pub enum PossibleConflict {
         /// The index to *our* change at *their* path.
         change_idx: usize,
     },
-    /// *their* change at `a/b/c` passed `a/b` which is an index to *our* change indicating a directory that was rewritten,
-    /// with all its contents being renamed. However, *theirs* has been added *into* that renamed directory.
-    PassedRewrittenDirectory { change_idx: usize },
 }
 
 impl PossibleConflict {
@@ -480,8 +405,7 @@ impl PossibleConflict {
             PossibleConflict::TreeToNonTree { change_idx, .. } | PossibleConflict::NonTreeToTree { change_idx, .. } => {
                 *change_idx
             }
-            PossibleConflict::Match { change_idx, .. }
-            | PossibleConflict::PassedRewrittenDirectory { change_idx, .. } => Some(*change_idx),
+            PossibleConflict::Match { change_idx, .. } => Some(*change_idx),
         }
     }
 }
@@ -490,28 +414,17 @@ impl PossibleConflict {
 /// which is useful for traversal and initial setup as that can then trivially be non-recursive.
 pub struct TreeNodes(Vec<TreeNode>);
 
-/// Trees lead to other trees, or leafs (without children), and it can be represented by a renamed directory.
+/// Trees lead to other trees, or leafs (without children).
 #[derive(Debug, Default, Clone)]
 struct TreeNode {
     /// A mapping of path components to their children to quickly see if `theirs` in some way is potentially
     /// conflicting with `ours`.
     children: HashMap<BString, usize>,
-    /// The index to a change, which is always set if this is a leaf node (with no children), and if there are children and this
-    /// is a rewritten tree.
+    /// The index to the change at this path. Leaf nodes (without children) always have one, and a node with
+    /// children has one if a change occupies its path as well, like an added or deleted tree.
     change_idx: Option<usize>,
     /// Prefer non-tree changes if multiple changes occupy the same path.
     change_is_tree: bool,
-    /// Keep track of where the location of this node is derived from.
-    location: ChangeLocation,
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-enum ChangeLocation {
-    /// The change is at its current (and only) location, or in the source location of a rename.
-    #[default]
-    CurrentLocation,
-    /// This is always the destination of a rename.
-    RenamedLocation,
 }
 
 impl TreeNode {
@@ -529,11 +442,11 @@ impl TreeNodes {
     /// with this tree structure, i.e. each leaf path is only seen once.
     /// Note that directories can be added in between.
     pub fn track_change(&mut self, change: &Change, change_idx: usize) {
-        for (path, location_hint) in [
-            Some((change.source_location(), ChangeLocation::CurrentLocation)),
+        for path in [
+            Some(change.source_location()),
             match change {
                 Change::Addition { .. } | Change::Deletion { .. } | Change::Modification { .. } => None,
-                Change::Rewrite { location, .. } => Some((location.as_bstr(), ChangeLocation::RenamedLocation)),
+                Change::Rewrite { location, .. } => Some(location.as_bstr()),
             },
         ]
         .into_iter()
@@ -550,7 +463,6 @@ impl TreeNodes {
                             children: Default::default(),
                             change_idx: is_last.then_some(change_idx),
                             change_is_tree: is_last && change.entry_mode().is_tree(),
-                            location: location_hint,
                         };
                         cursor.children.insert(component.to_owned(), next_index);
                         self.0.push(new_node);
@@ -567,7 +479,6 @@ impl TreeNodes {
                             {
                                 cursor.change_idx = Some(change_idx);
                                 cursor.change_is_tree = change.entry_mode().is_tree();
-                                cursor.location = location_hint;
                             }
                         }
                     }
@@ -578,46 +489,24 @@ impl TreeNodes {
 
     /// Search our indexed change paths for a structural overlap with `theirs_location`.
     ///
-    /// Return the kind of exact-path or tree/non-tree overlap found, including passage through
-    /// a rewritten directory, or `None` if the path does not interact with our indexed changes.
+    /// Return the kind of exact-path or tree/non-tree overlap found, or `None` if the path does not interact
+    /// with our indexed changes.
     pub fn check_conflict(&self, theirs_location: &BStr) -> Option<PossibleConflict> {
         if self.0[0].children.is_empty() {
             return None;
         }
-        let components = to_components(theirs_location);
         let mut cursor = &self.0[0];
-        let mut cursor_idx = 0;
-        let mut intermediate_change = None;
-        for component in components {
-            if cursor.change_idx.is_some() {
-                intermediate_change = cursor.change_idx.map(|change_idx| (change_idx, cursor_idx));
-            }
+        for component in to_components(theirs_location) {
             match cursor.children.get(component).copied() {
                 // *their* change is outside *our* tree
                 None => {
-                    let res = if cursor.is_leaf_node() && !cursor.change_is_tree {
-                        Some(PossibleConflict::NonTreeToTree {
+                    return (cursor.is_leaf_node() && !cursor.change_is_tree).then_some(
+                        PossibleConflict::NonTreeToTree {
                             change_idx: cursor.change_idx,
-                        })
-                    } else {
-                        // a change somewhere else, i.e. `a/c` and we know `a/b` only.
-                        intermediate_change.and_then(|(change, cursor_idx)| {
-                            let cursor = &self.0[cursor_idx];
-                            // If this is a destination location of a rename, then the `their_location`
-                            // is already at the right spot, and we can just ignore it.
-                            if matches!(cursor.location, ChangeLocation::CurrentLocation) {
-                                Some(PossibleConflict::PassedRewrittenDirectory { change_idx: change })
-                            } else {
-                                None
-                            }
-                        })
-                    };
-                    return res;
+                        },
+                    );
                 }
-                Some(child_idx) => {
-                    cursor_idx = child_idx;
-                    cursor = &self.0[cursor_idx];
-                }
+                Some(child_idx) => cursor = &self.0[child_idx],
             }
         }
 
@@ -676,11 +565,10 @@ impl TreeNodes {
         }
     }
 
-    /// Insert the current location of a newly deferred change into this tree.
+    /// Insert the location of a change that the merge deferred into this tree.
     ///
-    /// A rewrite may arrive here after directory-rename handling deferred it to a relocated
-    /// destination. Its source is already represented by the original change tree; only the
-    /// rescheduled destination must become visible now.
+    /// A deferred rewrite's source is already indexed by the change it came from, so only its destination is
+    /// added.
     pub fn insert(&mut self, new_change: &Change, new_change_idx: usize) {
         let mut next_index = self.0.len();
         let mut cursor = &mut self.0[0];
@@ -700,7 +588,6 @@ impl TreeNodes {
 
         cursor.change_idx = Some(new_change_idx);
         cursor.change_is_tree = new_change.entry_mode().is_tree();
-        cursor.location = ChangeLocation::CurrentLocation;
     }
 }
 
@@ -818,44 +705,6 @@ mod tree_nodes_tests {
         assert!(
             tree.check_conflict("e".into()).is_none(),
             "an empty former parent isn't a leaf change or a path conflict"
-        );
-    }
-
-    #[test]
-    fn passing_a_rewritten_directory_does_not_occupy_every_path_below_it() {
-        let mut tree = TreeNodes::new();
-        tree.track_change(
-            &Change::Rewrite {
-                source_location: "old".into(),
-                source_entry_mode: EntryKind::Tree.into(),
-                source_relation: None,
-                source_id: gix_hash::Kind::Sha1.null(),
-                diff: None,
-                entry_mode: EntryKind::Tree.into(),
-                id: gix_hash::Kind::Sha1.null(),
-                location: "new".into(),
-                relation: None,
-                copy: false,
-            },
-            0,
-        );
-        tree.track_change(
-            &Change::Modification {
-                location: "old/existing".into(),
-                previous_entry_mode: EntryKind::Blob.into(),
-                previous_id: gix_hash::Kind::Sha1.null(),
-                entry_mode: EntryKind::Blob.into(),
-                id: gix_hash::Kind::Sha1.null(),
-            },
-            1,
-        );
-
-        assert!(
-            matches!(
-                tree.check_conflict("old/file~side".into()),
-                Some(PossibleConflict::PassedRewrittenDirectory { change_idx: 0 })
-            ),
-            "the path still has to follow the directory rename"
         );
     }
 

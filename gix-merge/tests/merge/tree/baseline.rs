@@ -34,7 +34,8 @@ pub enum ConflictKind {
     ConflictDirectoryBlocksFile,
     /// Modified in ours but deleted in theirs.
     ConflictModifyDelete,
-    /// Modified in ours but parent directory renamed in theirs.
+    /// Added to or renamed into a directory that the other side renamed, and moved into the renamed directory, which is
+    /// left for the user to confirm.
     DirectoryRenamedWithModificationInside,
     /// Added files differ in mode.
     DistinctModes,
@@ -46,11 +47,34 @@ pub enum ConflictKind {
     Binary,
     /// A submodule was changed on both sides, but its repository isn't available to merge the two commits.
     SubmoduleNotInitialized,
+    /// A directory rename wasn't applied to a file, as the side of the file renamed the destination directory itself.
+    /// This isn't a conflict.
+    DirectoryRenameSkipped,
+    /// A file was moved into the directory that the other side renamed, as `merge.directoryRenames=true` asks.
+    /// This isn't a conflict.
+    DirectoryRenameApplied,
+    /// A file or directory is in the way of moving a file into the directory that the other side renamed.
+    FileInWayOfDirectoryRename,
+    /// Directory renames would move several files to one path, so none of them is moved.
+    DirectoryRenameCollision,
+    /// The files of a directory were renamed into several directories, none of which received more of them than every
+    /// other, so it's unclear where the directory went.
+    DirectoryRenameSplit,
+}
+
+impl ConflictKind {
+    /// Return `true` if Git reports this kind only for merges that it considers unclean.
+    pub fn is_conflict(&self) -> bool {
+        !matches!(
+            self,
+            ConflictKind::AutoMerging | ConflictKind::DirectoryRenameSkipped | ConflictKind::DirectoryRenameApplied
+        )
+    }
 }
 
 /// More loosely structured information about the `Conflict`.
 #[derive(Debug)]
-#[expect(dead_code, reason = "used only for debugging")]
+#[expect(dead_code, reason = "the paths and the message are used only for debugging")]
 pub struct ConflictInfo {
     /// All the paths involved in the informational message
     pub paths: Vec<String>,
@@ -290,6 +314,11 @@ fn parse_info<'a>(mut lines: impl Iterator<Item = &'a str>) -> Option<ConflictIn
         "CONFLICT (rename/delete)" => ConflictKind::RenameAddDelete,
         "CONFLICT (binary)" => ConflictKind::Binary,
         "CONFLICT (submodule not initialized)" => ConflictKind::SubmoduleNotInitialized,
+        "Directory rename skipped since directory was renamed on both sides" => ConflictKind::DirectoryRenameSkipped,
+        "Path updated due to directory rename" => ConflictKind::DirectoryRenameApplied,
+        "CONFLICT (file in way of directory rename)" => ConflictKind::FileInWayOfDirectoryRename,
+        "CONFLICT(directory rename collision)" => ConflictKind::DirectoryRenameCollision,
+        "CONFLICT(directory rename unclear split)" => ConflictKind::DirectoryRenameSplit,
         conflict_type => panic!("Unkonwn conflict type: {conflict_type}"),
     };
     let message = lines.next()?.to_owned();

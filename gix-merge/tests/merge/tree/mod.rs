@@ -32,7 +32,9 @@ fn assert_no_unknown_conflicts(outcome: &gix_merge::tree::Outcome<'_>, context: 
 /// ### How to add a new baseline test
 ///
 /// 1. Add it to the `tree_baseline.sh` script and don't forget to call the
-///    `baseline` function there with the respective parameters.
+///    `baseline` function there with the respective parameters. Output names ending in
+///    `-dir-renames-true` or `-dir-renames-false` merge with that `merge.directoryRenames`,
+///    all others with Git's default, `conflict`.
 /// 2. Run all tests - maybe it works, if so, jump to the last point.
 /// 3. Change `let new_test = None` to `… = Some("case-name")` to focus on the
 ///    newly added test and its reversed version.
@@ -69,6 +71,13 @@ fn run_baseline() -> TestResult {
         let mut blob_merge = new_blob_merge_platform(&root, large_file_threshold_bytes);
         let mut diff_resource_cache = new_diff_resource_cache(&root);
         let mut options = basic_merge_options();
+        options.tree_merge.directory_renames = if case_name.contains("-dir-renames-true") {
+            gix_merge::tree::DirectoryRenames::Move
+        } else if case_name.contains("-dir-renames-false") {
+            gix_merge::tree::DirectoryRenames::Ignore
+        } else {
+            gix_merge::tree::DirectoryRenames::MoveAsConflict
+        };
         options.tree_merge.blob_merge.text.conflict = gix_merge::blob::builtin_driver::text::Conflict::Keep {
             style: conflict_style,
             marker_size: gix_merge::blob::builtin_driver::text::Conflict::DEFAULT_MARKER_SIZE
@@ -152,14 +161,20 @@ fn run_baseline() -> TestResult {
         );
         if deviation.is_none() {
             assert_eq!(
-                did_change,
                 actual.has_unresolved_conflicts(conflicts_like_in_git),
-                "{case_name}: If there is any kind of conflict, the index should have been changed"
+                merge_info.information.iter().any(|info| info.kind.is_conflict()),
+                "{case_name}: there should be an unresolved conflict exactly if Git reports one"
+            );
+            assert_eq!(
+                did_change,
+                merge_info.conflicts.is_some(),
+                "{case_name}: the index should change exactly if Git records conflicting stages"
             );
         }
 
-        // The content-merge mode is not relevant for the upcoming tree-conflict resolution.
-        if case_name.contains("diff3") {
+        // The content-merge mode is not relevant for the upcoming tree-conflict resolution, and tree-conflict
+        // resolutions are recorded for Git's default `merge.directoryRenames` only.
+        if case_name.contains("diff3") || case_name.contains("-dir-renames-") {
             continue;
         }
 
@@ -221,11 +236,11 @@ fn run_baseline() -> TestResult {
     }
 
     assert_eq!(
-        actual_cases, 205,
+        actual_cases, 269,
         "BUG: update this number, and don't forget to remove a filter in the end"
     );
     assert_eq!(
-        skipped_tree_resolve_cases, 180,
+        skipped_tree_resolve_cases, 198,
         "this is done when no case is skipped, and we don't want to accidentally skip them.\
         Some don't actually have conflicts.\
         The ones we skipped don't have irreconcilable conflicts"
@@ -309,6 +324,7 @@ fn basic_merge_options() -> Options {
             blob_merge_command_ctx: Default::default(),
             fail_on_conflict: None,
             marker_size_multiplier: 0,
+            directory_renames: Default::default(),
         },
     }
 }

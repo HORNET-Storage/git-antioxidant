@@ -103,6 +103,7 @@ impl Repository {
             marker_size_multiplier: 0,
             symlink_conflicts: None,
             tree_conflicts: None,
+            directory_renames: Default::default(),
         }
         .into())
     }

@@ -2172,6 +2172,7 @@ dependencies = [
  "document-features",
  "gix-command",
  "gix-diff",
+ "gix-diffcore",
  "gix-error",
  "gix-filter",
  "gix-fs",

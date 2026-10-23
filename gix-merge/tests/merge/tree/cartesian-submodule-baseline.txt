@@ -10,8 +10,8 @@ Default SubmoduleMerge classifications: 12
 Ours SubmoduleMerge classifications: 12
 Ancestor SubmoduleMerge classifications: 12
 Default SubmoduleAddAdd classifications: 15
-Ours SubmoduleAddAdd classifications: 15
-Ancestor SubmoduleAddAdd classifications: 14
+Ours SubmoduleAddAdd classifications: 14
+Ancestor SubmoduleAddAdd classifications: 13
 
 ## Git/gix differences (0)
 - none

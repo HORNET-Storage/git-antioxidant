@@ -1,14 +1,15 @@
 //! Change discovery and structural matching for tree merges.
 //!
-//! This module turns each base-to-side tree diff into a [`SideState`]: a flat
-//! [`ChangeList`] containing scheduling state, paired with a [`TreeNodes`] path
-//! index whose entries point back into that list. It also finds path and rename
-//! interactions between sides and classifies the pairs consumed by the resolver.
+//! This module turns each base-to-side tree diff into a flat [`ChangeList`], and the
+//! changes of a side, once renames were applied to them, into a [`SideState`]: the list
+//! with its scheduling state, paired with a [`TreeNodes`] path index whose entries point
+//! back into that list. It also finds path and rename interactions between sides and
+//! classifies the pairs consumed by the resolver.
 //!
 //! Semantic conflict resolution and edits to the result tree belong to the
 //! sibling `resolve` module; this module only prepares, indexes, and matches work.
 
-use bstr::{BString, ByteSlice};
+use bstr::ByteSlice;
 use gix_diff::{tree::recorder::Location, tree_with_rewrites::Change};
 use gix_error::ResultExt;
 use gix_error::{Result, message};
@@ -23,7 +24,8 @@ pub(super) struct SideState {
 
 /// Lifecycle
 impl SideState {
-    fn from_changes(changes: ChangeList) -> Self {
+    /// Index the final `changes` of a side by their paths.
+    pub(super) fn from_changes(changes: ChangeList) -> Self {
         let mut tree = TreeNodes::new();
         for (idx, change) in changes.iter().enumerate() {
             tree.track_change(&change.inner, idx);
@@ -43,8 +45,9 @@ impl SideState {
     }
     /// Return whether unrelated rewrite destinations can claim the same source identity.
     ///
-    /// Rewrites derived from a parent directory rename have a relation and don't represent
-    /// ambiguous identity pairing themselves.
+    /// Rewrites whose destination lies in a directory that the side added carry that directory's
+    /// relation, as the files of a renamed directory do, and don't represent ambiguous identity
+    /// pairing themselves.
     pub(super) fn has_ambiguous_rewrite_sources(&self) -> bool {
         let mut sources = std::collections::HashSet::new();
         self.changes.iter().any(|change| match &change.inner {
@@ -84,13 +87,11 @@ pub(super) enum MatchKind {
     EraseLeaf,
 }
 
-/// Collect one side's changes relative to the base and build their path index.
+/// Collect one side's changes relative to the base, without renames.
 ///
 /// `base_buf` contains `base_tree`, while `side_buf` is reused to load `side_tree`.
-/// Equal tree IDs produce an empty state without diffing. Otherwise, the path-aware
-/// diff, including the requested rewrite tracking, is normalized through [`track`]
-/// into a [`ChangeList`] and indexed by [`TreeNodes`] in the returned [`SideState`].
-#[expect(clippy::too_many_arguments)]
+/// Equal tree IDs produce no changes without diffing. Otherwise, the path-aware diff is
+/// normalized through [`track`] into the returned [`ChangeList`].
 pub(super) fn collect(
     base_tree: &gix_hash::oid,
     side_tree: &gix_hash::oid,
@@ -99,8 +100,7 @@ pub(super) fn collect(
     objects: &impl gix_object::FindObjectOrHeader,
     diff_resource_cache: &mut gix_diff::blob::Platform,
     diff_state: &mut gix_diff::tree::State,
-    rewrites: Option<gix_diff::Rewrites>,
-) -> Result<SideState> {
+) -> Result<ChangeList> {
     let mut changes = Vec::new();
     if base_tree != side_tree {
         let side_tree = objects
@@ -118,22 +118,18 @@ pub(super) fn collect(
             },
             gix_diff::tree_with_rewrites::Options {
                 location: Some(Location::Path),
-                rewrites,
+                rewrites: None,
             },
         )
         .or_raise(|| message("Tree merge failed"))?;
     }
-    Ok(SideState::from_changes(changes))
+    Ok(changes)
 }
 
 /// Find an eligible change on our indexed side that structurally interacts with `theirs`.
 ///
-/// `rewritten_location` belongs to a deferred change whose path passed through a directory
-/// rewrite on our side. For example, if our side renamed `a` to `b`, their change at `a/x`
-/// must be retried at `b/x`. The tuple contains that effective path and the index of the
-/// directory rewrite which produced it, so matching starts where the change will actually
-/// be applied. A rewrite is also checked at its destination, but only for a rewrite on our
-/// side, to expose rewrite/rewrite interactions which are not visible at the source path.
+/// A rewrite is also checked at its destination, but only for a rewrite on our side, to expose
+/// rewrite/rewrite interactions which are not visible at the source path.
 ///
 /// `needs_tree_insertion` identifies a clone appended for a later retry. The resolver inserts
 /// such a deferred change into its own side's [`TreeNodes`] immediately before processing it,
@@ -155,12 +151,11 @@ pub(super) fn collect(
 pub(super) fn matching(
     theirs: &Change,
     needs_tree_insertion: Option<Option<usize>>,
-    rewritten_location: Option<&(BString, usize)>,
     our_tree: &TreeNodes,
     our_changes: &mut ChangeList,
 ) -> Option<PossibleConflict> {
     let candidate = our_tree
-        .check_conflict(rewritten_location.map_or_else(|| theirs.source_location(), |(location, _)| location.as_bstr()))
+        .check_conflict(theirs.source_location())
         .or_else(|| match theirs {
             Change::Rewrite { location, .. } => our_tree.check_conflict(location.as_bstr()).filter(|candidate| {
                 candidate
@@ -208,8 +203,7 @@ fn same_effect(ours: &Change, theirs: &Change) -> bool {
 /// second describes a tree/non-tree boundary: [`MatchKind::EraseTree`] replaces our tree with their leaf, while
 /// [`MatchKind::EraseLeaf`] replaces our leaf with their tree. An exact-path match needs no `MatchKind`.
 ///
-/// A tree-to-non-tree candidate is pairable only when its indexed change can remove or replace that tree. A passed
-/// rewritten directory is deliberately not paired here because the scheduler relocates it before calling this function.
+/// A tree-to-non-tree candidate is pairable only when its indexed change can remove or replace that tree.
 pub(super) fn pair(candidate: &PossibleConflict, our_changes: &ChangeListRef) -> (Option<usize>, Option<MatchKind>) {
     match *candidate {
         PossibleConflict::TreeToNonTree { change_idx: Some(idx) }
