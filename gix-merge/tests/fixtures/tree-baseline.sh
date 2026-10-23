@@ -479,6 +479,7 @@ git init same-rename-with-content
   # Both sides modify the same source and rename it to the same destination.
   # The two appends conflict, but the rename itself agrees. The result should therefore be
   # exactly one content merge at `target`, never a second merge of an already-merged blob.
+  # Git puts the base and each side's version at stages 1 to 3 of `target`, and none at `file`.
   write_lines foxtrot foxtrot foxtrot foxtrot foxtrot >file
   git add file && git commit -m "base"
 
@@ -494,30 +495,6 @@ git init same-rename-with-content
   echo changed-by-B >>file
   git mv file target
   git commit -am "B renames and changes file"
-
-  # Both sides agree on the rename, so this is an ordinary content conflict using the
-  # configured marker size. These branches provide the merged blob for gix's index shape.
-  git checkout -b expected main
-  git rm file
-  write_lines \
-    foxtrot foxtrot foxtrot foxtrot foxtrot \
-    '<<<<<<< A' \
-    changed-by-A \
-    ======= \
-    changed-by-B \
-    '>>>>>>> B' >target
-  git add target && git commit -m "single content merge at shared rename destination"
-
-  git checkout -b expected-reversed main
-  git rm file
-  write_lines \
-    foxtrot foxtrot foxtrot foxtrot foxtrot \
-    '<<<<<<< B' \
-    changed-by-B \
-    ======= \
-    changed-by-A \
-    '>>>>>>> A' >target
-  git add target && git commit -m "single reversed content merge at shared rename destination"
 )
 
 git init same-rename-and-file-to-directory
@@ -3500,28 +3477,6 @@ EOF
 100644 blob $(git rev-parse B:modify-source/file)	modify-source/renamed
 EOF
   make_conflict_index rename-change-matrix-A-B-reversed
-)
-
-(cd same-rename-with-content
-  # The merged tree matches Git, but the conflict index differs. Git puts the base and the
-  # original A and B blobs at stages 1, 2, and 3 of `target`. gix instead keeps the base at
-  # its original path `file` and puts the already-merged conflict blob into both destination
-  # stages. The structured conflict still retains the original side entries.
-  rm .git/index
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse main:file) 1	file
-100644 blob $(git rev-parse expected:target) 2	target
-100644 blob $(git rev-parse expected:target) 3	target
-EOF
-  make_conflict_index same-rename-with-content-A-B
-
-  rm .git/index
-  git update-index --index-info <<EOF
-100644 blob $(git rev-parse main:file) 1	file
-100644 blob $(git rev-parse expected-reversed:target) 2	target
-100644 blob $(git rev-parse expected-reversed:target) 3	target
-EOF
-  make_conflict_index same-rename-with-content-A-B-reversed
 )
 
 (cd renames-to-same-destination

@@ -1770,6 +1770,8 @@ pub fn tree<'objects>(
                                     }
                                 };
 
+                                // As merge-ort does for renames to one destination, a conflict there has the source's
+                                // version and each side's version at the destination, and no stage at the source.
                                 if let Some(resolution) = resolution
                                     && should_fail_on_conflict(Conflict::with_resolution(
                                         Resolution::OursModifiedTheirsModifiedThenBlobContentMerge {
@@ -1780,21 +1782,9 @@ pub fn tree<'objects>(
                                         },
                                         (ours, theirs, Original, outer_side),
                                         [
-                                            index_entry_at_path(
-                                                source_entry_mode,
-                                                source_id,
-                                                ConflictIndexEntryPathHint::Source,
-                                            ),
-                                            index_entry_at_path(
-                                                our_mode,
-                                                &merged_blob_id,
-                                                ConflictIndexEntryPathHint::Current,
-                                            ),
-                                            index_entry_at_path(
-                                                their_mode,
-                                                &merged_blob_id,
-                                                ConflictIndexEntryPathHint::RenamedOrTheirs,
-                                            ),
+                                            index_entry(source_entry_mode, source_id),
+                                            index_entry(our_mode, our_id),
+                                            index_entry(their_mode, their_id),
                                         ],
                                     ))
                                 {
