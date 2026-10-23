@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -eu -o pipefail
 
-# Exercise blame for five distinct symlink histories:
+# Exercise blame for six distinct symlink histories:
 # - the target file's contents change after the symlink is created, while the
 #   symlink itself remains unchanged;
 # - the symlink's stored target changes from one path to another;
 # - the symlink is renamed without changing its target, exercising rename tracking;
 # - a regular file is replaced by a symlink at the same path, changing its mode;
-# - a symlink is replaced by a regular file, changing the mode in reverse.
+# - a symlink is replaced by a regular file, changing the mode in reverse;
+# - a regular file is replaced by a symlink with the same blob, which Git doesn't
+#   take for a version of the symlink, so the symlink's commit gets all lines.
 git init -q
 git config --local diff.algorithm histogram
 
@@ -62,8 +64,18 @@ echo regular-file > symlink-then-file
 git add symlink-then-file
 git commit -q -m c11-change-symlink-to-file
 
+printf 'target.txt' > file-then-symlink-with-same-blob
+git add file-then-symlink-with-same-blob
+git commit -q -m c12-create-file-with-content-of-symlink
+
+rm file-then-symlink-with-same-blob
+ln -s target.txt file-then-symlink-with-same-blob
+git add file-then-symlink-with-same-blob
+git commit -q -m c13-change-file-to-symlink-with-same-blob
+
 git blame --porcelain symlink > .git/symlink.baseline
 git blame --porcelain symlink-changing-target > .git/symlink-changing-target.baseline
 git blame --porcelain symlink-after-rename > .git/symlink-renamed.baseline
 git blame --porcelain file-then-symlink > .git/file-becomes-symlink.baseline
 git blame --porcelain symlink-then-file > .git/symlink-becomes-file.baseline
+git blame --porcelain file-then-symlink-with-same-blob > .git/file-becomes-symlink-with-same-blob.baseline

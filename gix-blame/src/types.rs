@@ -165,7 +165,14 @@ pub struct Options {
     pub ranges: BlameRanges,
     /// Don't consider commits before the given date.
     pub since: Option<gix_date::Time>,
-    /// Determine if rename tracking should be performed, and how.
+    /// Whether to follow the file to the file that a commit renamed to it, and how.
+    ///
+    /// As Git's blame does, a file that a commit added at its path is followed to the file that the commit deleted and
+    /// that is identical to it or else the most similar to it, at least as similar as `percentage` requires, with
+    /// `None` following identical files only. Similarities aren't estimated if the commit deleted more files than the
+    /// square of `limit`, which 0 doesn't bound. The added file is the only destination, so that no other file that the
+    /// commit added can take its source. Neither `copies` nor `track_empty` applies: Git's blame follows renames only,
+    /// and a file with lines to blame is never paired with an empty one.
     pub rewrites: Option<gix_diff::Rewrites>,
     /// Collect debug information whenever there's a diff or rename that affects the outcome of a
     /// blame.
@@ -261,9 +268,8 @@ pub struct Statistics {
     /// are likely partial as they are cancelled as soon as a change to the blamed file is
     /// detected.
     pub trees_diffed: usize,
-    /// The amount of tree-diffs to see if the file was moved (or rewritten, in git terminology).
-    /// These diffs are likely partial as they are cancelled as soon as a change to the blamed file
-    /// is detected.
+    /// The amount of tree-diffs to find the file that a commit renamed to the blamed file. Like those of Git's blame,
+    /// these diffs visit all changes between the trees.
     pub trees_diffed_with_rewrites: usize,
     /// The amount of blobs there were compared to each other to learn what changed between commits.
     /// Note that in order to diff a blob, one needs to load both versions from the database.

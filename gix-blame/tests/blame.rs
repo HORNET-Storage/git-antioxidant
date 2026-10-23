@@ -335,6 +335,7 @@ mktest!(
     "after-rename-in-first-parent",
     2
 );
+mktest!(executable_bit_changed, "executable-bit-changed", 1);
 
 /// As of 2025-12-07, both algorithms are expected to pass. They use `imara-diff` 0.2 under the
 /// hood. One of them failed with `imara-diff` 0.1.
@@ -686,6 +687,43 @@ mod rename_tracking {
 
         Ok(())
     }
+
+    fn run_test(source_file_name: &str, baseline_name: &str, number_of_entries: usize) -> gix_testtools::TestResult {
+        let worktree_path = gix_testtools::scripted_fixture_read_only("make_blame_rename_tracking_repo.sh")?;
+        let mut fixture = Fixture::for_worktree_path(worktree_path.to_path_buf())?;
+
+        let lines_blamed = fixture
+            .blame_file(
+                source_file_name.into(),
+                gix_blame::Options {
+                    diff_algorithm: gix_diff::blob::Algorithm::Histogram,
+                    ranges: BlameRanges::default(),
+                    since: None,
+                    rewrites: Some(gix_diff::Rewrites::default()),
+                    debug_track_path: false,
+                },
+            )?
+            .entries;
+
+        assert_eq!(lines_blamed.len(), number_of_entries);
+
+        let git_dir = worktree_path.join(".git");
+        let baseline = Baseline::collect(git_dir.join(baseline_name), source_file_name.into())?;
+
+        pretty_assertions::assert_eq!(lines_blamed, baseline);
+
+        Ok(())
+    }
+
+    #[test]
+    fn added_file_is_followed_to_the_deleted_file_most_similar_to_it() -> gix_testtools::TestResult {
+        run_test("followed.txt", "followed.baseline", 8)
+    }
+
+    #[test]
+    fn file_that_replaced_a_directory_is_followed_to_a_file_of_it() -> gix_testtools::TestResult {
+        run_test("dir-then-file", "dir-then-file.baseline", 2)
+    }
 }
 
 mod untracked_changes {
@@ -845,6 +883,14 @@ mod symlinks {
     #[test]
     fn symlink_becomes_file() -> gix_testtools::TestResult {
         run_test("symlink-then-file", "symlink-becomes-file.baseline")
+    }
+
+    #[test]
+    fn file_becomes_symlink_with_same_blob() -> gix_testtools::TestResult {
+        run_test(
+            "file-then-symlink-with-same-blob",
+            "file-becomes-symlink-with-same-blob.baseline",
+        )
     }
 }
 

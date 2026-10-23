@@ -2,13 +2,16 @@ use gix_error::Result;
 use std::num::NonZeroU32;
 
 use gix_diff::{blob::TokenSource, tree::Visit};
+use gix_diffcore::rename::MAX_SCORE;
 use gix_error::{ErrorExt, OptionExt, ResultExt, message};
 use gix_hash::ObjectId;
 use gix_object::{
     FindExt,
-    bstr::{BStr, BString},
+    bstr::{BStr, BString, ByteSlice},
+    tree::EntryMode,
 };
 use gix_traverse::commit::find as find_commit;
+use gix_worktree::attributes::{StateRef, search::Outcome as Attributes};
 use smallvec::SmallVec;
 
 use super::{Change, UnblamedHunk, process_changes};
@@ -114,7 +117,7 @@ pub fn file(
     }
 
     let mut diff_state = gix_diff::tree::State::default();
-    let mut previous_entry: Option<(ObjectId, ObjectId)> = None;
+    let mut previous_entry: Option<(ObjectId, PathEntry)> = None;
     let mut blame_path = if options.debug_track_path {
         Some(Vec::new())
     } else {
@@ -161,7 +164,9 @@ pub fn file(
             // than the root commit's.
             let done = unblamed_to_out_is_done(&mut hunks_to_blame, &mut out, suspect);
             if let Some(ref mut blame_path) = blame_path {
-                let entry = previous_entry.filter(|(id, _)| *id == suspect).map(|(_, entry)| entry);
+                let entry = previous_entry
+                    .filter(|(id, _)| *id == suspect)
+                    .map(|(_, entry)| entry.id);
 
                 let blame_path_entry = BlamePathEntry {
                     source_file_path: current_file_path.clone(),
@@ -197,9 +202,10 @@ pub fn file(
             )?;
         }
 
-        let Some(entry_id) = entry else {
+        let Some(entry) = entry else {
             continue;
         };
+        let entry_id = entry.id;
 
         // This block asserts that, for every `UnblamedHunk`, all lines in the *Blamed File* are
         // identical to the corresponding lines in the *Source File*.
@@ -237,7 +243,7 @@ pub fn file(
         }
 
         for (pid, (parent_id, parent_commit_time)) in parent_ids.iter().enumerate() {
-            if let Some(parent_entry_id) = find_path_entry_in_commit(
+            if let Some(parent_entry) = find_path_entry_in_commit(
                 &odb,
                 parent_id,
                 current_file_path.as_ref(),
@@ -246,11 +252,15 @@ pub fn file(
                 &mut buf2,
                 &mut stats,
             )? {
-                let no_change_in_entry = entry_id == parent_entry_id;
-                if pid == 0 {
-                    previous_entry = Some((*parent_id, parent_entry_id));
+                // To Git's `find_origin()`, a file of another type at the path, such as a regular file where the
+                // suspect has a symlink, is no version of the file, even with the same blob.
+                if !is_same_type(parent_entry.mode, entry.mode) {
+                    continue;
                 }
-                if no_change_in_entry {
+                if pid == 0 {
+                    previous_entry = Some((*parent_id, parent_entry));
+                }
+                if entry_id == parent_entry.id {
                     pass_blame_from_to(suspect, *parent_id, &mut hunks_to_blame);
                     queue.insert(*parent_commit_time, *parent_id);
                     continue 'outer;
@@ -535,8 +545,7 @@ fn coalesce_blame_entries(lines_blamed: Vec<BlameEntry>) -> Vec<BlameEntry> {
         })
 }
 
-/// The union of [`gix_diff::tree::recorder::Change`] and [`gix_diff::tree_with_rewrites::Change`],
-/// keeping only the blame-relevant information.
+/// A change of the blamed file from a parent to a commit, keeping only the blame-relevant information.
 enum TreeDiffChange {
     Addition {
         id: ObjectId,
@@ -568,28 +577,10 @@ impl From<gix_diff::tree::recorder::Change> for TreeDiffChange {
     }
 }
 
-impl From<gix_diff::tree_with_rewrites::Change> for TreeDiffChange {
-    fn from(value: gix_diff::tree_with_rewrites::Change) -> Self {
-        use gix_diff::tree_with_rewrites::Change;
-
-        match value {
-            Change::Addition { id, .. } => Self::Addition { id },
-            Change::Deletion { .. } => Self::Deletion,
-            Change::Modification { previous_id, id, .. } => Self::Modification { previous_id, id },
-            Change::Rewrite {
-                source_location,
-                source_id,
-                id,
-                ..
-            } => Self::Rewrite {
-                source_location,
-                source_id,
-                id,
-            },
-        }
-    }
-}
-
+/// Find the change of the file at `file_path` from the parent `parent_id` to the commit `id` as Git's blame does with
+/// `find_origin()`: a diff limited to the path finds the change there. If the commit added the file at the path and
+/// `rewrites` is set, the file is followed to the file of the parent that it was renamed from, as `find_rename()`
+/// finds it.
 #[expect(clippy::too_many_arguments)]
 fn tree_diff_at_file_path(
     odb: impl gix_object::Find + gix_object::FindHeader,
@@ -605,6 +596,8 @@ fn tree_diff_at_file_path(
     rhs_tree_buf: &mut Vec<u8>,
     rewrites: Option<gix_diff::Rewrites>,
 ) -> Result<Option<TreeDiffChange>> {
+    use gix_diff::tree::recorder::Change;
+
     let parent_tree_id = find_commit(cache, &odb, &parent_id, commit_buf)
         .or_raise(|| message("Could not find existing iterator over a tree"))?
         .tree_id()
@@ -625,35 +618,40 @@ fn tree_diff_at_file_path(
         .or_raise(|| message("Could not find existing iterator over a tree"))?;
     stats.trees_decoded += 1;
 
-    let result = tree_diff_without_rewrites_at_file_path(&odb, file_path, stats, state, parent_tree_iter, tree_iter)?;
-
-    // Here, we follow git’s behaviour. We return when we’ve found a `Modification`. We try a
-    // second time with rename tracking when the change is either an `Addition` or a `Deletion`
-    // because those can turn out to have been a `Rewrite`.
-    // TODO(perf): renames are usually rare enough to not care about the work duplication done here.
-    //             But in theory, a rename tracker could be used by us, on demand, and we could stuff the
-    //             changes in there and have it find renames, without repeating the diff.
-    if matches!(result, Some(TreeDiffChange::Modification { .. })) {
-        return Ok(result);
-    }
-    let Some(rewrites) = rewrites else {
-        return Ok(result);
+    let change = tree_diff_without_rewrites_at_file_path(&odb, file_path, stats, state, parent_tree_iter, tree_iter)?;
+    let (mode, added_id) = match change {
+        Some(Change::Addition { entry_mode, oid, .. }) => (entry_mode, oid),
+        // To Git's `find_origin()`, a file of another type at the path, such as a regular file where the commit has a
+        // symlink, is no version of the file, and `find_rename()` doesn't follow the file either: it only pairs files
+        // that a commit added with files that it deleted.
+        Some(Change::Modification {
+            previous_entry_mode,
+            entry_mode,
+            oid,
+            ..
+        }) if !is_same_type(previous_entry_mode, entry_mode) => return Ok(Some(TreeDiffChange::Addition { id: oid })),
+        other => return Ok(other.map(Into::into)),
     };
-
-    let result = tree_diff_with_rewrites_at_file_path(
-        &odb,
-        file_path,
-        stats,
-        state,
-        resource_cache,
-        parent_tree_iter,
-        tree_iter,
-        rewrites,
-    )?;
-
-    Ok(result)
+    let rename = match rewrites {
+        Some(rewrites) => find_rename_at_file_path(
+            &odb,
+            file_path,
+            mode,
+            added_id,
+            stats,
+            state,
+            resource_cache,
+            parent_tree_iter,
+            tree_iter,
+            rewrites,
+        )?,
+        None => None,
+    };
+    Ok(Some(rename.unwrap_or(TreeDiffChange::Addition { id: added_id })))
 }
 
+/// Find the change at `file_path` from `parent_tree_iter` to `tree_iter` without rename tracking, as the diff that
+/// Git's blame limits to the path finds it.
 fn tree_diff_without_rewrites_at_file_path(
     odb: impl gix_object::Find + gix_object::FindHeader,
     file_path: &BStr,
@@ -661,7 +659,7 @@ fn tree_diff_without_rewrites_at_file_path(
     state: &mut gix_diff::tree::State,
     parent_tree_iter: gix_object::TreeRefIter<'_>,
     tree_iter: gix_object::TreeRefIter<'_>,
-) -> Result<Option<TreeDiffChange>> {
+) -> Result<Option<gix_diff::tree::recorder::Change>> {
     struct FindChangeToPath {
         inner: gix_diff::tree::Recorder,
         interesting_path: BString,
@@ -702,6 +700,13 @@ fn tree_diff_without_rewrites_at_file_path(
             use gix_diff::tree::visit::Change::*;
 
             if self.inner.path() == self.interesting_path {
+                // Where a file replaced a directory, the deletion of the directory comes before the addition of the
+                // file, which is the change of the file.
+                if let Deletion { entry_mode, .. } = &change
+                    && entry_mode.is_tree()
+                {
+                    return std::ops::ControlFlow::Continue(());
+                }
                 self.change = Some(match change {
                     Deletion {
                         entry_mode,
@@ -749,15 +754,21 @@ fn tree_diff_without_rewrites_at_file_path(
     stats.trees_diffed += 1;
 
     match result {
-        Ok(_) | Err(gix_diff::tree::Error::Cancelled) => Ok(recorder.change.map(Into::into)),
+        Ok(_) | Err(gix_diff::tree::Error::Cancelled) => Ok(recorder.change),
         Err(error) => Err(error.raise()),
     }
 }
 
+/// Find the file that the commit deleted and that it renamed to the file it added at `file_path` with `mode` and the
+/// blob `id`, as Git's `find_rename()` does: the diff of the trees isn't limited to the path, every file that the
+/// commit deleted is a source, and the added file is the only destination, so that no other added file can be paired
+/// with its source. The source becomes that of the returned [`TreeDiffChange::Rewrite`].
 #[expect(clippy::too_many_arguments)]
-fn tree_diff_with_rewrites_at_file_path(
+fn find_rename_at_file_path(
     odb: impl gix_object::Find + gix_object::FindHeader,
     file_path: &BStr,
+    mode: EntryMode,
+    id: ObjectId,
     stats: &mut Statistics,
     state: &mut gix_diff::tree::State,
     resource_cache: &mut gix_diff::blob::Platform,
@@ -765,33 +776,161 @@ fn tree_diff_with_rewrites_at_file_path(
     tree_iter: gix_object::TreeRefIter<'_>,
     rewrites: gix_diff::Rewrites,
 ) -> Result<Option<TreeDiffChange>> {
-    let mut change: Option<gix_diff::tree_with_rewrites::Change> = None;
-
-    let options: gix_diff::tree_with_rewrites::Options = gix_diff::tree_with_rewrites::Options {
-        location: Some(gix_diff::tree::recorder::Location::Path),
-        rewrites: Some(rewrites),
+    let mut deletions = Deletions {
+        inner: gix_diff::tree::Recorder::default().track_location(Some(gix_diff::tree::recorder::Location::Path)),
+        files: Vec::new(),
     };
-    let result = gix_diff::tree_with_rewrites(
-        parent_tree_iter,
-        tree_iter,
-        resource_cache,
-        state,
-        &odb,
-        |change_ref| {
-            if change_ref.location() == file_path {
-                change = Some(change_ref.into_owned());
-                Ok(std::ops::ControlFlow::Break(()))
-            } else {
-                Ok(std::ops::ControlFlow::Continue(()))
-            }
-        },
-        options,
-    );
+    let result = gix_diff::tree(parent_tree_iter, tree_iter, state, &odb, &mut deletions);
     stats.trees_diffed_with_rewrites += 1;
+    if let Err(error) = result {
+        return Err(error.raise());
+    }
 
-    match result {
-        Ok(_) | Err(gix_diff::tree::Error::Cancelled) => Ok(change.map(Into::into)),
-        Err(error) => Err(error.raise()),
+    let sources: Vec<_> = deletions
+        .files
+        .iter()
+        .map(|(location, entry_mode, source_id)| gix_diffcore::rename::Entry {
+            location: location.as_bstr(),
+            mode: *entry_mode,
+            id: source_id,
+        })
+        .collect();
+    let destination = gix_diffcore::rename::Entry {
+        location: file_path,
+        mode,
+        id: &id,
+    };
+    let mut attributes = Attributes::default();
+    attributes.initialize_with_selection(&Default::default(), ["diff"]);
+    let mut blobs = RenameBlobs {
+        objects: &odb,
+        attr_stack: &mut resource_cache.attr_stack,
+        drivers: resource_cache.filter.drivers(),
+        attributes,
+    };
+    let options = gix_diffcore::rename::Options {
+        min_score: rewrites.percentage.map_or(MAX_SCORE, |percentage| {
+            (percentage.clamp(0.0, 1.0) * MAX_SCORE as f32).round() as u32
+        }),
+        limit: rewrites.limit,
+    };
+    let outcome = gix_diffcore::rename::detect(&sources, &[destination], &mut blobs, options)?;
+    Ok(outcome.renames.first().map(|rename| {
+        let (source_location, _, source_id) = &deletions.files[rename.source];
+        TreeDiffChange::Rewrite {
+            source_location: source_location.clone(),
+            source_id: *source_id,
+            id,
+        }
+    }))
+}
+
+/// Records the files that a diff of two trees finds deleted.
+struct Deletions {
+    inner: gix_diff::tree::Recorder,
+    /// The location, mode and blob of each deleted file.
+    files: Vec<(BString, EntryMode, ObjectId)>,
+}
+
+impl Visit for Deletions {
+    fn pop_front_tracked_path_and_set_current(&mut self) {
+        self.inner.pop_front_tracked_path_and_set_current();
+    }
+
+    fn push_back_tracked_path_component(&mut self, component: &BStr) {
+        self.inner.push_back_tracked_path_component(component);
+    }
+
+    fn push_path_component(&mut self, component: &BStr) {
+        self.inner.push_path_component(component);
+    }
+
+    fn pop_path_component(&mut self) {
+        self.inner.pop_path_component();
+    }
+
+    fn visit(&mut self, change: gix_diff::tree::visit::Change) -> gix_diff::tree::visit::Action {
+        if let gix_diff::tree::visit::Change::Deletion { entry_mode, oid, .. } = change
+            && !entry_mode.is_tree()
+        {
+            self.files.push((self.inner.path_clone(), entry_mode, oid));
+        }
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+/// The blobs whose similarity rename detection estimates, read as `git diff` reads them: the `diff` attribute of a
+/// regular file and the diff drivers decide whether its data is binary.
+struct RenameBlobs<'a, O> {
+    objects: &'a O,
+    attr_stack: &'a mut gix_worktree::Stack,
+    /// The configured diff drivers, sorted by name.
+    drivers: &'a [gix_diff::blob::Driver],
+    /// The `diff` attribute of the file being read.
+    attributes: Attributes,
+}
+
+impl<O: gix_object::FindObjectOrHeader> RenameBlobs<'_, O> {
+    /// Whether Git takes the blob of the file at `location` with `mode` for binary data before reading it:
+    /// `Some(true)` for binary data, `Some(false)` for text and `None` if its bytes decide. The `diff` attribute of a
+    /// regular file makes it text and `-diff` binary, and `diff=<name>` takes the `binary` setting of that driver. A
+    /// name without a configured driver, a regular file without a `diff` attribute and any other file take the
+    /// setting of the `default` driver.
+    fn binary(&mut self, location: &BStr, mode: EntryMode) -> Result<Option<bool>> {
+        let state = if mode.is_blob() {
+            self.attr_stack
+                .at_entry(location, None, self.objects)
+                .or_raise(|| message!("Could not read the attributes of '{location}'"))?
+                .matching_attributes(&mut self.attributes);
+            self.attributes
+                .iter_selected()
+                .next()
+                .map_or(StateRef::Unspecified, |attribute| attribute.assignment.state)
+        } else {
+            StateRef::Unspecified
+        };
+        let drivers = self.drivers;
+        let driver = |name: &BStr| {
+            drivers
+                .binary_search_by(|driver| driver.name.as_bstr().cmp(name))
+                .ok()
+                .map(|index| &drivers[index])
+        };
+        Ok(match state {
+            StateRef::Set => Some(false),
+            StateRef::Unset => Some(true),
+            StateRef::Value(name) => driver(name.as_bstr())
+                .or_else(|| driver("default".into()))
+                .and_then(|driver| driver.is_binary),
+            StateRef::Unspecified => driver("default".into()).and_then(|driver| driver.is_binary),
+        })
+    }
+}
+
+impl<O: gix_object::FindObjectOrHeader> gix_diffcore::rename::Blobs for RenameBlobs<'_, O> {
+    fn size(&mut self, entry: &gix_diffcore::rename::Entry<'_>) -> Result<u64> {
+        let id = entry.id;
+        Ok(self
+            .objects
+            .try_header(id)
+            .or_raise(|| message!("Could not find object header for {id}"))?
+            .ok_or_raise(|| message!("An object with id {id} could not be found").not_found())?
+            .size)
+    }
+
+    fn content<'buf>(
+        &mut self,
+        entry: &gix_diffcore::rename::Entry<'_>,
+        buf: &'buf mut Vec<u8>,
+    ) -> Result<(&'buf [u8], gix_diffcore::rename::Content)> {
+        let binary = self.binary(entry.location, entry.mode)?;
+        let data = self.objects.find_blob(entry.id, buf)?.data;
+        let content = match binary {
+            Some(true) => gix_diffcore::rename::Content::Binary,
+            Some(false) => gix_diffcore::rename::Content::Text,
+            None => gix_diffcore::rename::Content::from_data(data),
+        };
+        Ok((data, content))
     }
 }
 
@@ -909,6 +1048,19 @@ fn shared_end_len(old: &[u8], new: &[u8]) -> usize {
     len - rest_of_cut_line
 }
 
+/// The id and mode of the entry at a path in the tree of a commit.
+#[derive(Clone, Copy)]
+struct PathEntry {
+    id: ObjectId,
+    mode: EntryMode,
+}
+
+/// Whether entries with the modes `a` and `b` are of the same type, as the `S_IFMT` bits of Git's modes tell: two
+/// regular files are, executable or not, as are two symlinks, two submodules or two trees.
+fn is_same_type(a: EntryMode, b: EntryMode) -> bool {
+    (a.is_blob() && b.is_blob()) || a.kind() == b.kind()
+}
+
 fn find_path_entry_in_commit(
     odb: &impl gix_object::Find,
     commit: &gix_hash::oid,
@@ -917,7 +1069,7 @@ fn find_path_entry_in_commit(
     buf: &mut Vec<u8>,
     buf2: &mut Vec<u8>,
     stats: &mut Statistics,
-) -> Result<Option<ObjectId>> {
+) -> Result<Option<PathEntry>> {
     let tree_id = find_commit(cache, odb, commit, buf)
         .or_raise(|| message("Could not find existing iterator over a tree"))?
         .tree_id()
@@ -935,7 +1087,10 @@ fn find_path_entry_in_commit(
         )
         .or_raise(|| message("Couldn't find commit or tree in the object database"))?;
     stats.trees_decoded -= 1;
-    Ok(res.map(|e| e.oid))
+    Ok(res.map(|e| PathEntry {
+        id: e.oid,
+        mode: e.mode,
+    }))
 }
 
 type ParentIds = SmallVec<[(gix_hash::ObjectId, i64); 2]>;
@@ -1005,9 +1160,10 @@ fn initial_state(
         Start::Commit(suspect) => {
             let blamed_file_entry_id = find_path_entry_in_commit(&odb, &suspect, file_path, cache, buf, buf2, stats)?
                 .ok_or_raise(|| {
-                message!("The file to blame at \"{file_path}\" wasn't found in the first commit at {suspect}")
-                    .not_found()
-            })?;
+                    message!("The file to blame at \"{file_path}\" wasn't found in the first commit at {suspect}")
+                        .not_found()
+                })?
+                .id;
             let blamed_file_blob = odb
                 .find_blob(&blamed_file_entry_id, buf)
                 .or_raise(|| message("Could not find existing blob or commit"))?
@@ -1063,7 +1219,7 @@ fn initial_state(
 
             let mut out = Vec::new();
 
-            let Some(first_suspect_entry_id) =
+            let Some(first_suspect_entry) =
                 find_path_entry_in_commit(odb, &first_suspect, file_path, cache, buf, buf2, stats)?
             else {
                 // File does not exist in the starting commit. Treat the requested
@@ -1083,7 +1239,7 @@ fn initial_state(
             };
 
             let first_suspect_blob = odb
-                .find_blob(&first_suspect_entry_id, buf)
+                .find_blob(&first_suspect_entry.id, buf)
                 .or_raise(|| message("Could not find existing blob or commit"))?
                 .data
                 .to_vec();

@@ -65,3 +65,37 @@ git add change-and-rename.txt
 git commit --no-edit
 
 git blame --porcelain change-and-renamed.txt > .git/change-and-renamed.baseline
+
+# Git's blame follows a file that a commit added at its path to the file of the parent that the commit deleted and
+# that is the most similar to it, and the added file is the only one paired with a deleted file. `closer.txt`, which
+# the same commit added, is more similar to `source.txt` than `followed.txt` is, so `git diff -M` pairs `source.txt`
+# with `closer.txt`, yet the blame of `followed.txt` follows it to `source.txt`.
+seq 1 20 > source.txt
+git add source.txt
+git commit -q -m c20
+
+git mv source.txt followed.txt
+seq 1 20 | sed -e 's/^5$/x5/' -e 's/^10$/x10/' -e 's/^15$/x15/' > followed.txt
+seq 1 20 | sed -e 's/^20$/y20/' > closer.txt
+git add followed.txt closer.txt
+git commit -q -m c21
+
+echo extra >> followed.txt
+git add followed.txt
+git commit -q -m c22
+
+git blame --porcelain followed.txt > .git/followed.baseline
+
+# A file that replaced a directory is followed to the file of that directory that is the most similar to it.
+mkdir dir-then-file
+seq 101 110 > dir-then-file/a.txt
+seq 201 203 > dir-then-file/b.txt
+git add dir-then-file
+git commit -q -m c30
+
+git rm -q -r dir-then-file
+seq 101 111 > dir-then-file
+git add dir-then-file
+git commit -q -m c31
+
+git blame --porcelain dir-then-file > .git/dir-then-file.baseline

@@ -305,6 +305,16 @@ echo -e "line 1\nline 2\nline 3\nline 4\nline 5" > after-rename-in-first-parent.
 git add after-rename-in-first-parent.txt
 git commit -q -m c17.3
 
+# Only the executable bit of this file changes: both versions are regular files, so Git's blame gives all lines to the
+# parent, which has the same blob.
+seq 1 3 > executable-bit-changed.txt
+git add executable-bit-changed.txt
+git commit -q -m c18
+
+chmod +x executable-bit-changed.txt
+git update-index --chmod=+x executable-bit-changed.txt
+git commit -q -m c18.1
+
 seq 5 7 >> untracked-lines.txt
 
 seq 1 4 >> untracked-file.txt
@@ -346,6 +356,7 @@ git blame --porcelain file-only-changed-in-branch.txt > .git/file-only-changed-i
 git blame --porcelain file-changed-in-two-branches.txt > .git/file-changed-in-two-branches.baseline
 git blame --porcelain file-topo-order-different-than-date-order.txt > .git/file-topo-order-different-than-date-order.baseline
 git blame --porcelain after-rename-in-first-parent.txt > .git/after-rename-in-first-parent.baseline
+git blame --porcelain executable-bit-changed.txt > .git/executable-bit-changed.baseline
 
 git blame --porcelain empty-lines-histogram.txt > .git/empty-lines-histogram.baseline
 

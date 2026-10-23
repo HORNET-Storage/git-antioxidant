@@ -1703,6 +1703,7 @@ dependencies = [
  "gix-commitgraph",
  "gix-date",
  "gix-diff",
+ "gix-diffcore",
  "gix-error",
  "gix-filter",
  "gix-fs",
