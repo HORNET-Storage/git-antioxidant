@@ -1683,21 +1683,26 @@ pub fn tree<'objects>(
                                     (id, Some(resolution))
                                 };
 
-                                if matches!(
-                                    resolve_tree_conflicts,
-                                    None | Some(ResolveWith::Ours | ResolveWith::VirtualMergeBase)
-                                ) {
-                                    editor.remove_if_leaf(toc(source_location))?;
-                                    our_tree.remove_change(source_location.as_bstr());
-                                    their_tree.remove_change(source_location.as_bstr());
-                                }
-
                                 let their_location =
                                     possibly_rewritten_location(our_tree, their_location.as_bstr(), our_changes)
                                         .map_or(Cow::Borrowed(their_location.as_bstr()), Cow::Owned);
                                 let our_location =
                                     possibly_rewritten_location(their_tree, our_location.as_bstr(), their_changes)
                                         .map_or(Cow::Borrowed(our_location.as_bstr()), Cow::Owned);
+
+                                // Both sides renamed the source away. Only renames to two destinations conflict, and
+                                // only the resolution of that conflict with the ancestor keeps the source.
+                                if our_location == their_location
+                                    || matches!(
+                                        resolve_tree_conflicts,
+                                        None | Some(ResolveWith::Ours | ResolveWith::VirtualMergeBase)
+                                    )
+                                {
+                                    editor.remove_if_leaf(toc(source_location))?;
+                                    our_tree.remove_change(source_location.as_bstr());
+                                    their_tree.remove_change(source_location.as_bstr());
+                                }
+
                                 let (our_addition, their_addition) = if our_location == their_location {
                                     (
                                         None,

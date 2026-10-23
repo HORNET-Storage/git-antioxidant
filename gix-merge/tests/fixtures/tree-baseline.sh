@@ -3290,6 +3290,17 @@ EOF
   make_resolve_tree ours B A
 )
 
+(cd same-rename-with-content
+  # Both sides rename `file` to `target`, which is no conflict for the ancestor to resolve. Choosing the ancestor
+  # leaves Git's merged tree, with the conflict markers of the content merge at `target`.
+  IFS= read -r -d '' merged_tree_id <A-B.merge-info
+  git read-tree "$merged_tree_id"
+  make_resolve_tree ancestor A B
+  IFS= read -r -d '' merged_reversed_tree_id <A-B-reversed.merge-info
+  git read-tree "$merged_reversed_tree_id"
+  make_resolve_tree ancestor B A
+)
+
 (cd simple
   rm .git/index
   # 'whatever' is tree-conflict, 'greeting' is content conflict with markers
