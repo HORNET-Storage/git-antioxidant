@@ -1,0 +1,5 @@
+# `make_deltas.sh` records the packs that the installed `git pack-objects` writes. The bases of the pack made with a
+# window memory depend on the sizes that Git's structures have on the platform, so the fixture is made with the `git` of
+# each host instead of being archived.
+make_deltas.tar
+make_deltas_sha256.tar

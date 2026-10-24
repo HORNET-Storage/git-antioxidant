@@ -150,6 +150,7 @@ is usable to some extent.
   * [gix-add](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-add)
   * [gix-switch](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-switch)
   * [gix-repack](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-repack)
+  * [gix-delta](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-delta)
 * **idea** _(just a name placeholder)_
   * [gix-note](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-note)
   * [gix-fetchhead](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-fetchhead)

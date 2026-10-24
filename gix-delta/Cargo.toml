@@ -1,0 +1,38 @@
+lints.workspace = true
+
+[package]
+name = "gix-delta"
+version = "0.0.0"
+repository = "https://github.com/GitoxideLabs/gitoxide"
+license = "MIT OR Apache-2.0"
+description = "A crate of the gitoxide project to compute the deltas that packs store objects as, and to choose their bases as git pack-objects does"
+authors = ["Colby Serpa", "Sebastian Thiel <sebastian.thiel@icloud.com>"]
+edition = "2024"
+include = ["/src/**/*", "/LICENSE-*"]
+rust-version = "1.88"
+
+[lib]
+doctest = false
+
+[features]
+## Enable support for the SHA-1 hash by forwarding the feature to dependencies.
+sha1 = ["gix-hash/sha1"]
+## Enable support for the SHA-256 hash by forwarding the feature to dependencies.
+sha256 = ["gix-hash/sha256"]
+## Find deltas with several threads.
+parallel = ["gix-parallel/parallel"]
+
+[dependencies]
+gix-error = { version = "^0.5.1", path = "../gix-error" }
+gix-hash = { version = "^0.28.0", path = "../gix-hash" }
+gix-object = { version = "^0.66.0", path = "../gix-object" }
+gix-parallel = { version = "^0.50.0", path = "../gix-parallel" }
+gix-utils = { version = "^0.5.1", path = "../gix-utils", features = ["progress"] }
+
+[dev-dependencies]
+gix-pack = { path = "../gix-pack", features = ["sha1", "sha256"] }
+gix-testtools = { path = "../tests/tools" }
+gix-zlib = { path = "../gix-zlib" }
+
+[package.metadata.docs.rs]
+features = ["sha1"]

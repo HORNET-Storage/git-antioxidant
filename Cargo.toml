@@ -299,6 +299,7 @@ members = [
     "gix-add",
     "gix-switch",
     "gix-repack",
+    "gix-delta",
     "tests/tools",
     "tests/it",
     "gix-shallow"
