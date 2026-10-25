@@ -15,6 +15,10 @@ impl Repository {
     /// The platform can be used to set up resources and finally perform a merge among blobs.
     ///
     /// Note that the current index is used for attribute queries.
+    ///
+    /// As in Git, `core.bigFileThreshold` doesn't apply to merges. Blobs larger than
+    /// [`MAX_TEXT_SIZE`](gix_merge::blob::platform::builtin_merge::MAX_TEXT_SIZE) aren't loaded: the builtin drivers merge
+    /// them as binary, as Git does, and external drivers can't merge them.
     pub fn merge_resource_cache(
         &self,
         worktree_roots: gix_merge::blob::pipeline::WorktreeRoots,
@@ -46,7 +50,13 @@ impl Repository {
             self.object_hash(),
             crate::filter::Pipeline::options(self)?,
         );
-        let filter = gix_merge::blob::Pipeline::new(worktree_roots, filter, self.config.merge_pipeline_options()?);
+        let filter = gix_merge::blob::Pipeline::new(
+            worktree_roots,
+            filter,
+            gix_merge::blob::pipeline::Options {
+                large_file_threshold_bytes: gix_merge::blob::platform::builtin_merge::MAX_TEXT_SIZE,
+            },
+        );
         let options = gix_merge::blob::platform::Options {
             default_driver: self.config.resolved.string(tree::Merge::DEFAULT),
         };

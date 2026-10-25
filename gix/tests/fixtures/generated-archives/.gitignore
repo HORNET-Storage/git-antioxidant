@@ -100,3 +100,6 @@
 # Generate this small commit-graph fixture and apply Rust post-processing locally.
 /make_corrupt_commit_graph.tar
 /make_corrupt_commit_graph_sha256.tar
+# Generate this small merge fixture, including its Git baseline.
+/make_merge_big_file_threshold.tar
+/make_merge_big_file_threshold_sha256.tar

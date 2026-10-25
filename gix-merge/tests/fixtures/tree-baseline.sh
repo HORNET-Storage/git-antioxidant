@@ -3159,7 +3159,7 @@ baseline both-modify-union-attr A-B-diff3 A B
 baseline both-modify-binary A-B A B
 baseline both-modify-binary A-B A B
 baseline both-modify-file-with-binary-attr A-B A B
-baseline big-file-merge A-B A B "Git actually ignores core.bigFileThreshold during merging and tries a normal merge (or binary one) anyway. We don't ignore it and treat big files like binary files" \
+baseline big-file-merge A-B A B "Git ignores core.bigFileThreshold when merging. The test passes its value as gix-merge's large_file_threshold_bytes, which treats larger files like binary files" \
                                 no-reverse
 baseline attribute-path-modify-rename A-B A B
 baseline attribute-path-rename-rename-1to2 A-B A B

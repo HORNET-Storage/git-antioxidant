@@ -66,8 +66,9 @@ fn run_baseline() -> TestResult {
     {
         actual_cases += 1;
         let mut graph = gix_revwalk::Graph::new(&odb, None);
-        // Only `big-file-merge` sets `core.bigFileThreshold`, which gix applies to merges and Git ignores. The other
-        // cases merge blobs of any size, as Git does, which matters for merged merge-bases with long conflict markers.
+        // Only `big-file-merge` sets `large_file_threshold_bytes`, to the 100 bytes of the `core.bigFileThreshold` of its
+        // repository, which Git ignores when merging. The other cases merge blobs of any size, as Git does, which
+        // matters for merged merge-bases with long conflict markers.
         let large_file_threshold_bytes = root.ends_with("big-file-merge").then_some(100);
         // Only `recursive-merge-driver` configures a merge driver, as its repository does for Git: `custom`, which has
         // no command and names the binary driver for merges of merge-bases.
