@@ -1440,6 +1440,127 @@ git init big-file-merge
   git commit -am "a normal but conflicting file change"
 )
 
+git init attribute-path-modify-rename
+(cd attribute-path-modify-rename
+  # A modifies `source`; B renames it to `destination` and modifies it too. Git merges the content
+  # at the rename's destination, whose attributes give conflict markers of 13 characters.
+  write_lines 'source* conflict-marker-size=10' 'destination* conflict-marker-size=13' >.gitattributes
+  write_lines kilo-1 kilo-2 kilo-3 kilo-4 kilo-5 >source
+  git add . && git commit -m "base"
+
+  git branch A
+  git branch B
+
+  git checkout A
+  write_lines kilo-1 kilo-2 changed-by-A kilo-4 kilo-5 >source
+  git commit -am "A modifies source"
+
+  git checkout B
+  git mv source destination
+  write_lines kilo-1 kilo-2 changed-by-B kilo-4 kilo-5 >destination
+  git commit -am "B renames source to destination and modifies it"
+)
+
+git init attribute-path-rename-rename-1to2
+(cd attribute-path-rename-rename-1to2
+  # A renames `source` to `destination-one` and B renames it to `destination-two`, both modifying it.
+  # Git merges the content at the source, whose attributes give conflict markers of 10 characters, one
+  # longer for the rename/rename conflict, and writes the result to both destinations.
+  write_lines 'source* conflict-marker-size=10' 'destination* conflict-marker-size=13' >.gitattributes
+  write_lines lima-1 lima-2 lima-3 lima-4 lima-5 >source
+  git add . && git commit -m "base"
+
+  git branch A
+  git branch B
+
+  git checkout A
+  git mv source destination-one
+  write_lines lima-1 lima-2 changed-by-A lima-4 lima-5 >destination-one
+  git commit -am "A renames source to destination-one and modifies it"
+
+  git checkout B
+  git mv source destination-two
+  write_lines lima-1 lima-2 changed-by-B lima-4 lima-5 >destination-two
+  git commit -am "B renames source to destination-two and modifies it"
+)
+
+git init attribute-path-rename-collision
+(cd attribute-path-rename-collision
+  # A modifies `source` and adds an unrelated `destination`; B renames `source` to `destination` and
+  # modifies it. Git merges the rename's content at its source, with conflict markers of 10 characters
+  # made one longer by the collision, then the add/add at `destination` with its markers of 13 characters.
+  write_lines 'source* conflict-marker-size=10' 'destination* conflict-marker-size=13' >.gitattributes
+  write_lines mike-1 mike-2 mike-3 mike-4 mike-5 >source
+  git add . && git commit -m "base"
+
+  git branch A
+  git branch B
+
+  git checkout A
+  write_lines mike-1 mike-2 changed-by-A mike-4 mike-5 >source
+  write_lines november-1 november-2 november-3 november-4 november-5 >destination
+  git add . && git commit -m "A modifies source and adds destination"
+
+  git checkout B
+  git mv source destination
+  write_lines mike-1 mike-2 changed-by-B mike-4 mike-5 >destination
+  git commit -am "B renames source to destination and modifies it"
+)
+
+git init attribute-path-rename-rename-2to1
+(cd attribute-path-rename-rename-2to1
+  # A renames `source-one` to `destination` and B renames `source-two` there; each side modifies its
+  # rename and the other side's source. Git merges each rename with the other side's modification at
+  # the rename's source, with conflict markers of 10 characters made one longer by the collision, then
+  # the add/add at `destination` with its markers of 13 characters.
+  write_lines 'source* conflict-marker-size=10' 'destination* conflict-marker-size=13' >.gitattributes
+  write_lines oscar-1 oscar-2 oscar-3 oscar-4 oscar-5 >source-one
+  write_lines papa-1 papa-2 papa-3 papa-4 papa-5 >source-two
+  git add . && git commit -m "base"
+
+  git branch A
+  git branch B
+
+  git checkout A
+  git mv source-one destination
+  write_lines oscar-1 oscar-2 changed-by-A oscar-4 oscar-5 >destination
+  write_lines papa-1 papa-2 changed-by-A papa-4 papa-5 >source-two
+  git commit -am "A renames source-one to destination, modifying it and source-two"
+
+  git checkout B
+  git mv source-two destination
+  write_lines papa-1 papa-2 changed-by-B papa-4 papa-5 >destination
+  write_lines oscar-1 oscar-2 changed-by-B oscar-4 oscar-5 >source-one
+  git commit -am "B renames source-two to destination, modifying it and source-one"
+)
+
+git init attribute-path-directory-rename-rename
+(cd attribute-path-directory-rename-rename
+  # A renames the directory `old` to `new` and modifies `new/file`; B renames `old/file` to `old/moved`
+  # and modifies it, which A's directory rename moves to `new/moved`. Git merges this rename to two
+  # destinations at the source `old/file`, with conflict markers of 10 characters made one longer by the
+  # rename/rename conflict.
+  write_lines 'old/* conflict-marker-size=10' 'new/* conflict-marker-size=13' >.gitattributes
+  mkdir old
+  write_lines quebec-1 quebec-2 quebec-3 quebec-4 quebec-5 >old/file
+  write_lines romeo-1 romeo-2 romeo-3 romeo-4 romeo-5 >old/other
+  write_lines sierra-1 sierra-2 sierra-3 sierra-4 sierra-5 >old/third
+  git add . && git commit -m "base"
+
+  git branch A
+  git branch B
+
+  git checkout A
+  git mv old new
+  write_lines quebec-1 quebec-2 changed-by-A quebec-4 quebec-5 >new/file
+  git commit -am "A renames old to new and modifies new/file"
+
+  git checkout B
+  git mv old/file old/moved
+  write_lines quebec-1 quebec-2 changed-by-B quebec-4 quebec-5 >old/moved
+  git commit -am "B renames old/file to old/moved and modifies it"
+)
+
 git init no-merge-base
 (cd no-merge-base
   git checkout -b A
@@ -2932,6 +3053,11 @@ baseline both-modify-binary A-B A B
 baseline both-modify-file-with-binary-attr A-B A B
 baseline big-file-merge A-B A B "Git actually ignores core.bigFileThreshold during merging and tries a normal merge (or binary one) anyway. We don't ignore it and treat big files like binary files" \
                                 no-reverse
+baseline attribute-path-modify-rename A-B A B
+baseline attribute-path-rename-rename-1to2 A-B A B
+baseline attribute-path-rename-collision A-B A B
+baseline attribute-path-rename-rename-2to1 A-B A B
+baseline attribute-path-directory-rename-rename A-B A B
 baseline no-merge-base A-B A B
 baseline no-merge-base A-B-diff3 A B
 

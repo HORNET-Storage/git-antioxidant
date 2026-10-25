@@ -94,8 +94,11 @@ pub fn unique_path_in_tree_avoiding(
 
 /// Perform a merge between two blobs and return the result of its object id.
 ///
-/// `pathnames` are the paths of the ancestor, ours and theirs that the conflict markers give after the labels if the
-/// paths of ours and theirs differ, as merge-ort gives the `pathnames` of a conflict.
+/// `path` is the location whose attributes choose the merge driver and the conflict marker size, which merge drivers
+/// receive, and at which all three resources are converted, as merge-ort's `path`: the location of the merged file, but
+/// the rename's source for a rename to two destinations and for the content merge of a rename that collides with a
+/// file at its destination. `pathnames` are the paths of the ancestor, ours and theirs that the conflict markers give
+/// after the labels if the paths of ours and theirs differ, as merge-ort gives the `pathnames` of a conflict.
 #[expect(clippy::too_many_arguments)]
 pub fn perform_blob_merge(
     mut labels: crate::blob::builtin_driver::text::Labels<'_>,
@@ -103,9 +106,10 @@ pub fn perform_blob_merge(
     blob_merge: &mut crate::blob::Platform,
     buf: &mut Vec<u8>,
     write_blob_to_odb: &mut impl FnMut(&[u8]) -> Result<ObjectId>,
-    (our_location, our_id, our_mode): (&BString, ObjectId, EntryMode),
-    (their_location, their_id, their_mode): (&BString, ObjectId, EntryMode),
-    (previous_location, previous_id, previous_mode): (&BString, ObjectId, EntryMode),
+    path: &BStr,
+    (our_id, our_mode): (ObjectId, EntryMode),
+    (their_id, their_mode): (ObjectId, EntryMode),
+    (previous_id, previous_mode): (ObjectId, EntryMode),
     [previous_pathname, our_pathname, their_pathname]: [&BStr; 3],
     (extra_markers, outer_side): (u8, ConflictMapping),
     options: &Options,
@@ -135,18 +139,12 @@ pub fn perform_blob_merge(
         ConflictMapping::Original => (ResourceKind::CurrentOrOurs, ResourceKind::OtherOrTheirs),
         ConflictMapping::Swapped => (ResourceKind::OtherOrTheirs, ResourceKind::CurrentOrOurs),
     };
-    blob_merge.set_resource(our_id, our_mode.kind(), our_location.as_bstr(), our_kind, objects)?;
-    blob_merge.set_resource(
-        their_id,
-        their_mode.kind(),
-        their_location.as_bstr(),
-        their_kind,
-        objects,
-    )?;
+    blob_merge.set_resource(our_id, our_mode.kind(), path, our_kind, objects)?;
+    blob_merge.set_resource(their_id, their_mode.kind(), path, their_kind, objects)?;
     blob_merge.set_resource(
         previous_id,
         previous_mode.kind(),
-        previous_location.as_bstr(),
+        path,
         ResourceKind::CommonAncestorOrBase,
         objects,
     )?;

@@ -417,34 +417,23 @@ pub fn tree<'objects>(
                                                 [source_location.as_bstr(), rename_pathname, our_location.as_bstr()]
                                             }
                                         };
-                                        let (our_location, our_id, our_mode, their_location, their_id, their_mode) =
-                                            match side {
-                                                Original => (
-                                                    our_location,
-                                                    our_id,
-                                                    our_mode,
-                                                    their_location,
-                                                    their_id,
-                                                    their_mode,
-                                                ),
-                                                Swapped => (
-                                                    their_location,
-                                                    their_id,
-                                                    their_mode,
-                                                    our_location,
-                                                    our_id,
-                                                    our_mode,
-                                                ),
-                                            };
+                                        // merge-ort merges the rename at its destination, or at its source if it
+                                        // collides with a file there, which it merges with the result later.
+                                        let merge_path = if collision { source_location } else { their_location };
+                                        let ((our_id, our_mode), (their_id, their_mode)) = match side {
+                                            Original => ((*our_id, *our_mode), (*their_id, *their_mode)),
+                                            Swapped => ((*their_id, *their_mode), (*our_id, *our_mode)),
+                                        };
                                         let (merged_blob_id, resolution) = perform_blob_merge(
                                             labels,
                                             objects,
                                             blob_merge,
                                             &mut diff_state.buf1,
                                             &mut write_blob_to_odb,
-                                            (our_location, *our_id, *our_mode),
-                                            (their_location, *their_id, *their_mode),
-                                            (source_location, *previous_id, *previous_entry_mode),
+                                            merge_path.as_bstr(),
+                                            (our_id, our_mode),
+                                            (their_id, their_mode),
+                                            (*previous_id, *previous_entry_mode),
                                             pathnames,
                                             (u8::from(collision), outer_side),
                                             &options,
@@ -574,9 +563,10 @@ pub fn tree<'objects>(
                                         blob_merge,
                                         &mut diff_state.buf1,
                                         &mut write_blob_to_odb,
-                                        (location, *our_id, *our_mode),
-                                        (location, *their_id, *their_mode),
-                                        (location, merge_base_id, merge_base_mode),
+                                        location.as_bstr(),
+                                        (*our_id, *our_mode),
+                                        (*their_id, *their_mode),
+                                        (merge_base_id, merge_base_mode),
                                         [
                                             location.as_bstr(),
                                             pathname(&moved_from, outer_side, location.as_bstr()),
@@ -953,9 +943,10 @@ pub fn tree<'objects>(
                                             blob_merge,
                                             &mut diff_state.buf1,
                                             &mut write_blob_to_odb,
-                                            (location, *our_id, merged_mode),
-                                            (location, *their_id, merged_mode),
-                                            (location, their_id.kind().null(), merged_mode),
+                                            location.as_bstr(),
+                                            (*our_id, merged_mode),
+                                            (*their_id, merged_mode),
+                                            (their_id.kind().null(), merged_mode),
                                             [
                                                 location.as_bstr(),
                                                 pathname(&moved_from, outer_side, location.as_bstr()),
@@ -1317,9 +1308,10 @@ pub fn tree<'objects>(
                                                 blob_merge,
                                                 &mut diff_state.buf1,
                                                 &mut write_blob_to_odb,
-                                                (location, *our_id, *our_mode),
-                                                (location, *their_id, *their_mode),
-                                                (location, our_id.kind().null(), merged_mode),
+                                                location.as_bstr(),
+                                                (*our_id, *our_mode),
+                                                (*their_id, *their_mode),
+                                                (our_id.kind().null(), merged_mode),
                                                 [
                                                     location.as_bstr(),
                                                     pathname(&moved_from, outer_side, location.as_bstr()),
@@ -1619,15 +1611,22 @@ pub fn tree<'objects>(
                                             their_location.as_bstr(),
                                         ]
                                     };
+                                    // merge-ort merges a rename to two destinations at its source.
+                                    let merge_path = if our_location == their_location {
+                                        our_location
+                                    } else {
+                                        source_location
+                                    };
                                     let (id, resolution) = perform_blob_merge(
                                         labels,
                                         objects,
                                         blob_merge,
                                         &mut diff_state.buf1,
                                         &mut write_blob_to_odb,
-                                        (our_location, *our_id, *our_mode),
-                                        (their_location, *their_id, *their_mode),
-                                        (source_location, *source_id, *source_entry_mode),
+                                        merge_path.as_bstr(),
+                                        (*our_id, *our_mode),
+                                        (*their_id, *their_mode),
+                                        (*source_id, *source_entry_mode),
                                         pathnames,
                                         (u8::from(our_location != their_location), outer_side),
                                         &options,
@@ -1927,9 +1926,10 @@ pub fn tree<'objects>(
                                             blob_merge,
                                             &mut diff_state.buf1,
                                             &mut write_blob_to_odb,
-                                            (location, *our_id, *our_mode),
-                                            (location, *their_id, *their_mode),
-                                            (source_location, source_id.kind().null(), *source_entry_mode),
+                                            location.as_bstr(),
+                                            (*our_id, *our_mode),
+                                            (*their_id, *their_mode),
+                                            (source_id.kind().null(), *source_entry_mode),
                                             [
                                                 location.as_bstr(),
                                                 pathname(&moved_from, side.to_global(outer_side), location.as_bstr()),
