@@ -7,6 +7,9 @@ use gix_path::RelativePath;
 use crate::{BString, FullName, file::iter::LooseThenPacked, store_impl::file};
 
 /// An iterator over all valid loose reference paths as seen from a particular base directory.
+///
+/// Like Git, it follows symbolic links: a link to a file is a reference, a link to a directory is walked, and a link
+/// that leads nowhere or back into the walk is skipped.
 pub(in crate::store_impl::file) struct SortedLoosePaths {
     pub(crate) base: PathBuf,
     /// An prefix like `refs/heads/foo/` or `refs/heads/prefix` that a returned reference must match against..
@@ -31,7 +34,7 @@ impl SortedLoosePaths {
             suffix,
             file_walk: path.is_dir().then(|| {
                 // serial iteration as we expect most refs in packed-refs anyway.
-                gix_fs::walkdir_sorted_new(path, depth, precompose_unicode).into_iter()
+                gix_fs::walkdir_sorted_new_follow_links(path, depth, precompose_unicode).into_iter()
             }),
         }
     }
@@ -73,7 +76,9 @@ impl Iterator for SortedLoosePaths {
                         continue;
                     }
                 }
-                Err(err) => return Some(Err(err.into_io_error().expect("no symlink related errors"))),
+                // Git lists only what `stat()` shows to be a file or a directory, so links it can't follow are skipped.
+                Err(err) if err.loop_ancestor().is_some() || err.path().is_some_and(Path::is_symlink) => continue,
+                Err(err) => return Some(Err(err.into_io_error().expect("only loop errors lack an I/O error"))),
             }
         }
         None
@@ -85,7 +90,8 @@ impl file::Store {
     /// Each of the references may fail to parse and the iterator will not stop if parsing fails, allowing the caller
     /// to see all files that look like references whether valid or not.
     ///
-    /// Reference files that do not constitute valid names will be silently ignored.
+    /// Reference files that do not constitute valid names will be silently ignored, and symbolic links are listed as
+    /// [`iter()`](file::Store::iter()) describes.
     pub fn loose_iter(&self) -> std::io::Result<LooseThenPacked<'_, '_>> {
         self.iter_packed(None)
     }

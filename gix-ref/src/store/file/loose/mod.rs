@@ -1,4 +1,6 @@
-use crate::{FullName, Kind, Target};
+use std::{io, path::Path};
+
+use crate::{BString, FullName, Kind, Target};
 
 /// A git _ref_ which is stored in a file.
 #[derive(Debug, PartialOrd, PartialEq, Ord, Eq, Hash, Clone)]
@@ -14,6 +16,51 @@ impl Reference {
     pub fn kind(&self) -> Kind {
         self.target.kind()
     }
+}
+
+/// What [`open()`] found at the path of a loose reference.
+pub(crate) enum Opened {
+    /// The file to read the reference from, which may be the target of a symbolic link that doesn't name a reference.
+    File(std::fs::File),
+    /// The contents of a symbolic reference, for a symbolic link whose text names a reference.
+    SymbolicLink(Vec<u8>),
+}
+
+/// Open the loose reference at `path` as Git's files backend reads it.
+///
+/// A symbolic link whose text is a full reference name starting with `refs/` is a symbolic reference to that name,
+/// wherever the link leads. Any other link is followed, and its target is read as the reference. Errors are those of
+/// opening `path`, or the target of a link that doesn't name a reference.
+pub(crate) fn open(path: &Path) -> io::Result<Opened> {
+    // Like Git, look at `path` again if a link is replaced while it is being read.
+    let mut retries = 2;
+    loop {
+        if let gix_fs::FileOrSymlink::File(file) = gix_fs::open_read_only_no_follow(path)? {
+            return Ok(Opened::File(file));
+        }
+        match std::fs::read_link(path) {
+            Ok(text) => {
+                return match link_reference_name(&text) {
+                    Some(name) => {
+                        let mut contents = b"ref: ".to_vec();
+                        contents.extend_from_slice(&name);
+                        Ok(Opened::SymbolicLink(contents))
+                    }
+                    None => std::fs::File::open(path).map(Opened::File),
+                };
+            }
+            Err(err) if retries > 0 && matches!(err.kind(), io::ErrorKind::NotFound | io::ErrorKind::InvalidInput) => {
+                retries -= 1;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// Return the reference that the `text` of a symbolic link names, if it is a full name in `refs/` as Git requires.
+fn link_reference_name(text: &Path) -> Option<BString> {
+    let text = gix_path::to_unix_separators_on_windows(gix_path::into_bstr(text).ok()?);
+    (text.starts_with(b"refs/") && gix_validate::reference::name(&text).is_ok()).then(|| text.into_owned())
 }
 
 ///

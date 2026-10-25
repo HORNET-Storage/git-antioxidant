@@ -77,10 +77,14 @@ impl<'p> LooseThenPacked<'p, '_> {
         let git_dir = self.git_dir;
         let common_dir = self.common_dir;
         let (refpath, name) = res.or_raise(|| message("Could not traverse reference directory"))?;
-        std::fs::File::open(&refpath)
-            .and_then(|mut f| {
-                buf.clear();
-                f.read_to_end(buf)
+        buf.clear();
+        loose::open(&refpath)
+            .and_then(|opened| match opened {
+                loose::Opened::File(mut file) => file.read_to_end(buf).map(drop),
+                loose::Opened::SymbolicLink(contents) => {
+                    *buf = contents;
+                    Ok(())
+                }
             })
             .or_raise(|| file::find::read_reference_error(refpath.as_path()))?;
         loose::Reference::try_from_path(name, buf, self.object_hash)
@@ -206,6 +210,10 @@ impl file::Store {
     /// Return a platform to obtain iterator over all references, or prefixed ones, loose or packed, sorted by their name.
     ///
     /// Errors are returned similarly to what would happen when loose and packed refs were iterated by themselves.
+    ///
+    /// Symbolic links among loose references are listed as Git lists them: a link to a file is a reference, which is
+    /// symbolic if the text of the link is a full reference name in `refs/`, a link to a directory is walked, and links
+    /// that lead nowhere or back into the walk are skipped.
     ///
     /// Note that since packed-refs are storing refs as precomposed unicode if [`Self::precompose_unicode`] is true, for consistency
     /// we also return loose references as precomposed unicode.

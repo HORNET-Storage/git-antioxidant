@@ -30,6 +30,8 @@ impl file::Store {
     /// ### Note
     ///
     /// * The lookup algorithm follows the one in [the git documentation][git-lookup-docs].
+    /// * A loose reference that is a symbolic link whose text is a full reference name starting with `refs/` is a
+    ///   symbolic reference to that name, as Git's files backend reads it. Other links are followed to their targets.
     /// * The packed buffer is checked for modifications each time the method is called. See [`file::Store::try_find_packed()`]
     ///   for a version with more control.
     ///
@@ -329,14 +331,17 @@ impl file::Store {
     }
 
     /// Read the file contents with a verified full reference path and return it in the given vector if possible.
+    ///
+    /// Symbolic links are read as Git reads them, so a link that names a reference yields a symbolic reference.
     pub(crate) fn ref_contents(&self, name: &FullNameRef) -> io::Result<Option<Vec<u8>>> {
         self.check_windows_device_name(name)?;
         let (base, relative_path) = self
             .reference_path_with_base(name)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
         let ref_path = base.join(&relative_path);
-        match std::fs::File::open(&ref_path) {
-            Ok(mut file) => {
+        match loose::open(&ref_path) {
+            Ok(loose::Opened::SymbolicLink(contents)) => Ok(Some(contents)),
+            Ok(loose::Opened::File(mut file)) => {
                 let mut buf = Vec::with_capacity(128);
                 if let Err(err) = file.read_to_end(&mut buf) {
                     return if ref_path.is_dir() { Ok(None) } else { Err(err) };
