@@ -172,9 +172,13 @@ where
             if let Some(shallow_lock) = shallow_lock
                 && !previous_response.shallow_updates().is_empty()
             {
-                gix_shallow::write(shallow_lock, shallow_commits, previous_response.shallow_updates()).or_raise(
-                    || message("Could not write 'shallow' file to incorporate remote updates after fetching"),
-                )?;
+                gix_shallow::write(
+                    shallow_lock,
+                    &shallow_file,
+                    shallow_commits,
+                    previous_response.shallow_updates(),
+                )
+                .or_raise(|| message("Could not write 'shallow' file to incorporate remote updates after fetching"))?;
             }
             Ok(Some(Outcome {
                 last_response: previous_response,
@@ -227,9 +231,17 @@ fn read_remaining(reader: &mut impl std::io::Read) -> std::io::Result<()> {
     std::io::copy(reader, &mut std::io::sink()).map(|_| ())
 }
 
+/// Lock `shallow_file` for writing. Like Git, follow a symbolic link at `shallow_file`, so the lock is beside the
+/// link's target and committing the lock replaces the target.
 fn acquire_shallow_lock(shallow_file: &Path) -> Result<gix_lock::File> {
-    gix_lock::File::acquire_to_update_resource(shallow_file, gix_lock::acquire::Fail::Immediately, None, 0)
-        .or_raise(|| message("'shallow' file could not be locked in preparation for writing changes"))
+    gix_lock::File::acquire(
+        shallow_file,
+        gix_lock::acquire::Fail::Immediately,
+        None,
+        0,
+        Some(&gix_lock::acquire::resolve_symlink),
+    )
+    .or_raise(|| message("'shallow' file could not be locked in preparation for writing changes"))
 }
 
 fn add_shallow_args(

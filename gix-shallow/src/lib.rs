@@ -13,14 +13,15 @@
 //! let shallow = gix_shallow::read(&shallow_file)
 //!     ?
 //!     .expect("a shallow boundary");
-//! let lock = gix_lock::File::acquire_to_update_resource(
+//! let lock = gix_lock::File::acquire(
 //!     &shallow_file,
 //!     gix_lock::acquire::Fail::Immediately,
 //!     None,
 //!     0,
+//!     Some(&gix_lock::acquire::resolve_symlink),
 //! )
 //! ?;
-//! gix_shallow::write(lock, Some(shallow), &[gix_shallow::Update::Shallow(second)])
+//! gix_shallow::write(lock, &shallow_file, Some(shallow), &[gix_shallow::Update::Shallow(second)])
 //!     ?;
 //!
 //! let ids = gix_shallow::read(&shallow_file)
@@ -81,16 +82,20 @@ pub mod write {
 
         use crate::Update;
 
-        /// Write the [previously obtained](crate::read()) (possibly non-existing) `shallow_commits` to the shallow `file`
-        /// after applying all `updates`.
+        /// Write the [previously obtained](crate::read()) (possibly non-existing) `shallow_commits` after applying all
+        /// `updates`, committing them through `file`, the lock taken for `shallow_file`.
         ///
-        /// If this leaves the list of shallow commits empty, the file is removed.
+        /// If this leaves the list of shallow commits empty, `shallow_file` is removed instead and the lock released.
+        /// As in Git, a symbolic link at `shallow_file` is then removed itself and its target is left alone, while a
+        /// non-empty list replaces the link's target if `file` was acquired with
+        /// [`gix_lock::acquire::resolve_symlink()`].
         ///
         /// ### Deviation
         ///
         /// Git also prunes the set of shallow commits while writing, we don't until we support some sort of pruning.
         pub fn write(
             mut file: gix_lock::File,
+            shallow_file: &std::path::Path,
             shallow_commits: Option<nonempty::NonEmpty<gix_hash::ObjectId>>,
             updates: &[Update],
         ) -> Result {
@@ -104,7 +109,7 @@ pub mod write {
                 }
             }
             if shallow_commits.is_empty() {
-                if let Err(err) = std::fs::remove_file(file.resource_path())
+                if let Err(err) = std::fs::remove_file(shallow_file)
                     && err.kind() != std::io::ErrorKind::NotFound
                 {
                     bail!(err.and_raise(message("Could not remove an empty shallow file")));

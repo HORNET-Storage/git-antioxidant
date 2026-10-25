@@ -682,6 +682,77 @@ mod blocking_and_async_io {
         Ok(())
     }
 
+    #[test]
+    #[cfg(all(feature = "blocking-network-client", any(unix, windows)))]
+    fn a_linked_shallow_file_is_written_at_its_target_and_removed_itself_as_git_does() -> TestResult {
+        // Blocking local transport spawns `upload-pack`, which inherits ambient Git configuration.
+        // Isolate it in a child to keep shallow-fetch I/O parallel without changing the parent environment.
+        if gix_testtools::run_in_isolated_process()? {
+            return Ok(());
+        }
+        let fixture = gix_testtools::scripted_fixture_writable_with_args(
+            "make_symlinked_shallow.sh",
+            None::<String>,
+            gix_testtools::Creation::Execute,
+        )?;
+        if !gix_testtools::fixture_has_symlinks(fixture.path())? {
+            return Ok(());
+        }
+        let root = fixture.path();
+        let repo = gix::open_opts(root.join("gix"), crate::restricted())?;
+        let target = root.join("gix-target").join("shallow");
+        let deepen = |shallow: fetch::Shallow| -> Result<&'static str> {
+            let outcome = repo
+                .find_remote("origin")?
+                .connect(Fetch)?
+                .prepare_fetch(gix::progress::Discard, Default::default())?
+                .with_shallow(shallow)
+                .receive(gix::progress::Discard, &AtomicBool::default());
+            Ok(if outcome.is_ok() { "deepened" } else { "refused" })
+        };
+        let depth = |commits: u32| -> Result<fetch::Shallow> { Ok(fetch::Shallow::DepthAtRemote(commits.try_into()?)) };
+
+        assert_eq!(deepen(depth(2)?)?, "deepened");
+        assert_eq!(
+            std::fs::read(&target)?,
+            std::fs::read(root.join("git-depth-2"))?,
+            "the new boundary is written to the link's target, as Git writes it"
+        );
+
+        let lock_beside_target = root.join("gix-target").join("shallow.lock");
+        std::fs::write(&lock_beside_target, b"")?;
+        let beside_target = deepen(depth(3)?)?;
+        std::fs::remove_file(&lock_beside_target)?;
+        let lock_beside_link = repo.git_dir().join("shallow.lock");
+        std::fs::write(&lock_beside_link, b"")?;
+        let beside_link = deepen(depth(3)?)?;
+        std::fs::remove_file(&lock_beside_link)?;
+        assert_eq!(
+            format!("beside-target {beside_target}\nbeside-link {beside_link}\n"),
+            std::fs::read_to_string(root.join("git.locks"))?,
+            "a lock beside the link's target holds back the fetch and a lock beside the link doesn't, as Git locks the target"
+        );
+        assert_eq!(
+            std::fs::read(&target)?,
+            std::fs::read(root.join("git-depth-3"))?,
+            "the fetch that went ahead wrote its boundary to the link's target"
+        );
+
+        assert_eq!(deepen(fetch::Shallow::undo())?, "deepened");
+        assert_eq!(
+            repo.git_dir().join("shallow").symlink_metadata().is_ok(),
+            root.join("git").join(".git").join("shallow").symlink_metadata().is_ok(),
+            "unshallowing removes the link itself, as Git does"
+        );
+        assert_eq!(
+            std::fs::read(&target)?,
+            std::fs::read(root.join("git-target").join("shallow"))?,
+            "the link's target keeps the last boundary, as Git leaves it"
+        );
+        assert!(!repo.is_shallow()?, "the repository holds the complete history");
+        Ok(())
+    }
+
     #[bisync::bisync]
     #[cfg_attr(feature = "blocking-network-client", test)]
     #[cfg_attr(feature = "async-network-client-async-std", async_std::test)]
