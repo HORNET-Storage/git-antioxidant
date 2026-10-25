@@ -506,39 +506,45 @@ mod check_stat {
 mod abbrev {
     use gix_error::ResultExt;
 
-    use crate::{Result, bstr::ByteSlice, config::tree::core::Abbrev};
+    use crate::{Result, config::tree::core::Abbrev};
 
     impl Abbrev {
-        /// Convert the given `hex_len_str` into the amount of characters that a short hash should have.
+        /// Convert the given `hex_len_str` into the amount of characters that a short hash should have, reading it as Git
+        /// reads `core.abbrev`, without trimming it.
         /// If `None` is returned, the correct value can be determined based on the amount of objects in the repo.
+        ///
+        /// `auto` gives `None`. The empty value and the words that Git reads as false, `false`, `no` and `off`, give the
+        /// full length of `object_hash`. All these words are matched in any case. Any other value is an
+        /// [integer](gix_config::Integer::from_bytes()) that must fit an `i32` and be at least 4, and values longer than
+        /// the full length give the full length.
         pub fn try_into_abbreviation(
             &'static self,
             hex_len_str: impl gix_utils::AsBStr,
             object_hash: gix_hash::Kind,
         ) -> Result<Option<usize>> {
             let hex_len_str = hex_len_str.as_bstr();
-            let max = object_hash.len_in_hex() as u8;
             let invalid = || {
-                gix_error::message!("Invalid value for 'core.abbrev' = '{hex_len_str}'. It must be between 4 and {max}")
-                    .validation_error()
+                gix_error::message!(
+                    "Invalid value for 'core.abbrev' = '{hex_len_str}'. It must be 'auto', 'no' or an integer of at least 4"
+                )
+                .validation_error()
             };
-            if hex_len_str.trim().is_empty() {
+            if hex_len_str.eq_ignore_ascii_case(b"auto") {
+                return Ok(None);
+            }
+            let full_length = object_hash.len_in_hex();
+            if hex_len_str.is_empty()
+                || [&b"false"[..], b"no", b"off"]
+                    .iter()
+                    .any(|word| hex_len_str.eq_ignore_ascii_case(word))
+            {
+                return Ok(Some(full_length));
+            }
+            let value = gix_config::Integer::from_bytes::<i32>(hex_len_str).or_raise(invalid)?;
+            if value < 4 {
                 return Err(invalid());
             }
-            if hex_len_str.trim().eq_ignore_ascii_case(b"auto") {
-                Ok(None)
-            } else {
-                let value_bytes = hex_len_str.as_bstr();
-                if let Ok(false) = gix_config::Boolean::try_from(value_bytes).map(Into::into) {
-                    Ok(object_hash.len_in_hex().into())
-                } else {
-                    let value = gix_config::Integer::from_bytes::<usize>(value_bytes).or_raise(invalid)?;
-                    if value < 4 || value > object_hash.len_in_hex() {
-                        return Err(invalid());
-                    }
-                    Ok(Some(value))
-                }
-            }
+            Ok(Some(full_length.min(value as usize)))
         }
     }
 }
@@ -589,10 +595,7 @@ mod validate {
     pub struct Abbrev;
     impl keys::Validate for Abbrev {
         fn validate(&self, value: &BStr) -> Result {
-            // The keys::Validate trait API doesn't take a hash kind, and passing one through
-            // would touch ~50 impl sites. The repo-aware check with the actual hash runs in
-            // config::cache::util::parse_core_abbrev, so here we just use Kind::longest()
-            // to allow the most permissive upper bound.
+            // Which values are valid doesn't depend on the hash kind, which only limits the abbreviations they give.
             super::Core::ABBREV.try_into_abbreviation(value, gix_hash::Kind::longest())?;
             Ok(())
         }

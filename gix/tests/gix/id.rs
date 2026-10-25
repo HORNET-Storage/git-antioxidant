@@ -45,28 +45,62 @@ fn prefix() -> TestResult {
     .expect_err("invalid core.abbrev must fail");
     assert!(
         err.is_validation(),
-        "an empty core.abbrev fails the open operation in strict config mode, emulating git behaviour"
+        "an invalid core.abbrev fails the open operation in strict config mode, as it fails Git commands"
     );
     let diagnostic = err
         .classify()
         .filter(|classification| classification.class() == gix_error::Class::Validation)
         .find_map(|classification| classification.error().downcast_ref::<gix_error::Message>())
         .expect("invalid abbreviations retain their validation diagnostic");
-    if repo.object_hash() == gix_hash::Kind::Sha1 {
-        insta::assert_debug_snapshot!(diagnostic, "invalid abbreviation lengths retain the configuration validation diagnostic", @r#"
-        Message {
-            message: "Invalid value for 'core.abbrev' = 'invalid'. It must be between 4 and 40",
-            class: Validation,
-        }
-        "#);
-    } else {
-        insta::assert_debug_snapshot!(diagnostic, "invalid abbreviation lengths retain the configuration validation diagnostic", @r#"
-        Message {
-            message: "Invalid value for 'core.abbrev' = 'invalid'. It must be between 4 and 64",
-            class: Validation,
-        }
-        "#);
+    insta::assert_debug_snapshot!(diagnostic, "invalid abbreviation lengths retain the configuration validation diagnostic", @r#"
+    Message {
+        message: "Invalid value for 'core.abbrev' = 'invalid'. It must be 'auto', 'no' or an integer of at least 4",
+        class: Validation,
     }
+    "#);
+    Ok(())
+}
+
+#[test]
+fn core_abbrev_shortens_ids_as_git_does() -> TestResult {
+    // Git refuses lengths above the hash length before version 2.46, so then only an archive that a later version
+    // made provides the fixture.
+    let Some(root) = gix_testtools::scripted_fixture_read_only_with_git_version("make_core_abbrev.sh", |version| {
+        version >= (2, 46, 0)
+    })?
+    else {
+        return Ok(());
+    };
+    let repo = gix::open_opts(&root, crate::restricted())?;
+    let baseline = std::fs::read_to_string(root.join("abbrev.baseline"))?;
+    let head = repo.head_id()?;
+    let auto = head.shorten()?.to_string();
+    let object_hash = repo.object_hash();
+    let (mut accepted, mut refused) = (0, 0);
+    for line in baseline.lines() {
+        let (value, git) = line.rsplit_once('\t').expect("a quoted value, a tab and Git's output");
+        let value = value
+            .strip_prefix('\'')
+            .and_then(|value| value.strip_suffix('\''))
+            .expect("the value is quoted");
+        match (git, Core::ABBREV.try_into_abbreviation(value, object_hash)) {
+            ("error", Err(_)) => refused += 1,
+            ("error", Ok(length)) => panic!("Git refuses core.abbrev={value:?}, which gix reads as {length:?}"),
+            (_, Err(err)) => panic!("Git accepts core.abbrev={value:?}, which gix refuses: {err}"),
+            (expected, Ok(length)) => {
+                let shortened = match length {
+                    Some(length) => head.to_hex_with_len(length).to_string(),
+                    None => auto.clone(),
+                };
+                assert_eq!(shortened, expected, "core.abbrev={value:?}");
+                accepted += 1;
+            }
+        }
+    }
+    assert!(
+        accepted > 0 && refused > 0,
+        "the baseline has values that Git accepts and values that it refuses"
+    );
     Ok(())
 }
 

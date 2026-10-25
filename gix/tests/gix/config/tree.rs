@@ -922,43 +922,57 @@ mod core {
     #[test]
     fn abbrev() -> TestResult {
         let object_hash = gix_hash::Kind::Sha1;
-        assert_eq!(Core::ABBREV.try_into_abbreviation("4", object_hash)?, Some(4));
-        for (input, expected) in [("0x4", 4), ("010", 8), ("0b100", 4), ("40", 40)] {
+        let full_length = object_hash.len_in_hex();
+        for (input, expected) in [
+            ("4", Some(4)),
+            ("0x4", Some(4)),
+            ("010", Some(8)),
+            ("+12", Some(12)),
+            ("40", Some(40)),
+            ("41", Some(full_length)),
+            ("1k", Some(full_length)),
+            ("2147483647", Some(full_length)),
+            ("auto", None),
+            ("AUto", None),
+            ("", Some(full_length)),
+            ("false", Some(full_length)),
+            ("No", Some(full_length)),
+            ("OFF", Some(full_length)),
+        ] {
             assert_eq!(
                 Core::ABBREV.try_into_abbreviation(input, object_hash)?,
-                Some(expected),
-                "abbreviation lengths accept Git integer syntax within the existing range"
+                expected,
+                "{input:?} gives the abbreviation length that Git gives"
             );
         }
-        assert_eq!(Core::ABBREV.try_into_abbreviation("auto", object_hash)?, None);
         assert_eq!(
-            Core::ABBREV.try_into_abbreviation(" auto ", object_hash)?,
-            None,
-            "automatic abbreviation still ignores surrounding whitespace"
-        );
-        assert_eq!(
-            Core::ABBREV.try_into_abbreviation("AUto", object_hash)?,
-            None,
-            "case-insensitive"
-        );
-        assert_eq!(
-            Core::ABBREV.try_into_abbreviation("false", object_hash)?,
-            Some(object_hash.len_in_hex()),
-            "turns abbreviations off entirely"
+            Core::ABBREV.try_into_abbreviation("0b100", object_hash)?,
+            Some(4),
+            "binary integers, which Git reads where the C library's `strtoimax()` does"
         );
 
         insta::assert_debug_snapshot!(Core::ABBREV
-                .try_into_abbreviation("   ", object_hash)
-                .expect_err("abbrev"), "abbrev", @"Invalid value for 'core.abbrev' = '   '. It must be between 4 and 40");
-        for input in ["0", "0k", "off"] {
-            assert_eq!(
-                Core::ABBREV.try_into_abbreviation(input, object_hash)?,
-                Some(object_hash.len_in_hex()),
-                "false values still disable abbreviation"
+                .try_into_abbreviation("3", object_hash)
+                .expect_err("abbrev"), "abbrev", @"Invalid value for 'core.abbrev' = '3'. It must be 'auto', 'no' or an integer of at least 4");
+        for invalid in [
+            " auto ",
+            "   ",
+            "0",
+            "0k",
+            "-1",
+            "true",
+            "yes",
+            "on",
+            "foo",
+            "7x",
+            "12 ",
+            "2147483648",
+            "9223372036854775807k",
+        ] {
+            assert!(
+                Core::ABBREV.try_into_abbreviation(invalid, object_hash).is_err(),
+                "{invalid:?} is refused, as Git refuses it"
             );
-        }
-        for invalid in ["foo", "-1", "3", "41", "1k", "9223372036854775807k"] {
-            assert!(Core::ABBREV.try_into_abbreviation(invalid, object_hash).is_err());
         }
         Ok(())
     }
