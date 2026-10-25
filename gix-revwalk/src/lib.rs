@@ -15,6 +15,12 @@
 /// implemented by the `find` function that returns objects. Also we assume that the commitgraph as been written with replacements
 /// active to provide a consistent view.
 ///
+/// ### About shallow repositories
+///
+/// The commits named with [`with_shallow_commits()`](Graph::with_shallow_commits()) have no parents in the graph,
+/// whether their parents would be read from the object database or the commit-graph, as Git treats the commits that
+/// the `shallow` file of a shallow repository lists, the boundary of its history.
+///
 /// ### Odb or `find` configuration
 ///
 /// The `find` handle should be setup to *quickly determine if an object exists or not* to assure quick operation *on shallow repositories*.
@@ -30,6 +36,8 @@ pub struct Graph<'find, 'cache, T> {
     find: Box<dyn gix_object::Find + 'find>,
     /// A way to speedup commit access, essentially a multi-file commit database.
     cache: Option<&'cache gix_commitgraph::Graph>,
+    /// The sorted commits that have no parents in this graph, like the boundary commits of a shallow repository.
+    shallow_commits: Vec<gix_hash::ObjectId>,
     /// The set of cached commits that we have seen once, along with data associated with them.
     map: graph::IdMap<T>,
     /// A buffer for writing commit data into.

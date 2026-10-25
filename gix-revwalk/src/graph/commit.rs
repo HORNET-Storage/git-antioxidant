@@ -7,13 +7,16 @@ use super::LazyCommit;
 use crate::graph::{Commit, Either, Generation};
 
 impl<'graph, 'cache> LazyCommit<'graph, 'cache> {
-    /// Return an iterator over the parents of this commit.
+    /// Return an iterator over the parents of this commit, which yields nothing if it is a shallow commit.
     pub fn iter_parents(&self) -> Parents<'graph, 'cache> {
+        if self.shallow {
+            return Parents { backing: None };
+        }
         let backing = match &self.backing {
             Either::Left(buf) => Either::Left(gix_object::CommitRefIter::from_bytes(buf, self.object_hash)),
             Either::Right((cache, pos)) => Either::Right((*cache, cache.commit_at(*pos).iter_parents())),
         };
-        Parents { backing }
+        Parents { backing: Some(backing) }
     }
 
     /// Returns the timestamp at which this commit was created.
@@ -59,6 +62,7 @@ impl<'graph, 'cache> LazyCommit<'graph, 'cache> {
 
     /// Convert ourselves into an owned version, which effectively detaches us from the underlying graph.
     /// Use `new_data()` to provide the `data` field for the owned `Commit`.
+    /// A shallow commit has no parents.
     pub fn to_owned<T>(&self, new_data: impl FnOnce() -> T) -> Result<Commit<T>> {
         let data = new_data();
         Ok(match &self.backing {
@@ -70,7 +74,11 @@ impl<'graph, 'cache> LazyCommit<'graph, 'cache> {
                 for token in iter {
                     match token.or_raise(|| corruption("A commit could not be decoded during traversal"))? {
                         Token::Tree { .. } => {}
-                        Token::Parent { id } => parents.push(id),
+                        Token::Parent { id } => {
+                            if !self.shallow {
+                                parents.push(id);
+                            }
+                        }
                         Token::Author { .. } => {}
                         Token::Committer { signature } => {
                             timestamp = Some(signature.seconds());
@@ -93,7 +101,7 @@ impl<'graph, 'cache> LazyCommit<'graph, 'cache> {
             Either::Right((cache, pos)) => {
                 let mut parents = SmallVec::default();
                 let commit = cache.commit_at(*pos);
-                for pos in commit.iter_parents() {
+                for pos in commit.iter_parents().filter(|_| !self.shallow) {
                     let pos =
                         pos.or_raise(|| corruption("Could not find commit position in graph when traversing parents"))?;
                     parents.push(cache.commit_at(pos).id().to_owned());
@@ -114,12 +122,15 @@ impl<'graph, 'cache> LazyCommit<'graph, 'cache> {
 
 /// An iterator over the parents of a commit.
 pub struct Parents<'graph, 'cache> {
-    backing: Either<
-        gix_object::CommitRefIter<'graph>,
-        (
-            &'cache gix_commitgraph::Graph,
-            gix_commitgraph::file::commit::Parents<'cache>,
-        ),
+    /// `None` for a shallow commit, which has no parents.
+    backing: Option<
+        Either<
+            gix_object::CommitRefIter<'graph>,
+            (
+                &'cache gix_commitgraph::Graph,
+                gix_commitgraph::file::commit::Parents<'cache>,
+            ),
+        >,
     >,
 }
 
@@ -127,7 +138,7 @@ impl Iterator for Parents<'_, '_> {
     type Item = Result<gix_hash::ObjectId>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match &mut self.backing {
+        match self.backing.as_mut()? {
             Either::Left(it) => {
                 for token in it {
                     match token {

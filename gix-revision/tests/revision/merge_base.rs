@@ -163,6 +163,59 @@ fn unreliable_generations_do_not_allow_side_exhaustion() -> gix_testtools::TestR
     Ok(())
 }
 
+#[test]
+fn shallow_commits_have_no_parents() -> gix_testtools::TestResult {
+    let root = gix_testtools::scripted_fixture_read_only("make_merge_base_repos.sh")?;
+    let odb = odb_at(root.join(".git/objects"))?;
+    let tip_commit_id = tag_commit_id(&root, "C2")?;
+    let boundary_commit_id = tag_commit_id(&root, "C1")?;
+    let ancestor_commit_id = tag_commit_id(&root, "C0")?;
+    // C2's parent is C1, whose parent is C0, in the objects and in the commit-graph alike.
+    for use_commitgraph in [false, true] {
+        let cache = use_commitgraph
+            .then(|| {
+                gix_commitgraph::Graph::from_info_dir(
+                    &odb.store_ref().path().join("info"),
+                    odb.store_ref().object_hash(),
+                )
+            })
+            .transpose()?;
+        let mut graph = gix_revision::Graph::new(&odb, cache.as_ref());
+        assert_eq!(
+            merge_base(tip_commit_id, &[ancestor_commit_id], &mut graph)?,
+            Some(nonempty::NonEmpty::new(ancestor_commit_id)),
+            "C0 is an ancestor of C2 without shallow commits"
+        );
+
+        let mut graph = gix_revision::Graph::new(&odb, cache.as_ref()).with_shallow_commits([boundary_commit_id]);
+        let boundary = graph
+            .try_lookup(&boundary_commit_id)?
+            .expect("the boundary commit exists");
+        assert_eq!(boundary.iter_parents().count(), 0, "a shallow commit has no parents");
+        assert!(
+            boundary.to_owned(|| ())?.parents.is_empty(),
+            "its owned version has no parents either"
+        );
+        let tip_parents = graph
+            .try_lookup(&tip_commit_id)?
+            .expect("the tip exists")
+            .iter_parents()
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert_eq!(tip_parents, [boundary_commit_id], "other commits keep their parents");
+        assert_eq!(
+            merge_base(tip_commit_id, &[ancestor_commit_id], &mut graph)?,
+            None,
+            "C0 lies beyond the shallow boundary, even though the commit-graph records it as C1's parent"
+        );
+        assert_eq!(
+            merge_base(tip_commit_id, &[boundary_commit_id], &mut graph)?,
+            Some(nonempty::NonEmpty::new(boundary_commit_id)),
+            "the shallow commit itself is still an ancestor of C2"
+        );
+    }
+    Ok(())
+}
+
 fn tag_commit_id(root: &std::path::Path, name: &str) -> Result<gix_hash::ObjectId> {
     Ok(gix_hash::ObjectId::from_hex(
         std::fs::read_to_string(root.join(".git/refs/tags").join(name))?

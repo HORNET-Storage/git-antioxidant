@@ -109,7 +109,13 @@ impl<'cache, T> Graph<'_, 'cache, T> {
             let parent_id = parent_id?;
             match self.map.entry(parent_id) {
                 gix_hashtable::hash_map::Entry::Vacant(entry) => {
-                    let parent = match try_lookup(&parent_id, &*self.find, self.cache, &mut self.parent_buf)? {
+                    let parent = match try_lookup(
+                        &parent_id,
+                        &*self.find,
+                        self.cache,
+                        &mut self.parent_buf,
+                        &self.shallow_commits,
+                    )? {
                         Some(p) => p,
                         None => continue, // skip missing objects, this is due to shallow clones for instance.
                     };
@@ -150,7 +156,15 @@ impl<'cache, T> Graph<'_, 'cache, T> {
         let parents: SmallVec<[_; 2]> = commit.iter_parents().collect();
         for parent_id in parents {
             let parent_id = parent_id.map_err(E::from)?;
-            let parent = match try_lookup(&parent_id, &*self.find, self.cache, &mut self.parent_buf).map_err(E::from)? {
+            let parent = match try_lookup(
+                &parent_id,
+                &*self.find,
+                self.cache,
+                &mut self.parent_buf,
+                &self.shallow_commits,
+            )
+            .map_err(E::from)?
+            {
                 Some(p) => p,
                 None => continue, // skip missing objects, this is due to shallow clones for instance.
             };
@@ -187,10 +201,21 @@ impl<'find, 'cache, T> Graph<'find, 'cache, T> {
         Graph {
             find: Box::new(objects),
             cache,
+            shallow_commits: Vec::new(),
             map: gix_hashtable::HashMap::default(),
             buf: Vec::new(),
             parent_buf: Vec::new(),
         }
+    }
+
+    /// Give the commits named in `commits` no parents, as Git treats the commits that the `shallow` file of a
+    /// shallow repository lists, the boundary of its history.
+    /// Their parents are left out whether they would be read from the object database or the commit-graph.
+    pub fn with_shallow_commits(mut self, commits: impl IntoIterator<Item = gix_hash::ObjectId>) -> Self {
+        self.shallow_commits = commits.into_iter().collect();
+        self.shallow_commits.sort_unstable();
+        self.shallow_commits.dedup();
+        self
     }
 }
 
@@ -209,7 +234,7 @@ impl<T> Graph<'_, '_, Commit<T>> {
     ) -> Result<Option<&mut Commit<T>>> {
         match self.map.entry(id) {
             gix_hashtable::hash_map::Entry::Vacant(entry) => {
-                let res = try_lookup(&id, &*self.find, self.cache, &mut self.buf)?;
+                let res = try_lookup(&id, &*self.find, self.cache, &mut self.buf, &self.shallow_commits)?;
                 let commit = match res {
                     None => return Ok(None),
                     Some(commit) => commit,
@@ -260,7 +285,7 @@ impl<T: Default> Graph<'_, '_, Commit<T>> {
     ) -> Result<Option<&mut Commit<T>>> {
         match self.map.entry(id) {
             gix_hashtable::hash_map::Entry::Vacant(entry) => {
-                let res = try_lookup(&id, &*self.find, self.cache, &mut self.buf)?;
+                let res = try_lookup(&id, &*self.find, self.cache, &mut self.buf, &self.shallow_commits)?;
                 let commit = match res {
                     None => return Ok(None),
                     Some(commit) => commit,
@@ -295,7 +320,7 @@ impl<'cache, T> Graph<'_, 'cache, T> {
         default: impl FnOnce() -> T,
         update_data: impl FnOnce(&mut T),
     ) -> Result<Option<LazyCommit<'_, 'cache>>> {
-        let res = try_lookup(&id, &*self.find, self.cache, &mut self.buf)?;
+        let res = try_lookup(&id, &*self.find, self.cache, &mut self.buf, &self.shallow_commits)?;
         Ok(res.inspect(|_commit| match self.map.entry(id) {
             gix_hashtable::hash_map::Entry::Vacant(entry) => {
                 let mut data = default();
@@ -313,7 +338,7 @@ impl<'cache, T> Graph<'_, 'cache, T> {
     ///
     /// It's possible that commits don't exist if the repository is shallow.
     pub fn try_lookup(&mut self, id: &gix_hash::oid) -> Result<Option<LazyCommit<'_, 'cache>>> {
-        try_lookup(id, &*self.find, self.cache, &mut self.buf)
+        try_lookup(id, &*self.find, self.cache, &mut self.buf, &self.shallow_commits)
     }
 
     /// Lookup `id` and return a handle to it, or fail if it doesn't exist or is no commit.
@@ -328,19 +353,23 @@ fn try_lookup<'graph, 'cache>(
     objects: &dyn gix_object::Find,
     cache: Option<&'cache gix_commitgraph::Graph>,
     buf: &'graph mut Vec<u8>,
+    shallow_commits: &[gix_hash::ObjectId],
 ) -> Result<Option<LazyCommit<'graph, 'cache>>> {
+    let shallow = shallow_commits.binary_search(&id.to_owned()).is_ok();
     if let Some(cache) = cache
         && let Some(pos) = cache.lookup(id)
     {
         return Ok(Some(LazyCommit {
             object_hash: id.kind(),
             backing: Either::Right((cache, pos)),
+            shallow,
         }));
     }
     Ok(match objects.try_find(id, buf)? {
         Some(data) => data.kind.is_commit().then_some(LazyCommit {
             object_hash: data.object_hash,
             backing: Either::Left(buf),
+            shallow,
         }),
         None => None,
     })
@@ -400,6 +429,8 @@ where
 pub struct LazyCommit<'graph, 'cache> {
     object_hash: gix_hash::Kind,
     backing: Either<&'graph [u8], (&'cache gix_commitgraph::Graph, gix_commitgraph::Position)>,
+    /// `true` if the commit is one of the graph's shallow commits, which have no parents.
+    shallow: bool,
 }
 
 enum Either<T, U> {
