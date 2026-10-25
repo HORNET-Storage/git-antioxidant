@@ -117,7 +117,7 @@ pub use read_dir::function::read_dir;
 #[cfg(feature = "walkdir")]
 pub mod walkdir;
 #[cfg(feature = "walkdir")]
-pub use walkdir::{WalkDir, walkdir_new, walkdir_sorted_new};
+pub use walkdir::{WalkDir, walkdir_new, walkdir_sorted_new, walkdir_sorted_new_follow_links};
 
 ///
 pub mod dir;
