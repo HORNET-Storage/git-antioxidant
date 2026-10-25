@@ -118,7 +118,7 @@ fn merge_base_variants_find_common_ancestors() -> TestResult {
     let (repo, _tmp) = crate::util::basic_rw_repo()?;
     let head_commit_id = repo.head_id()?;
     let parent_commit_id = repo.rev_parse_single("HEAD^")?;
-    let mut graph = repo.revision_graph(None);
+    let mut graph = repo.revision_graph(None)?;
     assert_eq!(
         repo.merge_base_with_graph(head_commit_id, parent_commit_id, &mut graph)?,
         Some(parent_commit_id),
@@ -170,7 +170,7 @@ fn unrelated_histories_have_no_merge_base() -> TestResult {
     unrelated_commit.parents.clear();
     unrelated_commit.message = "unrelated history\n".into();
     let unrelated_commit_id = repo.write_object(unrelated_commit)?;
-    let mut graph = repo.revision_graph(None);
+    let mut graph = repo.revision_graph(None)?;
 
     for base in [
         repo.merge_base(head_commit_id, unrelated_commit_id)?,

@@ -60,7 +60,7 @@ impl crate::Repository {
         two: impl Into<gix_hash::ObjectId>,
     ) -> Result<Option<Id<'_>>> {
         let cache = self.commit_graph_if_enabled()?;
-        let mut graph = self.revision_graph(cache.as_ref());
+        let mut graph = self.revision_graph(cache.as_ref())?;
         self.merge_base_with_graph(one, two, &mut graph)
     }
 
@@ -120,7 +120,7 @@ impl crate::Repository {
         others: &[gix_hash::ObjectId],
     ) -> Result<Vec<Id<'_>>> {
         let cache = self.commit_graph_if_enabled()?;
-        let mut graph = self.revision_graph(cache.as_ref());
+        let mut graph = self.revision_graph(cache.as_ref())?;
         self.merge_bases_many_with_graph(one, others, &mut graph)
     }
 
@@ -152,7 +152,7 @@ impl crate::Repository {
         commits: impl IntoIterator<Item = impl Into<gix_hash::ObjectId>>,
     ) -> Result<Option<Id<'_>>> {
         let cache = self.commit_graph_if_enabled()?;
-        let mut graph = self.revision_graph(cache.as_ref());
+        let mut graph = self.revision_graph(cache.as_ref())?;
         self.merge_base_octopus_with_graph(commits, &mut graph)
     }
 

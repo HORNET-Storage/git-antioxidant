@@ -51,7 +51,7 @@ fn replacements_match_git_with_default_opening_and_raw_commit_graphs() -> TestRe
                 "an explicitly supplied raw graph cannot override replacements"
             );
             let cache = repo.commit_graph()?;
-            let mut graph = repo.revision_graph(Some(&cache));
+            let mut graph = repo.revision_graph(Some(&cache))?;
             let archive_id = repo.rev_parse_single("archive")?;
             assert_eq!(
                 repo.merge_base_with_graph(repo.head_id()?, archive_id, &mut graph)?,

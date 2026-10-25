@@ -230,7 +230,7 @@ pub mod describe {
             &self,
             cache: Option<&'_ gix_commitgraph::Graph>,
         ) -> Result<Option<Resolution<'repo>>> {
-            let mut graph = self.repo.revision_graph(cache);
+            let mut graph = self.repo.revision_graph(cache)?;
             let outcome = gix_revision::describe(
                 &self.id,
                 &mut graph,

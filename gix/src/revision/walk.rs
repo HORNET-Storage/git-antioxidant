@@ -188,7 +188,8 @@ impl Platform<'_> {
     /// control over this to the configuration of `core.commitGraph` (the default).
     ///
     /// Errors when loading the graph lead to falling back to the object database, it's treated as optional cache.
-    /// Active object replacements always disable the commit-graph, which only contains original parents.
+    /// Active object replacements always disable the commit-graph, which only contains original parents, and so does a shallow
+    /// repository, as Git reads no commit-graph there.
     pub fn use_commit_graph(mut self, toggle: impl Into<Option<bool>>) -> Self {
         self.use_commit_graph = toggle.into();
         self
@@ -200,7 +201,7 @@ impl Platform<'_> {
     /// It interacts with [`use_commit_graph`][Platform::use_commit_graph()] as one would expect, but it's worth noting that if `None`,
     /// with [`use_commit_graph`][Platform::use_commit_graph()] being `true`, a graph will still be used for iteration.
     /// To turn the commit-graph off, call [`use_commit_graph(false)`][Platform::use_commit_graph()] instead.
-    /// Active object replacements disable even an explicitly supplied graph.
+    /// Active object replacements and a shallow repository disable even an explicitly supplied graph.
     pub fn with_commit_graph(mut self, graph: Option<gix_commitgraph::Graph>) -> Self {
         self.commit_graph = graph;
         self
@@ -272,7 +273,10 @@ impl<'repo> Platform<'repo> {
             hidden,
         } = self;
         boundary.sort();
-        let commit_graph = if repo.has_object_replacements() {
+        let shallow_commits = repo.shallow_commits()?;
+        // The commit-graph records the original parents of commits, which object replacements change, and Git reads none in
+        // a shallow repository, whose commit-graph could still record the parents of the commits on its shallow boundary.
+        let commit_graph = if repo.has_object_replacements() || shallow_commits.is_some() {
             None
         } else {
             commit_graph.or(use_commit_graph
@@ -284,9 +288,6 @@ impl<'repo> Platform<'repo> {
             repo,
             inner: Box::new(
                 gix_traverse::commit::Simple::filtered(tips, &repo.objects, {
-                    // Note that specific shallow handling for commit-graphs isn't needed as these contain
-                    // all information there is, and exclude shallow parents to be structurally consistent.
-                    let shallow_commits = repo.shallow_commits()?;
                     let mut grafted_parents_to_skip = Vec::new();
                     let mut buf = Vec::new();
                     move |id| {

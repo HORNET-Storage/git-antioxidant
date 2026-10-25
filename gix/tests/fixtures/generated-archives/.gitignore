@@ -88,6 +88,9 @@
 /make_symlinked_mailmap_repo*.tar*
 # Better not have more binary objects in the repo unless these are needed for performance.
 /make_replacement_refs*.tar*
+# Clones record the host path of their source repository, and the shallow history is the host Git's.
+/make_shallow_merge_base.tar
+/make_shallow_merge_base_sha256.tar
 # Generate these small, configuration-only remote reverse-mapping fixtures.
 /make_remote_reverse_mapping_repos.tar
 /make_remote_reverse_mapping_repos_sha256.tar
