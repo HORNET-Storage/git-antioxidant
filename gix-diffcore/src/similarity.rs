@@ -20,8 +20,9 @@ pub(crate) struct Spans {
 
 impl Spans {
     /// Cut `data` into spans and hash them as `hash_chars()` does. In text, a carriage return that precedes a line feed
-    /// is skipped, as if it weren't there.
+    /// is skipped, as if it weren't there. Of data of 4 GiB or more, only the first [`hashed_len()`] bytes are hashed.
     pub(crate) fn new(data: &[u8], is_text: bool) -> Self {
+        let data = &data[..hashed_len(data.len())];
         let mut lengths = HashMap::<u32, u64>::new();
         let (mut accum1, mut accum2, mut len) = (0u32, 0u32, 0u64);
         let mut bytes = data.iter().copied().peekable();
@@ -60,6 +61,12 @@ impl Spans {
         }
         copied
     }
+}
+
+/// The number of bytes at the start of data of length `len` that git hashes. `hash_chars()` holds the length in an
+/// `unsigned int`, so of data of 4 GiB or more, it hashes only the first `len % 2^32` bytes.
+fn hashed_len(len: usize) -> usize {
+    len as u32 as usize
 }
 
 /// The hash value of a span whose bytes were accumulated into `accum1` and `accum2`.
@@ -145,6 +152,23 @@ mod tests {
             Spans::new(b"", true).copied_into(&destination),
             0,
             "nothing is copied from empty data"
+        );
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn of_data_of_4_gib_or_more_only_the_first_len_mod_2_pow_32_bytes_are_hashed() {
+        use super::hashed_len;
+        assert_eq!(
+            hashed_len(u32::MAX as usize),
+            u32::MAX as usize,
+            "data of less than 4 GiB is hashed whole"
+        );
+        assert_eq!(hashed_len(1 << 32), 0, "of data of exactly 4 GiB, no byte is hashed");
+        assert_eq!(
+            hashed_len((1 << 32) + 3),
+            3,
+            "of data of 4 GiB and 3 bytes, the first 3 bytes are hashed"
         );
     }
 }

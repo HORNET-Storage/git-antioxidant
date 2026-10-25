@@ -140,8 +140,8 @@ pub struct Outcome {
 /// reach the required similarity aren't read, and files that aren't both regular files are never similar.
 ///
 /// Trees among `sources` and `destinations` are ignored, the files may be passed in any order, and each location should
-/// appear only once among the sources and once among the destinations. Git hashes only the first `size % 2^32` bytes of
-/// a blob of 4 GiB or more, while all of its bytes are hashed here.
+/// appear only once among the sources and once among the destinations. Like git, this hashes only the first
+/// `size % 2^32` bytes of a blob of 4 GiB or more.
 pub fn detect(
     sources: &[Entry<'_>],
     destinations: &[Entry<'_>],
