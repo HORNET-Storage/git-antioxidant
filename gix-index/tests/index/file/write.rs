@@ -253,6 +253,72 @@ fn remove_flag_is_respected() -> TestResult {
     Ok(())
 }
 
+#[test]
+#[cfg(any(unix, windows))]
+fn a_linked_index_is_locked_and_replaced_at_its_target_as_git_does() -> TestResult {
+    let fixture = gix_testtools::scripted_fixture_writable_with_args(
+        "make_symlinked_index.sh",
+        None::<String>,
+        gix_testtools::Creation::Execute,
+    )?;
+    if !gix_testtools::fixture_has_symlinks(fixture.path())? {
+        return Ok(());
+    }
+    let root = fixture.path();
+    let link = root.join("gix").join(".git").join("index");
+    let open =
+        |path: &std::path::Path| gix_index::File::at(path, gix_testtools::object_hash(), false, Default::default());
+    let entries = |path: &std::path::Path| -> gix_testtools::Result<Vec<String>> {
+        let index = open(path)?;
+        Ok(index
+            .entries()
+            .iter()
+            .map(|entry| format!("{:?} {} {}", entry.mode, entry.id, entry.path(&index)))
+            .collect())
+    };
+    let remove = |path: &str| -> gix_testtools::Result<&'static str> {
+        let mut index = open(&link)?;
+        index.remove_entries(|_, entry_path, _| entry_path == path);
+        index.remove_tree();
+        Ok(if index.write(Options::default()).is_ok() {
+            "removed"
+        } else {
+            "refused"
+        })
+    };
+
+    assert_eq!(remove("b")?, "removed");
+    assert_eq!(
+        entries(&root.join("gix-target").join("index"))?,
+        entries(&root.join("git-index-without-b"))?,
+        "the link's target loses b, as Git writes it"
+    );
+
+    let lock_beside_target = root.join("gix-target").join("index.lock");
+    std::fs::write(&lock_beside_target, b"")?;
+    let beside_target = remove("a")?;
+    std::fs::remove_file(&lock_beside_target)?;
+    let lock_beside_link = root.join("gix").join(".git").join("index.lock");
+    std::fs::write(&lock_beside_link, b"")?;
+    let beside_link = remove("a")?;
+    std::fs::remove_file(&lock_beside_link)?;
+    assert_eq!(
+        format!("beside-target {beside_target}\nbeside-link {beside_link}\n"),
+        std::fs::read_to_string(root.join("git.locks"))?,
+        "a lock beside the link's target holds back the write and a lock beside the link doesn't, as Git locks the target"
+    );
+    assert!(
+        link.symlink_metadata()?.file_type().is_symlink(),
+        "the link remains, as Git keeps it"
+    );
+    assert_eq!(
+        entries(&root.join("gix-target").join("index"))?,
+        entries(&root.join("git-target").join("index"))?,
+        "the write that went ahead removed a from the link's target"
+    );
+    Ok(())
+}
+
 fn compare_states_against_baseline(
     actual: &State,
     actual_version: Version,

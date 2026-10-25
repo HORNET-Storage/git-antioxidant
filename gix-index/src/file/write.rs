@@ -30,6 +30,8 @@ impl File {
 
     /// Write ourselves to the path we were read from after acquiring a lock, using `options`.
     ///
+    /// If that path is a symbolic link, lock and replace its target and keep the link, as Git does.
+    ///
     /// Note that the hash produced will be stored which is why we need to be mutable.
     ///
     /// ### The `tree` (tree-cache) extension is written as-is
@@ -59,8 +61,14 @@ impl File {
         let _span = gix_trace::detail!("gix_index::File::write()", path = ?self.path);
         let mut lock = std::io::BufWriter::with_capacity(
             64 * 1024,
-            gix_lock::File::acquire_to_update_resource(&self.path, gix_lock::acquire::Fail::Immediately, None, 0)
-                .or_raise(|| message("Could not acquire lock for index file"))?,
+            gix_lock::File::acquire(
+                &self.path,
+                gix_lock::acquire::Fail::Immediately,
+                None,
+                0,
+                Some(&gix_lock::acquire::resolve_symlink),
+            )
+            .or_raise(|| message("Could not acquire lock for index file"))?,
         );
         let (version, digest) = self
             .write_to(&mut lock, options)
