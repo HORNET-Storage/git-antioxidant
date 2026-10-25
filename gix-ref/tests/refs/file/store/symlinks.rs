@@ -1,4 +1,5 @@
-//! Loose references reached through symbolic links, compared with how Git's files backend lists, reads and writes them.
+//! Loose references and `packed-refs` reached through symbolic links, compared with how Git's files backend lists, reads
+//! and writes them.
 //! The fixtures record Git's results on the test host, as archives can't represent links on every host.
 
 use std::path::Path;
@@ -203,6 +204,76 @@ fn writes_through_links_change_what_git_changes() -> TestResult {
         heads(&git_dir)?,
         heads(&fixture.path().join("git").join(".git"))?,
         "updating text-main changes main, updating path-main replaces the link with a file, and deleting path-other removes only the link"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg(any(unix, windows))]
+fn packed_refs_are_locked_and_replaced_at_the_target_of_a_link() -> TestResult {
+    let fixture =
+        crate::scripted_fixture_writable_with_args("make_symlinked_packed_refs.sh", None::<String>, Creation::Execute)?;
+    if !fixture_has_symlinks(fixture.path())? {
+        return Ok(());
+    }
+    let root = fixture.path();
+    let git_dir = root.join("gix").join(".git");
+    let target = root.join("gix-target").join("packed-refs");
+    let mut store = Store::at(git_dir.clone(), crate::fixture_hash_kind());
+    store.write_reflog = WriteReflog::Disable;
+    let delete = |branch: &str| -> crate::Result<&'static str> {
+        let edit = RefEdit::delete(format!("refs/heads/{branch}").try_into()?, PreviousValue::MustExist);
+        let outcome = store
+            .transaction()
+            .prepare([edit], Fail::Immediately, Fail::Immediately)
+            .and_then(|transaction| transaction.commit(None));
+        Ok(if outcome.is_ok() { "deleted" } else { "refused" })
+    };
+
+    assert_eq!(delete("b")?, "deleted");
+    assert_eq!(
+        std::fs::read(&target)?,
+        std::fs::read(root.join("git-without-b"))?,
+        "the link's target loses b, as Git writes it"
+    );
+
+    let lock_beside_target = root.join("gix-target").join("packed-refs.lock");
+    std::fs::write(&lock_beside_target, b"")?;
+    let beside_target = delete("c")?;
+    std::fs::remove_file(&lock_beside_target)?;
+    let lock_beside_link = git_dir.join("packed-refs.lock");
+    std::fs::write(&lock_beside_link, b"")?;
+    let beside_link = delete("c")?;
+    std::fs::remove_file(&lock_beside_link)?;
+    assert_eq!(
+        vec![
+            format!("beside-target {beside_target}"),
+            format!("beside-link {beside_link}")
+        ],
+        git_baseline(root.join("git.locks"))?,
+        "a lock beside the link's target holds back the deletion and a lock beside the link doesn't, as Git locks the target"
+    );
+    assert_eq!(
+        std::fs::read(&target)?,
+        std::fs::read(root.join("git-without-c"))?,
+        "the deletion removed c from the link's target"
+    );
+
+    for branch in ["a", "main"] {
+        assert_eq!(delete(branch)?, "deleted");
+    }
+    assert!(
+        git_dir.join("packed-refs").symlink_metadata()?.file_type().is_symlink(),
+        "the link remains, as Git keeps it"
+    );
+    assert!(
+        !target.exists(),
+        "Git keeps only the header line in the target, while gix removes the emptied target"
+    );
+    assert_eq!(
+        listing(&store)?,
+        listing(&Store::at(root.join("git").join(".git"), crate::fixture_hash_kind()))?,
+        "neither repository has a packed reference left"
     );
     Ok(())
 }

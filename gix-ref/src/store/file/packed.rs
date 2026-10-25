@@ -7,9 +7,17 @@ use crate::store_impl::{file, packed};
 impl file::Store {
     /// Return a packed transaction ready to receive updates. Use this to create or update `packed-refs`.
     /// Note that if you already have a [`packed::Buffer`] then use its [`packed::Buffer::into_transaction()`] method instead.
+    ///
+    /// If `packed-refs` is a symbolic link, lock and replace its target and keep the link, as Git does.
     pub(crate) fn packed_transaction(&self, lock_mode: gix_lock::acquire::Fail) -> Result<packed::Transaction> {
-        let lock = gix_lock::File::acquire_to_update_resource(self.packed_refs_path(), lock_mode, None, 0)
-            .or_raise(|| message("Could not lock packed refs"))?;
+        let lock = gix_lock::File::acquire(
+            self.packed_refs_path(),
+            lock_mode,
+            None,
+            0,
+            Some(&gix_lock::acquire::resolve_symlink),
+        )
+        .or_raise(|| message("Could not lock packed refs"))?;
         // We 'steal' the possibly existing packed buffer which may safe time if it's already there and fresh.
         // If nothing else is happening, nobody will get to see the soon stale buffer either, but if so, they will pay
         // for reloading it. That seems preferred over always loading up a new one.
@@ -51,10 +59,12 @@ impl file::Store {
         self.common_dir_resolved().join("packed-refs")
     }
 
+    /// Return the path of the lock that writers of `packed-refs` hold, beside the target of `packed-refs` if that is a
+    /// symbolic link.
     pub(crate) fn packed_refs_lock_path(&self) -> PathBuf {
-        let mut p = self.packed_refs_path();
-        p.set_extension("lock");
-        p
+        let mut path = gix_lock::acquire::resolve_symlink(&self.packed_refs_path()).into_os_string();
+        path.push(".lock");
+        path.into()
     }
 }
 

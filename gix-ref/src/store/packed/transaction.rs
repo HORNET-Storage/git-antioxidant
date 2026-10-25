@@ -211,6 +211,8 @@ impl packed::Transaction {
         }
 
         if num_written_lines == 0 {
+            // Unlike Git, which keeps a file with only the header line, remove the empty file: the target of
+            // `packed-refs` if that is a symbolic link.
             std::fs::remove_file(file.resource_path()).or_raise(|| message("Could not delete empty packed refs"))?;
         } else {
             file.commit().or_raise(|| message("Could not commit packed refs"))?;
@@ -261,14 +263,21 @@ fn write_edit(out: &mut dyn std::io::Write, edit: &Edit, lines_written: &mut i32
     Ok(())
 }
 
-/// Convert this buffer to be used as the basis for a transaction.
+/// Convert this buffer to be used as the basis for a transaction. If `packed-refs` is a symbolic link, the
+/// transaction locks and replaces its target, as Git does.
 pub(crate) fn buffer_into_transaction(
     buffer: file::packed::SharedBufferSnapshot,
     lock_mode: gix_lock::acquire::Fail,
     precompose_unicode: bool,
     namespace: Option<Namespace>,
 ) -> Result<packed::Transaction> {
-    let lock = gix_lock::File::acquire_to_update_resource(&buffer.path, lock_mode, None, 0)?;
+    let lock = gix_lock::File::acquire(
+        &buffer.path,
+        lock_mode,
+        None,
+        0,
+        Some(&gix_lock::acquire::resolve_symlink),
+    )?;
     Ok(packed::Transaction {
         buffer: Some(buffer),
         lock: Some(lock),
