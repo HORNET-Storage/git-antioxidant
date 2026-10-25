@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::error::{ErrorExt, ResultExt, bail, message};
+use crate::error::{ResultExt, bail, message};
 use gix_ref::{
     Category, FullName, Target,
     transaction::{PreviousValue, RefEdit},
@@ -68,7 +68,9 @@ impl crate::Repository {
     /// Delete all local branches in `names` and remove their `branch.<name>` sections from the local configuration.
     ///
     /// All names must be local branch references such as `refs/heads/topic`. The operation fails before making changes if
-    /// any name belongs to another reference category or is checked out or reserved by bisect or rebase in any worktree.
+    /// any name belongs to another reference category or is checked out or reserved by bisect or rebase in any worktree,
+    /// or if the local configuration can't be locked and read. In that last case, Git deletes the branches and only warns
+    /// that it couldn't update the configuration.
     /// Missing branches are accepted so any associated local configuration is still removed.
     /// **It deliberately performs no merged-state check**.
     ///
@@ -78,6 +80,9 @@ impl crate::Repository {
     /// On success, every requested reference and its reflog is absent, and every matching `branch.<name>` section has been
     /// removed from the local configuration. Return the sorted, deduplicated names of branches that existed when locked for
     /// deletion. Missing branches are omitted from the returned vector, but their configuration is still removed.
+    ///
+    /// Like Git, a local configuration file that is a symbolic link is edited at its target, which keeps its mode, and the
+    /// link remains.
     ///
     /// Reference deletion and configuration cleanup cannot be one atomic transaction. Once reference deletion succeeds, a
     /// configuration write or commit failure contains [`delete::CleanupError`] in its error chain. Its `references` field
@@ -136,19 +141,19 @@ impl crate::Repository {
             .collect();
 
         let config_path = self.common_dir().join("config");
-        let mut config_lock =
-            gix_lock::File::acquire_to_update_resource(&config_path, gix_lock::acquire::Fail::Immediately, None, 0)
-                .or_raise(|| message("Could not acquire the local configuration lock"))?;
-        let mut config = match gix_config::File::from_path_no_includes(config_path.clone(), gix_config::Source::Local) {
-            Ok(config) => Some(config),
-            Err(err) if err.is_not_found() => None,
-            Err(err) => {
-                bail!(err.and_raise(message("Could not read the local configuration")));
-            }
-        };
-        let removed_config = config
-            .as_mut()
-            .is_some_and(|config| remove_branch_config(config, &names, |_| true));
+        // Like Git, write the target of a symbolic link at `config_path` and keep the file's mode.
+        let mut config = crate::config::FileTransaction::open(
+            config_path.clone(),
+            gix_config::Source::Local,
+            self.git_dir_trust(),
+            gix_lock::acquire::Fail::Immediately,
+            crate::config::file_mut::shared_repository_permissions(
+                &self.config.resolved,
+                self.filter_config_section(),
+            )?,
+        )
+        .or_raise(|| message("Could not open the local configuration for editing"))?;
+        let removed_config = remove_branch_config(&mut config, &names, |_| true);
 
         let deleted: Vec<_> = self
             .edit_references(edits)
@@ -158,18 +163,9 @@ impl crate::Repository {
             .collect();
 
         if removed_config {
-            let config = config.expect("configuration was present when sections were removed");
             config
-                .write_to(&mut config_lock)
-                .or_raise(|| message("Could not write the updated local configuration"))
-                .or_raise(|| delete::CleanupError {
-                    references: names.clone(),
-                    deleted: deleted.clone(),
-                })?;
-            config_lock
                 .commit()
-                .map_err(|err| err.error)
-                .or_raise(|| message("Could not commit the updated local configuration"))
+                .or_raise(|| message("Could not write the updated local configuration"))
                 .or_raise(|| delete::CleanupError {
                     references: names.clone(),
                     deleted: deleted.clone(),

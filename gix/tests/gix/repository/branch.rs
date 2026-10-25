@@ -348,3 +348,83 @@ fn linked_worktree_branches_are_protected_and_common_config_is_updated() -> Test
     );
     Ok(())
 }
+
+#[test]
+#[cfg(any(unix, windows))]
+fn a_linked_config_is_locked_and_replaced_at_its_target_with_its_mode_as_git_does() -> TestResult {
+    let fixture = gix_testtools::scripted_fixture_writable_with_args(
+        "make_symlinked_config.sh",
+        None::<String>,
+        gix_testtools::Creation::Execute,
+    )?;
+    if !gix_testtools::fixture_has_symlinks(fixture.path())? {
+        return Ok(());
+    }
+    let root = fixture.path();
+    let link = root.join("gix").join(".git").join("config");
+    let target = root.join("gix-target").join("config");
+    let mut repo = gix::open_opts(root.join("gix"), crate::restricted())?;
+    let mut delete = |branch: &str| -> gix_testtools::Result<&'static str> {
+        // Only the configuration is compared: Git deletes the branch even if it can't update the configuration.
+        let _ = repo.delete_local_branches([refname(&format!("refs/heads/{branch}"))]);
+        let config = std::fs::read_to_string(&target)?;
+        Ok(if config.contains(&format!("[branch \"{branch}\"]")) {
+            "kept"
+        } else {
+            "removed"
+        })
+    };
+
+    assert_eq!(delete("a")?, "removed");
+    assert_eq!(
+        std::fs::read(&target)?,
+        std::fs::read(root.join("git-without-a"))?,
+        "the link's target loses the section of a, as Git writes it"
+    );
+
+    let lock_beside_target = root.join("gix-target").join("config.lock");
+    std::fs::write(&lock_beside_target, b"")?;
+    let beside_target = delete("b")?;
+    std::fs::remove_file(&lock_beside_target)?;
+    let lock_beside_link = root.join("gix").join(".git").join("config.lock");
+    std::fs::write(&lock_beside_link, b"")?;
+    let beside_link = delete("c")?;
+    std::fs::remove_file(&lock_beside_link)?;
+    assert_eq!(
+        format!("beside-target {beside_target}\nbeside-link {beside_link}\n"),
+        std::fs::read_to_string(root.join("git.locks"))?,
+        "a lock beside the link's target holds back the update and a lock beside the link doesn't, as Git locks the target"
+    );
+    assert!(
+        repo.try_find_reference(refname("refs/heads/b").as_ref())?.is_some(),
+        "gix locks the configuration before deleting and refuses, while Git deletes b and warns about the configuration"
+    );
+    assert!(
+        link.symlink_metadata()?.file_type().is_symlink(),
+        "the link remains, as Git keeps it"
+    );
+    assert_eq!(
+        std::fs::read(&target)?,
+        std::fs::read(root.join("git-target").join("config"))?,
+        "the update that went ahead removed the section of c from the link's target"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &std::path::Path| -> std::io::Result<u32> {
+            Ok(std::fs::metadata(path)?.permissions().mode() & 0o7777)
+        };
+        assert_eq!(mode(&target)?, 0o600, "the target keeps the mode the fixture gave it");
+        assert_eq!(
+            mode(&target)?,
+            mode(&root.join("git-target").join("config"))?,
+            "the target's mode is Git's"
+        );
+    }
+    assert_eq!(
+        repo.branch_names().into_iter().collect::<Vec<_>>(),
+        vec!["b"],
+        "the repository's own configuration loses the removed sections too"
+    );
+    Ok(())
+}
