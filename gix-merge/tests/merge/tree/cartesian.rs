@@ -69,7 +69,7 @@ fn records_status_quo_sha1() -> gix_testtools::TestResult {
     let base_tree = flatten_tree(base_tree_id, &objects)?;
     let mut graph = gix_revwalk::Graph::new(&objects, None);
     let mut diff_resource_cache = new_diff_resource_cache(&repo);
-    let mut blob_merge = new_blob_merge_platform(&repo, 100);
+    let mut blob_merge = new_blob_merge_platform(&repo, 100, Vec::new());
     let options = basic_merge_options();
     let mut force_ours_options = options.clone();
     force_ours_options.tree_merge.tree_conflicts = Some(gix_merge::tree::ResolveWith::Ours);
@@ -888,7 +888,7 @@ fn records_submodule_status_quo_sha1() -> gix_testtools::TestResult {
     let objects = gix_odb::memory::Proxy::new(odb, gix_hash::Kind::Sha1);
     let mut graph = gix_revwalk::Graph::new(&objects, None);
     let mut diff_resource_cache = new_diff_resource_cache(&repo);
-    let mut blob_merge = new_blob_merge_platform(&repo, 100);
+    let mut blob_merge = new_blob_merge_platform(&repo, 100, Vec::new());
     let default_options = basic_merge_options();
     let mut ours_options = default_options.clone();
     ours_options.tree_merge.tree_conflicts = Some(gix_merge::tree::ResolveWith::Ours);

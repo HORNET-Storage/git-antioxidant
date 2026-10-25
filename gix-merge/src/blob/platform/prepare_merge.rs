@@ -16,8 +16,8 @@ impl Platform {
     /// Prepare all state needed for performing a merge, using all [previously set](Self::set_resource()) resources.
     /// `objects` is used to possibly lookup attribute files when obtaining merge-related attributes.
     ///
-    /// `options` are to be used when merging later, and they may be altered to implement correct binary merges
-    /// in the present of [virtual merge bases](merge::Options::is_virtual_ancestor).
+    /// `options` are to be used when merging later. A positive `conflict-marker-size` attribute sets the size of their
+    /// conflict markers.
     ///
     /// Note that no additional validation is performed here to facilitate inspection, which means that
     /// resource buffers might still be too large to be merged, preventing a successful merge at a later time.
@@ -80,8 +80,8 @@ impl Platform {
         .and_then(|driver| driver.recursive.as_deref())
         .filter(|_| options.is_virtual_ancestor)
         {
+            // As in Git, merges of merge-bases use the driver that the configured driver names, with the same options.
             driver = self.find_driver_by_name(Some(recursive_driver_name.as_bstr()));
-            options.resolve_binary_with = Some(crate::blob::builtin_driver::binary::ResolveWith::Ours);
         }
 
         let out = PlatformRef {

@@ -159,6 +159,12 @@ function baseline () (
   elif [[ "$output_name" == *-dir-renames-false ]]; then
     directory_renames="false"
   fi
+  local strategy_option=""
+  if [[ "$output_name" == *-X-ours ]]; then
+    strategy_option="ours"
+  elif [[ "$output_name" == *-X-theirs ]]; then
+    strategy_option="theirs"
+  fi
 
   our_commit_id="$(git rev-parse "$our_committish")"
   their_commit_id="$(git rev-parse "$their_committish")"
@@ -173,12 +179,12 @@ function baseline () (
   fi
 
   local merge_info="${output_name}.merge-info"
-  git -c merge.conflictStyle=$conflict_style -c merge.directoryRenames=$directory_renames merge-tree -z --write-tree --allow-unrelated-histories "$our_committish" "$their_committish" > "$merge_info" || :
+  git -c merge.conflictStyle=$conflict_style -c merge.directoryRenames=$directory_renames merge-tree -z --write-tree --allow-unrelated-histories ${strategy_option:+-X "$strategy_option"} "$our_committish" "$their_committish" > "$merge_info" || :
   echo "$dir" "$conflict_style" "$our_commit_id" "$our_committish" "$their_commit_id" "$their_committish" "$merge_info" "$maybe_expected_tree" "$opt_deviation_message" >> ../baseline.cases
 
   if [[ "$one_side" != "no-reverse" ]]; then
     local merge_info="${output_name}-reversed.merge-info"
-    git -c merge.conflictStyle=$conflict_style -c merge.directoryRenames=$directory_renames merge-tree -z --write-tree --allow-unrelated-histories "$their_committish" "$our_committish" > "$merge_info" || :
+    git -c merge.conflictStyle=$conflict_style -c merge.directoryRenames=$directory_renames merge-tree -z --write-tree --allow-unrelated-histories ${strategy_option:+-X "$strategy_option"} "$their_committish" "$our_committish" > "$merge_info" || :
     echo "$dir" "$conflict_style" "$their_commit_id" "$their_committish" "$our_commit_id" "$our_committish" "$merge_info" "$maybe_expected_reversed_tree" "$opt_deviation_message" >> ../baseline.cases
   fi
 )
@@ -1606,6 +1612,61 @@ git init marker-size-rename-collision
   git mv source destination
   write_lines tango-1 tango-2 changed-by-B tango-4 tango-5 >destination
   git commit -am "B renames source to destination and modifies it"
+)
+
+git init binary-content-merge-drivers
+(cd binary-content-merge-drivers
+  # A and B change each file differently. All files but `lines` hold binary data, which Git merges as binary whatever
+  # driver the attributes name: the conflict keeps our version unless `-X ours` or `-X theirs` chooses a side, and the
+  # union driver keeps its conflict even then. `-X ours` and `-X theirs` also resolve the conflict of `lines`.
+  write_lines 'union merge=union' 'text merge=text' 'binary merge=binary' 'unset -merge' >.gitattributes
+  files='union text binary unset unspecified'
+  for f in $files; do printf 'base\0%s\n' $f >$f; done
+  write_lines 1 2 3 >lines
+  git add . && git commit -m "base"
+
+  git branch A
+  git branch B
+
+  git checkout A
+  for f in $files; do printf 'A\0%s\n' $f >$f; done
+  write_lines 1 A 3 >lines
+  git commit -am "A changes every file"
+
+  git checkout B
+  for f in $files; do printf 'B\0%s\n' $f >$f; done
+  write_lines 1 B 3 >lines
+  git commit -am "B changes every file"
+)
+
+git init recursive-merge-driver
+(cd recursive-merge-driver
+  # A1 and B1 change `r` and `u` differently, and A and B merge them crosswise, A keeping the files of A1 and B those of
+  # the base, so merging A and B first merges A1 and B1 into a virtual merge-base. The merge driver `custom` of `r` names
+  # `binary` as its driver for merges of merge-bases, and `u` holds binary data and has the union driver. Merging the
+  # merge-bases, Git keeps the base's version of both, as of all binary data there, so only A changed them, and the
+  # merge has the files of A1. `custom` has no command, which Git would need to merge `r` in any other merge.
+  write_lines 'r merge=custom' 'u merge=union' >.gitattributes
+  git config merge.custom.recursive binary
+  write_lines base >r
+  printf 'base\0u\n' >u
+  git add . && git commit -m "base"
+
+  git branch A
+  git branch B
+
+  git checkout A
+  write_lines A1 >r
+  printf 'A1\0u\n' >u
+  git commit -am "A1 changes r and u" && git tag A1
+
+  git checkout B
+  write_lines B1 >r
+  printf 'B1\0u\n' >u
+  git commit -am "B1 changes r and u" && git tag B1
+
+  git update-ref refs/heads/A "$(git commit-tree -p A1 -p B1 -m "merge B1 into A1, keep the files of A1" "A1^{tree}")"
+  git update-ref refs/heads/B "$(git commit-tree -p B1 -p A1 -m "merge A1 into B1, keep the files of the base" "main^{tree}")"
 )
 
 git init no-merge-base
@@ -3108,6 +3169,9 @@ baseline attribute-path-directory-rename-rename A-B A B
 baseline marker-size-values A-B A B
 baseline marker-size-values A-B-diff3 A B
 baseline marker-size-rename-collision A-B A B
+baseline binary-content-merge-drivers A-B A B
+baseline binary-content-merge-drivers A-B-X-ours A B
+baseline binary-content-merge-drivers A-B-X-theirs A B
 baseline no-merge-base A-B A B
 baseline no-merge-base A-B-diff3 A B
 
@@ -3124,6 +3188,7 @@ baseline multiple-merge-bases-with-renames A-B A B
 baseline multiple-merge-bases-with-renames A-B-diff3 A B
 baseline multiple-merge-bases-with-file-directory-conflicts A-B A B
 baseline multiple-merge-bases-with-file-directory-conflicts A-B-diff3 A B
+baseline recursive-merge-driver A-B A B
 
 baseline rename-and-modification A-B A B
 baseline symlink-modification A-B A B

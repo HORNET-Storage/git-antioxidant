@@ -8,9 +8,12 @@ use crate::blob::{PlatformRef, Resolution, builtin_driver};
 pub struct Options {
     /// If `true`, the resources being merged are contained in a virtual ancestor,
     /// which is the case when merge bases are merged into one.
-    /// This flag affects the choice of merge drivers.
+    /// This flag affects the choice of merge drivers and how the [union driver](crate::blob::BuiltinDriver::Union)
+    /// merges binary data.
     pub is_virtual_ancestor: bool,
-    /// Determine how to resolve conflicts. If `None`, no conflict resolution is possible, and it picks a side.
+    /// Determine how to resolve conflicts of binary data, which the [text driver](crate::blob::BuiltinDriver::Text)
+    /// merges as the binary driver does. If `None`, no conflict resolution is possible, and it picks a side.
+    /// As in Git, the [union driver](crate::blob::BuiltinDriver::Union) uses it only in virtual ancestors.
     pub resolve_binary_with: Option<builtin_driver::binary::ResolveWith>,
     /// Options for the builtin [text driver](crate::blob::BuiltinDriver::Text).
     pub text: builtin_driver::text::Options,
@@ -265,6 +268,10 @@ pub(super) mod inner {
             platform::{resource, resource::Data},
         };
 
+        /// The size in bytes of the largest data that the text and union drivers merge, Git's `MAX_XDIFF_SIZE`.
+        /// Larger data is merged as binary.
+        pub const MAX_TEXT_SIZE: u64 = 1024 * 1024 * 1023;
+
         /// An identifier to tell us how a merge conflict was resolved by [builtin_merge](PlatformRef::builtin_merge).
         #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
         pub enum Pick {
@@ -291,12 +298,14 @@ pub(super) mod inner {
             /// Perform the merge using the given `driver`, possibly placing the output in `out`.
             /// `input` can be used to keep tokens between runs, but note it will only grow in size unless cleared manually.
             /// Use `labels` to annotate conflict sections in case of a text-merge.
-            /// Returns `None` if one of the buffers is too large, making a merge impossible.
             /// Note that if the *pick* wasn't [`Pick::Buffer`], then `out` will not have been cleared,
             /// and one has to take the data from the respective resource.
             ///
-            /// If there is no buffer loaded as the resource is too big, we will automatically perform a binary merge
-            /// which effectively chooses our side by default.
+            /// Data that Git merges as binary, with a NUL byte among its first 8000 bytes or larger than
+            /// [`MAX_TEXT_SIZE`], is merged by the binary driver, as is data too large to be loaded, which effectively
+            /// chooses our side by default. As in Git, the union driver then keeps the conflict whatever side
+            /// [`resolve_binary_with`](crate::blob::platform::merge::Options::resolve_binary_with) chooses, except in
+            /// [merges of merge-bases](crate::blob::platform::merge::Options::is_virtual_ancestor).
             pub fn builtin_merge(
                 &self,
                 driver: BuiltinDriver,
@@ -307,11 +316,15 @@ pub(super) mod inner {
                 let base = self.ancestor.data.as_slice().unwrap_or_default();
                 let ours = self.current.data.as_slice().unwrap_or_default();
                 let theirs = self.other.data.as_slice().unwrap_or_default();
+                let mut resolve_binary_with = self.options.resolve_binary_with;
                 let driver = if driver != BuiltinDriver::Binary
-                    && (is_binary_buf(self.ancestor.data)
-                        || is_binary_buf(self.other.data)
-                        || is_binary_buf(self.current.data))
+                    && [self.ancestor.data, self.current.data, self.other.data]
+                        .into_iter()
+                        .any(merges_as_binary)
                 {
+                    if driver == BuiltinDriver::Union && !self.options.is_virtual_ancestor {
+                        resolve_binary_with = None;
+                    }
                     BuiltinDriver::Binary
                 } else {
                     driver
@@ -334,7 +347,7 @@ pub(super) mod inner {
                         if ours_matches_theirs {
                             (Pick::Ours, Resolution::Complete)
                         } else {
-                            let (pick, resolution) = builtin_driver::binary(self.options.resolve_binary_with);
+                            let (pick, resolution) = builtin_driver::binary(resolve_binary_with);
                             let pick = match pick {
                                 builtin_driver::binary::Pick::Ours => Pick::Ours,
                                 builtin_driver::binary::Pick::Theirs => Pick::Theirs,
@@ -362,13 +375,13 @@ pub(super) mod inner {
             }
         }
 
-        fn is_binary_buf(data: resource::Data<'_>) -> bool {
+        /// Whether Git merges `data` as binary even with the text and union drivers: if it has a NUL byte among its first
+        /// 8000 bytes, as Git's `buffer_is_binary()` finds, or is larger than [`MAX_TEXT_SIZE`], or was too large to be
+        /// loaded.
+        fn merges_as_binary(data: resource::Data<'_>) -> bool {
             match data {
                 Data::Missing => false,
-                Data::Buffer(buf) => {
-                    let buf = &buf[..buf.len().min(8000)];
-                    buf.contains(&0)
-                }
+                Data::Buffer(buf) => buf.len() as u64 > MAX_TEXT_SIZE || buf[..buf.len().min(8000)].contains(&0),
                 Data::TooLarge { .. } => true,
             }
         }
@@ -384,7 +397,8 @@ impl<'parent> PlatformRef<'parent> {
     /// The merge is configured by `opts` and possible merge driver command executions are affected by `context`.
     ///
     /// Note that at this stage, none-existing input data will simply default to an empty buffer when running the actual merge algorithm.
-    /// Too-large resources will result in an error.
+    /// Resources that were too large to be loaded result in an error with an external merge driver, and the builtin
+    /// drivers merge them as binary.
     ///
     /// External merge driver launch errors provide `program` (Path), the invoked program name or path,
     /// and preserve the underlying IO error as a cause. Unsuccessful exits additionally provide `exit_status`

@@ -832,7 +832,7 @@ mod prepare_merge {
             &gix_object::find::Never,
             gix_merge::blob::platform::merge::Options {
                 is_virtual_ancestor: true,
-                resolve_binary_with: None,
+                resolve_binary_with: Some(builtin_driver::binary::ResolveWith::Ancestor),
                 ..Default::default()
             },
         )?;
@@ -840,8 +840,8 @@ mod prepare_merge {
         assert_eq!(prepared.driver, DriverChoice::Index(expected_idx));
         assert_eq!(
             prepared.options.resolve_binary_with,
-            Some(builtin_driver::binary::ResolveWith::Ours),
-            "it automatically adjusts the merge mode for binary operations to work for bases"
+            Some(builtin_driver::binary::ResolveWith::Ancestor),
+            "the recursive driver merges binary files with the options of the merge, which pick the ancestor as Git does"
         );
         assert_eq!(
             platform.drivers()[expected_idx].name,

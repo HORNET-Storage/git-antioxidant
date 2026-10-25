@@ -46,8 +46,9 @@ pub enum BuiltinDriver {
     /// Perform a merge between text-sources such that conflicts are marked according to
     /// `merge.conflictStyle` in the Git configuration.
     ///
-    /// If any of the inputs, *base*, *ours* or *theirs* looks like non-text/binary,
-    /// the [`Binary`](Self::Binary) driver will be used instead.
+    /// If any of the inputs, *base*, *ours* or *theirs* looks like non-text/binary, or is larger than
+    /// [`MAX_TEXT_SIZE`](platform::builtin_merge::MAX_TEXT_SIZE), the [`Binary`](Self::Binary) driver will be used
+    /// instead.
     ///
     /// Also see [`builtin_driver::text::ConflictStyle`].
     #[default]
@@ -55,14 +56,17 @@ pub enum BuiltinDriver {
     /// Merge 'unmergable' content by choosing *ours* or *theirs*, without performing
     /// an actual merge.
     ///
-    /// Note that if the merge operation is for virtual ancestor (a merge for merge-bases),
-    /// then *ours* will always be chosen.
+    /// [`resolve_binary_with`](platform::merge::Options::resolve_binary_with) chooses the side, and without it *ours*
+    /// is chosen with a conflict. The merges of merge-bases that [`commit()`](crate::commit()) performs choose the
+    /// ancestor, as Git does.
     Binary,
-    /// Merge text-sources and resolve conflicts by adding conflicting lines one after another,
-    /// in random order, without adding conflict markers either.
+    /// Merge text-sources and resolve conflicts by adding our conflicting lines and then theirs, without adding
+    /// conflict markers.
     ///
     /// This can be useful for files that change a lot, but will remain usable merely by adding
-    /// all changed lines.
+    /// all changed lines. Inputs that the [`Text`](Self::Text) driver would merge as binary keep their conflict
+    /// whatever side [`resolve_binary_with`](platform::merge::Options::resolve_binary_with) chooses, as in Git, except
+    /// in merges of merge-bases.
     Union,
 }
 

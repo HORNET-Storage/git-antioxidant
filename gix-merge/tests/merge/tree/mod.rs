@@ -34,7 +34,8 @@ fn assert_no_unknown_conflicts(outcome: &gix_merge::tree::Outcome<'_>, context: 
 /// 1. Add it to the `tree_baseline.sh` script and don't forget to call the
 ///    `baseline` function there with the respective parameters. Output names ending in
 ///    `-dir-renames-true` or `-dir-renames-false` merge with that `merge.directoryRenames`,
-///    all others with Git's default, `conflict`.
+///    all others with Git's default, `conflict`. Output names ending in `-X-ours` or
+///    `-X-theirs` merge with that strategy option.
 /// 2. Run all tests - maybe it works, if so, jump to the last point.
 /// 3. Change `let new_test = None` to `… = Some("case-name")` to focus on the
 ///    newly added test and its reversed version.
@@ -68,7 +69,19 @@ fn run_baseline() -> TestResult {
         // Only `big-file-merge` sets `core.bigFileThreshold`, which gix applies to merges and Git ignores. The other
         // cases merge blobs of any size, as Git does, which matters for merged merge-bases with long conflict markers.
         let large_file_threshold_bytes = root.ends_with("big-file-merge").then_some(100);
-        let mut blob_merge = new_blob_merge_platform(&root, large_file_threshold_bytes);
+        // Only `recursive-merge-driver` configures a merge driver, as its repository does for Git: `custom`, which has
+        // no command and names the binary driver for merges of merge-bases.
+        let drivers = if root.ends_with("recursive-merge-driver") {
+            vec![gix_merge::blob::Driver {
+                name: "custom".into(),
+                display_name: "custom".into(),
+                recursive: Some("binary".into()),
+                ..Default::default()
+            }]
+        } else {
+            Vec::new()
+        };
+        let mut blob_merge = new_blob_merge_platform(&root, large_file_threshold_bytes, drivers);
         let mut diff_resource_cache = new_diff_resource_cache(&root);
         let mut options = basic_merge_options();
         options.tree_merge.directory_renames = if case_name.contains("-dir-renames-true") {
@@ -78,12 +91,30 @@ fn run_baseline() -> TestResult {
         } else {
             gix_merge::tree::DirectoryRenames::MoveAsConflict
         };
-        options.tree_merge.blob_merge.text.conflict = gix_merge::blob::builtin_driver::text::Conflict::Keep {
-            style: conflict_style,
-            marker_size: gix_merge::blob::builtin_driver::text::Conflict::DEFAULT_MARKER_SIZE
-                .try_into()
-                .expect("non-zero"),
+        // `-X ours` and `-X theirs` resolve conflicting text and binary content with that side.
+        let (resolve_binary_with, conflict) = if case_name.contains("-X-ours") {
+            (
+                Some(gix_merge::blob::builtin_driver::binary::ResolveWith::Ours),
+                gix_merge::blob::builtin_driver::text::Conflict::ResolveWithOurs,
+            )
+        } else if case_name.contains("-X-theirs") {
+            (
+                Some(gix_merge::blob::builtin_driver::binary::ResolveWith::Theirs),
+                gix_merge::blob::builtin_driver::text::Conflict::ResolveWithTheirs,
+            )
+        } else {
+            (
+                None,
+                gix_merge::blob::builtin_driver::text::Conflict::Keep {
+                    style: conflict_style,
+                    marker_size: gix_merge::blob::builtin_driver::text::Conflict::DEFAULT_MARKER_SIZE
+                        .try_into()
+                        .expect("non-zero"),
+                },
+            )
         };
+        options.tree_merge.blob_merge.resolve_binary_with = resolve_binary_with;
+        options.tree_merge.blob_merge.text.conflict = conflict;
 
         let mut actual = gix_merge::commit(
             our_commit_id,
@@ -173,8 +204,8 @@ fn run_baseline() -> TestResult {
         }
 
         // The content-merge mode is not relevant for the upcoming tree-conflict resolution, and tree-conflict
-        // resolutions are recorded for Git's default `merge.directoryRenames` only.
-        if case_name.contains("diff3") || case_name.contains("-dir-renames-") {
+        // resolutions are recorded for Git's default `merge.directoryRenames` and without strategy options only.
+        if case_name.contains("diff3") || case_name.contains("-dir-renames-") || case_name.contains("-X-") {
             continue;
         }
 
@@ -236,11 +267,11 @@ fn run_baseline() -> TestResult {
     }
 
     assert_eq!(
-        actual_cases, 285,
+        actual_cases, 293,
         "BUG: update this number, and don't forget to remove a filter in the end"
     );
     assert_eq!(
-        skipped_tree_resolve_cases, 226,
+        skipped_tree_resolve_cases, 234,
         "this is done when no case is skipped, and we don't want to accidentally skip them.\
         Some don't actually have conflicts.\
         The ones we skipped don't have irreconcilable conflicts"
@@ -267,7 +298,7 @@ fn unrelated_commits_require_explicit_permission() -> TestResult {
     let their_commit_id = root_commit("theirs")?;
     let mut graph = gix_revwalk::Graph::new(&objects, None);
     let mut diff_resource_cache = new_diff_resource_cache(root.path());
-    let mut blob_merge = new_blob_merge_platform(root.path(), 0);
+    let mut blob_merge = new_blob_merge_platform(root.path(), 0, Vec::new());
 
     for allow_missing_merge_base in [false, true] {
         let result = gix_merge::commit(
@@ -352,6 +383,7 @@ fn new_diff_resource_cache(root: &Path) -> gix_diff::blob::Platform {
 fn new_blob_merge_platform(
     root: &Path,
     large_file_threshold_bytes: impl Into<Option<u64>>,
+    drivers: Vec<gix_merge::blob::Driver>,
 ) -> gix_merge::blob::Platform {
     let attributes = gix_worktree::Stack::new(
         root,
@@ -376,7 +408,7 @@ fn new_blob_merge_platform(
         filter,
         gix_merge::blob::pipeline::Mode::ToGit,
         attributes,
-        vec![],
+        drivers,
         Default::default(),
     )
 }
