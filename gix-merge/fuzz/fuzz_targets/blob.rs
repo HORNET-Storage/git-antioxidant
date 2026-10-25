@@ -15,6 +15,8 @@ fn fuzz_text_merge(
         marker_size,
     }: Ctx,
 ) -> Result<()> {
+    // One byte of the input is the marker size, which keeps the conflicts small.
+    let marker_size = NonZero::<u32>::from(marker_size);
     let mut buf = Vec::new();
     let mut input = imara_diff::InternedInput::default();
     // Fuzz this merge entrypoint with Histogram only. Repetitive adversarial text can drive the

@@ -1,5 +1,5 @@
 use gix_error::Result;
-use std::{num::NonZeroU8, str::FromStr};
+use std::num::NonZeroU32;
 
 use bstr::{BStr, ByteSlice};
 use gix_error::{OptionExt, ResultExt, message};
@@ -64,10 +64,9 @@ impl Platform {
                 self.find_driver_by_name(name)
             }
         };
+        // Values that aren't a positive `int` keep the size of the options, as Git keeps its default size for them.
         if let attributes::StateRef::Value(value) = marker_size_attr.assignment.state
-            && let Some(value) = u8::from_str(value.as_bstr().to_str_lossy().as_ref())
-                .ok()
-                .and_then(NonZeroU8::new)
+            && let Some(value) = parse_marker_size(value.as_bstr())
         {
             match &mut options.text.conflict {
                 Conflict::Keep { marker_size, .. } => *marker_size = value,
@@ -111,4 +110,15 @@ impl Platform {
         })
         .unwrap_or_default()
     }
+}
+
+/// Parse `value` of the `conflict-marker-size` attribute as Git's `ll_merge()` does with `strtol_i()`: a decimal `int`,
+/// perhaps signed and after leading whitespace, of which only positive sizes are used.
+fn parse_marker_size(value: &BStr) -> Option<NonZeroU32> {
+    let value = value
+        .to_str()
+        .ok()?
+        .trim_start_matches([' ', '\t', '\n', '\u{b}', '\u{c}', '\r']);
+    let size: i32 = value.parse().ok()?;
+    u32::try_from(size).ok().and_then(NonZeroU32::new)
 }

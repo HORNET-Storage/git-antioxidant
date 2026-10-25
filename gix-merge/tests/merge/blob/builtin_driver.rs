@@ -87,6 +87,7 @@ mod text {
     }
 
     fn run_fuzz_case(ours: &[u8], base: &[u8], theirs: &[u8], marker_size: NonZero<u8>) {
+        let marker_size = NonZero::<u32>::from(marker_size);
         let mut out = Vec::new();
         let mut input = imara_diff::InternedInput::default();
         // Keep this in sync with the fuzz target. Histogram remains enabled here because it is the

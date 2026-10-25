@@ -361,7 +361,7 @@ pub struct Markers<'a> {
     /// Whether to show the ancestor's lines of each conflict.
     pub style: ConflictStyle,
     /// The number of characters of each marker.
-    pub size: u8,
+    pub size: u32,
     /// The names that follow the markers.
     pub labels: Labels<'a>,
 }
@@ -484,8 +484,8 @@ fn ends_with_crlf(interner: &Interner<&[u8]>, lines: &[Token], line: i64) -> Opt
 }
 
 /// Write a conflict marker of `size` times `marker`, then a space and `label` unless it is empty, as Git does.
-fn write_marker(out: &mut Vec<u8>, marker: u8, size: u8, label: Option<&BStr>, line_ending: &[u8]) {
-    out.extend(std::iter::repeat_n(marker, size.into()));
+fn write_marker(out: &mut Vec<u8>, marker: u8, size: u32, label: Option<&BStr>, line_ending: &[u8]) {
+    out.extend(std::iter::repeat_n(marker, size as usize));
     if let Some(label) = label.filter(|label| !label.is_empty()) {
         out.push(b' ');
         out.extend_from_slice(label);

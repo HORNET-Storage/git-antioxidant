@@ -179,7 +179,7 @@ pub fn perform_blob_merge(
     let mut prep = blob_merge.prepare_merge(objects, options.blob_merge)?;
     if let crate::blob::builtin_driver::text::Conflict::Keep { marker_size, .. } = &mut prep.options.text.conflict {
         *marker_size =
-            marker_size.saturating_add(extra_markers.saturating_add(options.marker_size_multiplier.saturating_mul(2)));
+            marker_size.saturating_add(u32::from(extra_markers) + 2 * u32::from(options.marker_size_multiplier));
     }
     let (pick, resolution) = prep.merge(buf, labels, &options.blob_merge_command_ctx)?;
 

@@ -1,4 +1,4 @@
-use std::num::NonZeroU8;
+use std::num::NonZeroU32;
 
 use bstr::BStr;
 
@@ -93,7 +93,7 @@ pub enum Conflict {
         /// How to visualize conflicts in merged files.
         style: ConflictStyle,
         /// The amount of markers to draw, defaults to 7, i.e. `<<<<<<<`
-        marker_size: NonZeroU8,
+        marker_size: NonZeroU32,
     },
     /// Chose our side to resolve a conflict.
     ResolveWithOurs,
@@ -105,10 +105,10 @@ pub enum Conflict {
 
 impl Conflict {
     /// The amount of conflict marker characters to print by default.
-    pub const DEFAULT_MARKER_SIZE: u8 = 7;
+    pub const DEFAULT_MARKER_SIZE: u32 = 7;
 
     /// The amount of conflict markers to print if this instance contains them, or `None` otherwise
-    pub fn marker_size(&self) -> Option<u8> {
+    pub fn marker_size(&self) -> Option<u32> {
         match self {
             Conflict::Keep { marker_size, .. } => Some(marker_size.get()),
             Conflict::ResolveWithOurs | Conflict::ResolveWithTheirs | Conflict::ResolveWithUnion => None,

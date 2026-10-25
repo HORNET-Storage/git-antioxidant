@@ -1561,6 +1561,53 @@ git init attribute-path-directory-rename-rename
   git commit -am "B renames old/file to old/moved and modifies it"
 )
 
+git init marker-size-values
+(cd marker-size-values
+  # Each file has its own `conflict-marker-size`. Git reads a decimal `int`, perhaps signed and after leading
+  # whitespace, and uses it if it is positive; other values, and the attribute set or unset, keep 7 characters.
+  write_lines 'm300 conflict-marker-size=300' 'mplus conflict-marker-size=+10' 'm010 conflict-marker-size=010' \
+    'm0 conflict-marker-size=0' 'mneg conflict-marker-size=-3' 'mabc conflict-marker-size=abc' \
+    'mbig conflict-marker-size=2147483648' 'mset conflict-marker-size' 'munset -conflict-marker-size' \
+    'm255 conflict-marker-size=255' 'm256 conflict-marker-size=256' 'm1000 conflict-marker-size=1000' >.gitattributes
+  printf 'mvt conflict-marker-size=\v12\nmff conflict-marker-size=\f12\n' >>.gitattributes
+  files='m300 mplus m010 m0 mneg mabc mbig mset munset m255 m256 m1000 mvt mff'
+  for f in $files; do write_lines $f-1 $f-2 $f-3 $f-4 $f-5 >$f; done
+  git add . && git commit -m "base"
+
+  git branch A
+  git branch B
+
+  git checkout A
+  for f in $files; do write_lines $f-1 $f-2 changed-by-A $f-4 $f-5 >$f; done
+  git commit -am "A changes the middle line of each file"
+
+  git checkout B
+  for f in $files; do write_lines $f-1 $f-2 changed-by-B $f-4 $f-5 >$f; done
+  git commit -am "B changes the middle line of each file"
+)
+
+git init marker-size-rename-collision
+(cd marker-size-rename-collision
+  # As in attribute-path-rename-collision, with markers of 255 characters at both paths. The content merge at the
+  # source has markers of 256 characters inside the markers of 255 characters of the add/add at `destination`.
+  write_lines 'source conflict-marker-size=255' 'destination conflict-marker-size=255' >.gitattributes
+  write_lines tango-1 tango-2 tango-3 tango-4 tango-5 >source
+  git add . && git commit -m "base"
+
+  git branch A
+  git branch B
+
+  git checkout A
+  write_lines tango-1 tango-2 changed-by-A tango-4 tango-5 >source
+  write_lines uniform-1 uniform-2 uniform-3 uniform-4 uniform-5 >destination
+  git add . && git commit -m "A modifies source and adds destination"
+
+  git checkout B
+  git mv source destination
+  write_lines tango-1 tango-2 changed-by-B tango-4 tango-5 >destination
+  git commit -am "B renames source to destination and modifies it"
+)
+
 git init no-merge-base
 (cd no-merge-base
   git checkout -b A
@@ -3058,6 +3105,9 @@ baseline attribute-path-rename-rename-1to2 A-B A B
 baseline attribute-path-rename-collision A-B A B
 baseline attribute-path-rename-rename-2to1 A-B A B
 baseline attribute-path-directory-rename-rename A-B A B
+baseline marker-size-values A-B A B
+baseline marker-size-values A-B-diff3 A B
+baseline marker-size-rename-collision A-B A B
 baseline no-merge-base A-B A B
 baseline no-merge-base A-B-diff3 A B
 
