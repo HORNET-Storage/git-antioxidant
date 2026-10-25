@@ -26,7 +26,7 @@ pub fn submodule_git_dir(git_dir: &Path) -> bool {
 ///
 /// Note that `.git` files are followed to a valid git directory, which then requires…
 ///
-///   * …a valid head
+///   * …a valid head, which can also be a symbolic link that names a reference, even one that doesn't exist yet
 ///   * …an objects directory
 ///   * …a refs directory
 ///
@@ -63,7 +63,8 @@ pub(crate) fn git_with_metadata(
 
     {
         // Fast-path: avoid doing the complete search if HEAD is already not there.
-        if !dot_git.join("HEAD").exists() {
+        // Like Git, accept a symbolic link that leads nowhere, as its text may name an unborn branch.
+        if dot_git.join("HEAD").symlink_metadata().is_err() {
             bail!(not_found("Missing HEAD at \".git/HEAD\""));
         }
         // We expect to be able to parse any ref-hash, so we shouldn't have to know the repos hash here.

@@ -16,5 +16,9 @@
 # The detached-HEAD fixture is simple and fast to generate.
 /make_detached_head_repo.tar
 
+# Symlink preflight depends on the host filesystem and privileges; regenerate
+# locally rather than archiving either links or an unsupported-host marker.
+/make_symlinked_head_repos.tar
+
 # Discovery does not need separately tracked archives for each object hash format.
 /*_sha256.tar

@@ -175,3 +175,36 @@ fn repo_with_detached_head_is_discovered_as_worktree() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+#[cfg(any(unix, windows))]
+fn symlinked_heads_are_accepted_as_git_accepts_them() -> TestResult {
+    let root = gix_testtools::scripted_fixture_read_only("make_symlinked_head_repos.sh")?;
+    if !gix_testtools::fixture_has_symlinks(&root)? {
+        return Ok(());
+    }
+    for name in ["branch", "unborn", "detached"] {
+        let git_dir = root.join(name).join(".git");
+        assert!(
+            git_dir.join("HEAD").symlink_metadata()?.file_type().is_symlink(),
+            "{name}: HEAD is a symbolic link"
+        );
+        let verdict = match gix_discover::is_git(&git_dir) {
+            Ok(kind) => {
+                assert_eq!(
+                    kind,
+                    gix_discover::repository::Kind::WorkTree { linked_git_dir: None },
+                    "{name}: the repository is the worktree's own"
+                );
+                "repository"
+            }
+            Err(_) => "not a repository",
+        };
+        assert_eq!(
+            verdict,
+            std::fs::read_to_string(root.join(format!("{name}.git-verdict")))?.trim_end(),
+            "{name}: discovery accepts what Git accepts"
+        );
+    }
+    Ok(())
+}
