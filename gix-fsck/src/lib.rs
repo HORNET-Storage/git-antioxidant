@@ -1,4 +1,7 @@
 //! A library for performing object database integrity and connectivity checks
+//!
+//! [`Connectivity`] finds the objects that commits and trees reference but the database lacks, and [`object`] checks
+//! objects for the problems that Git's `fsck` finds in them.
 #![deny(unsafe_code, missing_docs)]
 
 use gix_error::Result;
@@ -7,6 +10,8 @@ use std::collections::VecDeque;
 use gix_hash::ObjectId;
 use gix_hashtable::HashSet;
 use gix_object::{Exists, FindExt, Kind, tree::EntryKind};
+
+pub mod object;
 
 /// Perform a connectivity check.
 pub struct Connectivity<T, F>

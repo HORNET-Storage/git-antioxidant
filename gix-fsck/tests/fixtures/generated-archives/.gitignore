@@ -4,3 +4,6 @@
 # committed archive would not relocate to the test runner's checkout.
 make_test_repos.tar
 make_test_repos_sha256.tar
+# Git's verdicts on the objects of this fixture depend on the platform Git runs on, so the fixture runs on each host.
+make_object_checks.tar
+make_object_checks_sha256.tar

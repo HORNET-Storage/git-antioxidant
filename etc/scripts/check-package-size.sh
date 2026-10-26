@@ -15,7 +15,7 @@ function indent () {
 }
 
 echo 'in root: gitoxide CLI'
-(enter gix-fsck && indent cargo diet -n --package-size-limit 10KB)
+(enter gix-fsck && indent cargo diet -n --package-size-limit 35KB)
 (enter gix-bundle && indent cargo diet -n --package-size-limit 20KB)
 (enter gix-diffcore && indent cargo diet -n --package-size-limit 15KB)
 (enter gix-write-tree && indent cargo diet -n --package-size-limit 15KB)

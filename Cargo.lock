@@ -2023,12 +2023,14 @@ dependencies = [
 name = "gix-fsck"
 version = "0.27.0"
 dependencies = [
+ "bstr",
  "gix-error",
  "gix-hash",
  "gix-hashtable",
  "gix-object",
  "gix-odb",
  "gix-testtools",
+ "gix-validate",
 ]
 
 [[package]]
