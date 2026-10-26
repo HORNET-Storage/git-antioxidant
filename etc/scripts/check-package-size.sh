@@ -18,7 +18,6 @@ echo 'in root: gitoxide CLI'
 (enter gix-fsck && indent cargo diet -n --package-size-limit 35KB)
 (enter gix-bundle && indent cargo diet -n --package-size-limit 20KB)
 (enter gix-diffcore && indent cargo diet -n --package-size-limit 15KB)
-(enter gix-write-tree && indent cargo diet -n --package-size-limit 15KB)
 (enter gix-add && indent cargo diet -n --package-size-limit 25KB)
 (enter gix-switch && indent cargo diet -n --package-size-limit 25KB)
 (enter gix-repack && indent cargo diet -n --package-size-limit 25KB)

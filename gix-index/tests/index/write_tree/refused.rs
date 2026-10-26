@@ -1,9 +1,10 @@
-use gix_index::entry::{Flags, Mode};
+use gix_index::{
+    entry::{Flags, Mode},
+    write_tree::Options,
+};
 use gix_testtools::TestResult;
-use gix_write_tree::{Options, write_tree};
-use pretty_assertions::assert_eq;
 
-use crate::{Case, blob, messages, new_index, no_objects, push};
+use super::{Case, blob, messages, new_index, no_objects, push};
 
 /// `message` as git prints an error, after `error: ` and starting in lowercase.
 fn as_git_prints_it(message: &str) -> String {
@@ -17,7 +18,8 @@ fn as_git_prints_it(message: &str) -> String {
 fn unmerged_entries_are_refused_listing_up_to_ten_of_them_as_git_does() -> TestResult {
     let case = Case::new("unmerged")?;
     let index = case.index()?;
-    let err = write_tree(&index, index.tree(), &case.objects()?, Options::default())
+    let err = index
+        .write_tree(index.tree(), &case.objects()?, Options::default())
         .expect_err("an index with unmerged entries has no tree");
     assert!(err.is_conflict(), "the conflicts have to be resolved first");
     let (message, causes) = messages(err);
@@ -34,7 +36,8 @@ fn unmerged_entries_are_refused_listing_up_to_ten_of_them_as_git_does() -> TestR
 fn missing_objects_are_refused_in_the_order_in_which_git_looks_at_the_entries() -> TestResult {
     let case = Case::new("missing")?;
     let index = case.index()?;
-    let err = write_tree(&index, index.tree(), &case.objects()?, Options::default())
+    let err = index
+        .write_tree(index.tree(), &case.objects()?, Options::default())
         .expect_err("the blobs of two entries are missing");
     assert!(err.is_not_found(), "the object of the entry wasn't found");
     let (message, causes) = messages(err);
@@ -55,7 +58,8 @@ fn files_used_as_directories_are_refused_even_if_other_entries_are_between_them(
     for path in ["a", "a-b", "a/c"] {
         push(&mut index, path, Mode::FILE, id, Flags::empty());
     }
-    let err = write_tree(&index, None, &objects, Options::default())
+    let err = index
+        .write_tree(None, &objects, Options::default())
         .expect_err("`a` can't be both a file and a directory in the root tree");
     assert!(err.is_corrupted(), "no index can be both");
     assert_eq!(
@@ -78,7 +82,9 @@ fn more_than_ten_files_used_as_directories_end_their_list_with_an_ellipsis() -> 
         push(&mut index, &format!("f{number:02}"), Mode::FILE, id, Flags::empty());
         push(&mut index, &format!("f{number:02}/x"), Mode::FILE, id, Flags::empty());
     }
-    let err = write_tree(&index, None, &objects, Options::default()).expect_err("eleven files are used as directories");
+    let err = index
+        .write_tree(None, &objects, Options::default())
+        .expect_err("eleven files are used as directories");
     let mut expected: Vec<_> = (0..10)
         .map(|number| format!("You have both f{number:02} and f{number:02}/x"))
         .collect();
@@ -103,7 +109,8 @@ fn entries_that_are_not_sorted_or_share_a_path_are_refused_as_corrupt() -> TestR
         for path in paths {
             push(&mut index, path, Mode::FILE, id, Flags::empty());
         }
-        let err = write_tree(&index, None, &objects, Options::default())
+        let err = index
+            .write_tree(None, &objects, Options::default())
             .expect_err("an index is sorted by path and has one entry per path once it is merged");
         assert!(err.is_corrupted(), "{paths:?}: the index is corrupt");
         assert_eq!(
@@ -161,7 +168,9 @@ fn paths_that_cannot_be_the_paths_of_tree_entries_are_refused_as_corrupt() -> Te
     ] {
         let mut index = new_index();
         push(&mut index, path, mode, id, Flags::empty());
-        let err = write_tree(&index, None, &objects, Options::default()).expect_err("no tree entry can have this path");
+        let err = index
+            .write_tree(None, &objects, Options::default())
+            .expect_err("no tree entry can have this path");
         assert!(err.is_corrupted(), "{path:?}: the index is corrupt");
         assert_eq!(messages(err).0, expected, "{path:?}: the path is refused");
     }
@@ -175,7 +184,8 @@ fn a_sparse_directory_entry_followed_by_entries_inside_of_it_is_refused_as_corru
     let mut index = new_index();
     push(&mut index, "dir/", Mode::DIR, id.kind().empty_tree(), Flags::empty());
     push(&mut index, "dir/file", Mode::FILE, id, Flags::empty());
-    let err = write_tree(&index, None, &objects, Options::default())
+    let err = index
+        .write_tree(None, &objects, Options::default())
         .expect_err("the entry of the directory is its tree, which can't have more entries");
     assert!(err.is_corrupted(), "the index is corrupt");
     assert_eq!(
@@ -192,7 +202,9 @@ fn a_null_object_id_is_refused_as_corrupt_even_if_objects_may_be_missing() -> Te
     let mut index = new_index();
     push(&mut index, "file", Mode::FILE, null_id, Flags::empty());
     for missing_ok in [false, true] {
-        let err = write_tree(&index, None, &objects, Options { missing_ok }).expect_err("no object has the null id");
+        let err = index
+            .write_tree(None, &objects, Options { missing_ok })
+            .expect_err("no object has the null id");
         assert!(err.is_corrupted(), "missing_ok: {missing_ok}: the index is corrupt");
         assert_eq!(
             messages(err).0,
@@ -209,7 +221,9 @@ fn an_entry_without_the_mode_of_a_tree_entry_is_refused_as_corrupt() -> TestResu
     let id = blob(&objects, "content")?;
     let mut index = new_index();
     push(&mut index, "file", Mode::empty(), id, Flags::empty());
-    let err = write_tree(&index, None, &objects, Options::default()).expect_err("a tree entry needs a mode");
+    let err = index
+        .write_tree(None, &objects, Options::default())
+        .expect_err("a tree entry needs a mode");
     assert!(err.is_corrupted(), "the index is corrupt");
     assert_eq!(messages(err).0, "The entry 'file' has the invalid mode 0");
     Ok(())

@@ -38,6 +38,8 @@ pub mod verify;
 ///
 pub mod write;
 
+pub mod write_tree;
+
 pub mod fs;
 
 /// All known versions of a git index file.

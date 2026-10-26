@@ -411,8 +411,8 @@ fn assert_entries_match_git(case: &Case, pathspec: &[&str]) -> TestResult<(Outco
 /// the trees that its entries make.
 fn assert_cache_tree_is_valid(case: &Case, index: &State, objects: &Objects) -> TestResult {
     let trees = gix_odb::memory::Proxy::new(objects.handle.clone(), gix_testtools::object_hash());
-    let with_cache_tree = gix_write_tree::write_tree(index, index.tree(), &trees, Default::default())?;
-    let from_entries = gix_write_tree::write_tree(index, None, &trees, Default::default())?;
+    let with_cache_tree = index.write_tree(index.tree(), &trees, Default::default())?;
+    let from_entries = index.write_tree(None, &trees, Default::default())?;
     assert_eq!(
         (with_cache_tree.tree_id, with_cache_tree.cache_tree),
         (from_entries.tree_id, from_entries.cache_tree),

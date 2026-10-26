@@ -1,32 +1,32 @@
 //! Write the trees that the entries of an index describe, as `git write-tree` does.
 //!
-//! An index lists the files of the next commit by their paths. [`write_tree()`] turns these entries into one tree object
-//! per directory, from the deepest directories up to the root tree that a commit records, as Git's `cache-tree.c` does.
-//! It also returns the cache tree, the index's `TREE` extension, which records the tree of each directory along with the
-//! number of entries in it. Given the cache tree of an earlier call, directories that didn't change keep their tree
-//! without their entries being read again. For that, [`invalidate_path()`] has to be called for every entry that was
-//! added, changed or removed in between, as Git does whenever it changes the index.
+//! An index lists the files of the next commit by their paths. [`State::write_tree()`] turns these entries into one
+//! tree object per directory, from the deepest directories up to the root tree that a commit records, as Git's
+//! `cache-tree.c` does. It also returns the cache tree, the index's `TREE` extension, which records the tree of each
+//! directory along with the number of entries in it. Given the cache tree of an earlier call, directories that didn't
+//! change keep their tree without their entries being read again. For that, [`Tree::invalidate_path()`] has to be
+//! called for every entry that was added, changed or removed in between, as Git does whenever it changes the index.
 //!
-//! [`repair_cache_tree()`] computes the cache tree without writing any object, as Git does after a checkout or a merge
-//! changed the index: the node of a directory is valid only if the object database already has its tree.
-#![deny(unsafe_code, missing_docs)]
+//! [`State::repair_cache_tree()`] computes the cache tree without writing any object, as Git does after a checkout or
+//! a merge changed the index: the node of a directory is valid only if the object database already has its tree.
 
 use std::{cmp::Ordering, ops::Range};
 
 use bstr::{BStr, ByteSlice};
 use gix_error::{Exn, Message, OptionExt, Result, ResultExt, bail, message};
 use gix_hash::ObjectId;
-use gix_index::{Entry, State, entry, extension::Tree};
 use gix_object::{
     TreeRef, WriteTo,
     tree::{EntryKind, EntryRef},
 };
 
+use crate::{Entry, State, entry, extension::Tree};
+
 /// The number of unmerged entries or conflicting paths that an error lists before it ends the list with `...`, as Git
 /// does.
 const MAX_LISTED: usize = 10;
 
-/// Options for [`write_tree()`].
+/// Options for [`State::write_tree()`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Options {
     /// If `true`, entries may refer to objects that the object database doesn't have, as with `git write-tree --missing-ok`.
@@ -36,13 +36,12 @@ pub struct Options {
     pub missing_ok: bool,
 }
 
-/// The trees that [`write_tree()`] produced.
+/// The trees that [`State::write_tree()`] produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
     /// The id of the root tree.
     pub tree_id: ObjectId,
-    /// The cache tree of the entries, to be stored as the index's `TREE` extension with
-    /// [`State::set_tree()`](gix_index::State::set_tree()).
+    /// The cache tree of the entries, to be stored as the index's `TREE` extension with [`State::set_tree()`].
     ///
     /// Each node records the tree of its directory along with the number of entries in it. A node is invalid if its
     /// directory has entries that were added with intent to add, as no tree contains them.
@@ -51,103 +50,87 @@ pub struct Outcome {
     pub written_trees: usize,
 }
 
-/// Write the trees of the entries in `state` to `objects` and return the id of the root tree, as `git write-tree` does.
-///
-/// Each directory becomes a tree that lists its files, symbolic links and submodule commits along with the trees of
-/// its subdirectories. Entries that were added with intent to add are left out, and so are directories that contain
-/// nothing else. A sparse directory entry is the tree whose id it records. Entries flagged with
-/// [`REMOVE`](entry::Flags::REMOVE) are ignored, as they aren't written with the index.
-///
-/// `cache_tree` is usually the index's own `TREE` extension. A directory whose node in it is valid, counts as many
-/// entries as the directory has and names a tree that `objects` has keeps that tree, and its entries aren't read. This
-/// is correct only if every entry that was added, changed or removed since the cache tree was computed was passed to
-/// [`invalidate_path()`].
-///
-/// Trees are hashed in memory and only written if `objects` doesn't have them yet.
-///
-/// ### Errors
-///
-/// Unmerged entries are refused, listing up to ten of them as Git does, and so are paths that are both a file and a
-/// directory. Entries that aren't sorted, or whose paths can't be the paths of tree entries, are refused as corrupt.
-/// So is an entry with a null object id, and an entry whose object `objects` doesn't have is refused unless
-/// [`Options::missing_ok`] is set. The commits of submodules are never looked up, as they belong to other repositories.
-pub fn write_tree<O>(state: &State, cache_tree: Option<&Tree>, objects: &O, options: Options) -> Result<Outcome>
-where
-    O: gix_object::Write + gix_object::Exists + ?Sized,
-{
-    let entries = entries_of(state)?;
-    let write = |data: &[u8], id: ObjectId| objects.write_buf_with_known_id(gix_object::Kind::Tree, data, id);
-    let mut writer = Writer {
-        entries: &entries,
-        objects,
-        object_hash: state.object_hash(),
-        mode: Mode::Write {
-            write: &write,
-            missing_ok: options.missing_ok,
-        },
-        written_trees: 0,
-        buf: Vec::new(),
-    };
-    let root = writer.write_directory(0..entries.len(), 0, b"".as_bstr(), cache_tree)?;
-    Ok(Outcome {
-        tree_id: root.tree_id,
-        cache_tree: root.node,
-        written_trees: writer.written_trees,
-    })
-}
-
-/// Return the cache tree of the entries in `state` without writing any object, as Git repairs the cache tree after a
-/// checkout or a merge changed the index.
-///
-/// `cache_tree` is usually the cache tree of the index before it changed, with [`invalidate_path()`] called for every
-/// entry that was added, changed or removed since. Its valid nodes are kept as [`write_tree()`] keeps them. Every other
-/// directory is hashed from its entries, and its node is valid only if `objects` has that tree, so that a later
-/// [`write_tree()`] can use it without writing it. A directory is invalid as well if it has entries that were added with
-/// intent to add, entries with a null object id, or subdirectories whose nodes are invalid. The objects of the entries
-/// aren't looked up, as a tree that `objects` has records their ids already.
-///
-/// ### Errors
-///
-/// The entries that [`write_tree()`] refuses are refused, except for those whose objects are null or missing.
-pub fn repair_cache_tree<O>(state: &State, cache_tree: Option<&Tree>, objects: &O) -> Result<Tree>
-where
-    O: gix_object::Exists + ?Sized,
-{
-    let entries = entries_of(state)?;
-    let mut writer = Writer {
-        entries: &entries,
-        objects,
-        object_hash: state.object_hash(),
-        mode: Mode::Repair,
-        written_trees: 0,
-        buf: Vec::new(),
-    };
-    Ok(writer
-        .write_directory(0..entries.len(), 0, b"".as_bstr(), cache_tree)?
-        .node)
-}
-
-/// Invalidate the nodes of `cache_tree` along `path`, the path of an index entry that was added, changed or removed, as
-/// Git does whenever it changes the index.
-///
-/// The root and the nodes of the directories that lead to `path` become invalid, and the node of a directory at `path`
-/// itself is removed, as the entry there replaced it. The path of a sparse directory entry ends in a slash.
-pub fn invalidate_path(cache_tree: &mut Tree, path: &BStr) {
-    let mut node = cache_tree;
-    let mut rest = path.as_bytes();
-    loop {
-        node.num_entries = None;
-        node.id = node.id.kind().null();
-        let Some(slash) = rest.find_byte(b'/') else {
-            node.children.retain(|child| child.name.as_slice() != rest);
-            return;
+impl State {
+    /// Write the trees of the entries of this index to `objects` and return the id of the root tree, as
+    /// `git write-tree` does.
+    ///
+    /// Each directory becomes a tree that lists its files, symbolic links and submodule commits along with the trees
+    /// of its subdirectories. Entries that were added with intent to add are left out, and so are directories that
+    /// contain nothing else. A sparse directory entry is the tree whose id it records. Entries flagged with
+    /// [`REMOVE`](entry::Flags::REMOVE) are ignored, as they aren't written with the index.
+    ///
+    /// `cache_tree` is usually the index's own `TREE` extension, [`tree()`](Self::tree()). A directory whose node in
+    /// it is valid, counts as many entries as the directory has and names a tree that `objects` has keeps that tree,
+    /// and its entries aren't read. This is correct only if every entry that was added, changed or removed since the
+    /// cache tree was computed was passed to [`Tree::invalidate_path()`].
+    ///
+    /// Trees are hashed in memory and only written if `objects` doesn't have them yet.
+    ///
+    /// ### Errors
+    ///
+    /// Unmerged entries are refused, listing up to ten of them as Git does, and so are paths that are both a file and
+    /// a directory. Entries that aren't sorted, or whose paths can't be the paths of tree entries, are refused as
+    /// corrupt. So is an entry with a null object id, and an entry whose object `objects` doesn't have is refused
+    /// unless [`Options::missing_ok`] is set. The commits of submodules are never looked up, as they belong to other
+    /// repositories.
+    pub fn write_tree<O>(&self, cache_tree: Option<&Tree>, objects: &O, options: Options) -> Result<Outcome>
+    where
+        O: gix_object::Write + gix_object::Exists + ?Sized,
+    {
+        let _span = gix_trace::coarse!("gix_index::State::write_tree()");
+        let entries = entries_of(self)?;
+        let write = |data: &[u8], id: ObjectId| objects.write_buf_with_known_id(gix_object::Kind::Tree, data, id);
+        let mut writer = Writer {
+            entries: &entries,
+            objects,
+            object_hash: self.object_hash(),
+            mode: Mode::Write {
+                write: &write,
+                missing_ok: options.missing_ok,
+            },
+            written_trees: 0,
+            buf: Vec::new(),
         };
-        let name = &rest[..slash];
-        let Some(child) = node.children.iter_mut().find(|child| child.name.as_slice() == name) else {
-            return;
+        let root = writer.write_directory(0..entries.len(), 0, b"".as_bstr(), cache_tree)?;
+        Ok(Outcome {
+            tree_id: root.tree_id,
+            cache_tree: root.node,
+            written_trees: writer.written_trees,
+        })
+    }
+
+    /// Return the cache tree of the entries of this index without writing any object, as Git repairs the cache tree
+    /// after a checkout or a merge changed the index.
+    ///
+    /// `cache_tree` is usually the cache tree of the index before it changed, with [`Tree::invalidate_path()`] called
+    /// for every entry that was added, changed or removed since. Its valid nodes are kept as
+    /// [`write_tree()`](Self::write_tree()) keeps them. Every other directory is hashed from its entries, and its node
+    /// is valid only if `objects` has that tree, so that a later [`write_tree()`](Self::write_tree()) can use it
+    /// without writing it. A directory is invalid as well if it has entries that were added with intent to add,
+    /// entries with a null object id, or subdirectories whose nodes are invalid. The objects of the entries aren't
+    /// looked up, as a tree that `objects` has records their ids already.
+    ///
+    /// ### Errors
+    ///
+    /// The entries that [`write_tree()`](Self::write_tree()) refuses are refused, except for those whose objects are
+    /// null or missing.
+    pub fn repair_cache_tree<O>(&self, cache_tree: Option<&Tree>, objects: &O) -> Result<Tree>
+    where
+        O: gix_object::Exists + ?Sized,
+    {
+        let _span = gix_trace::coarse!("gix_index::State::repair_cache_tree()");
+        let entries = entries_of(self)?;
+        let mut writer = Writer {
+            entries: &entries,
+            objects,
+            object_hash: self.object_hash(),
+            mode: Mode::Repair,
+            written_trees: 0,
+            buf: Vec::new(),
         };
-        node = child;
-        rest = &rest[slash + 1..];
+        Ok(writer
+            .write_directory(0..entries.len(), 0, b"".as_bstr(), cache_tree)?
+            .node)
     }
 }
 

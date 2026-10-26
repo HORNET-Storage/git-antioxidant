@@ -67,7 +67,7 @@ where
             entry.stat.size = 0;
         }
     }
-    let tree = gix_write_tree::repair_cache_tree(&result, cache_tree.as_ref(), objects)?;
+    let tree = result.repair_cache_tree(cache_tree.as_ref(), objects)?;
     result.set_tree(tree);
     result.remove_resolve_undo();
     Ok(result)
@@ -76,7 +76,7 @@ where
 /// Invalidate the nodes of `cache_tree` along `path`, if there is a cache tree.
 fn invalidate(cache_tree: Option<&mut gix_index::extension::Tree>, path: &BStr) {
     if let Some(cache_tree) = cache_tree {
-        gix_write_tree::invalidate_path(cache_tree, path);
+        cache_tree.invalidate_path(path);
     }
 }
 

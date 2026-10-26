@@ -888,8 +888,16 @@ The git staging area.
 * [x] lookups that ignore the case
     * [ ] multi-threaded lookup table generation with the same algorithm as the one used by Git
     * [ ] expand sparse folders (don't know how this relates to traversals right now)
+* [x] write the trees of the entries as `git write-tree` does, along with their cache tree
+    * [x] keep the trees of directories whose nodes in the cache tree are valid
+    * [x] leave out entries that were added with intent to add, and use the trees that sparse directory entries record
+    * [x] refuse unmerged entries and paths that are both a file and a directory, as git does
+    * [x] `--missing-ok`
+    * [ ] `--prefix`
+* [x] repair the cache tree without writing objects, as git does after a checkout or a merge
 * maintain extensions when altering the cache
-    * [ ] TREE for speeding up tree generation
+    * [x] TREE for speeding up tree generation
+        - **note** that the methods of the index that add, change or remove entries don't do this on their own: their callers invalidate the cache tree along the path of each such entry, as git does whenever it changes the index.
     * [ ] REUC resolving undo
     * [ ] UNTR untracked cache
     * [ ] FSMN file system monitor cache V1 and V2
@@ -1002,18 +1010,6 @@ See its [README.md](https://github.com/GitoxideLabs/gitoxide/blob/main/gix-lock/
     * [ ] directory rename hints for merges
 * [ ] pickaxe (`-S`, `-G`)
 * [ ] order files (`-O`)
-* [x] API documentation
-    * [ ] Some examples
-
-### gix-write-tree
-* [x] write the trees of an index as `git write-tree` does, along with its cache tree
-    * [x] keep the trees of directories whose nodes in the cache tree are valid
-    * [x] leave out entries that were added with intent to add, and use the trees that sparse directory entries record
-    * [x] refuse unmerged entries and paths that are both a file and a directory, as git does
-    * [x] `--missing-ok`
-    * [ ] `--prefix`
-* [x] invalidate the cache tree along the path of an entry that was added, changed or removed
-* [x] repair the cache tree without writing objects, as git does after a checkout or a merge
 * [x] API documentation
     * [ ] Some examples
 

@@ -1,10 +1,11 @@
-use gix_index::entry::{Flags, Mode, Stage};
+use gix_index::{
+    entry::{Flags, Mode, Stage},
+    write_tree::Options,
+};
 use gix_object::Exists;
 use gix_testtools::TestResult;
-use gix_write_tree::{Options, write_tree};
-use pretty_assertions::assert_eq;
 
-use crate::{Case, assert_matches_git, blob, new_index, no_objects, push};
+use super::{Case, assert_matches_git, blob, new_index, no_objects, push};
 
 #[test]
 fn an_empty_index_is_the_empty_tree() -> TestResult {
@@ -109,8 +110,8 @@ fn entries_flagged_for_removal_are_ignored() -> TestResult {
     push(&mut removed, "a", Mode::FILE, id, Flags::empty());
     push(&mut removed, "d/x", Mode::FILE, id, Flags::empty());
 
-    let with_flagged_entries = write_tree(&flagged, None, &objects, Options::default())?;
-    let without_them = write_tree(&removed, None, &objects, Options::default())?;
+    let with_flagged_entries = flagged.write_tree(None, &objects, Options::default())?;
+    let without_them = removed.write_tree(None, &objects, Options::default())?;
     assert_eq!(
         (with_flagged_entries.tree_id, with_flagged_entries.cache_tree),
         (without_them.tree_id, without_them.cache_tree),

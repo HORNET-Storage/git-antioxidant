@@ -9,6 +9,8 @@ pub mod verify;
 mod decode;
 pub use decode::decode;
 
+mod invalidate;
+
 mod write;
 
 #[cfg(test)]

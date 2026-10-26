@@ -325,6 +325,6 @@ fn remove_entries_in_the_way(index: &State, path: &BStr, edits: &mut Vec<(usize,
 /// Invalidate the nodes of `cache_tree` along `path`, if there is a cache tree.
 fn invalidate(cache_tree: Option<&mut gix_index::extension::Tree>, path: &BStr) {
     if let Some(cache_tree) = cache_tree {
-        gix_write_tree::invalidate_path(cache_tree, path);
+        cache_tree.invalidate_path(path);
     }
 }

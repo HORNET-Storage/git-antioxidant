@@ -1641,7 +1641,6 @@ dependencies = [
  "gix-trace",
  "gix-utils",
  "gix-worktree",
- "gix-write-tree",
  "pretty_assertions",
 ]
 
@@ -2669,7 +2668,6 @@ dependencies = [
  "gix-utils",
  "gix-worktree",
  "gix-worktree-state",
- "gix-write-tree",
  "pretty_assertions",
 ]
 
@@ -2937,20 +2935,6 @@ dependencies = [
  "gix-worktree-stream",
  "insta",
  "parking_lot",
-]
-
-[[package]]
-name = "gix-write-tree"
-version = "0.0.0"
-dependencies = [
- "bstr",
- "gix-error",
- "gix-hash",
- "gix-index",
- "gix-object",
- "gix-odb",
- "gix-testtools",
- "pretty_assertions",
 ]
 
 [[package]]

@@ -647,8 +647,8 @@ fn assert_switched_as_git(case: &Case, before: &State, index: &State, switched: 
 /// Assert that wherever the cache tree of `index`, an index of `case`, is valid, it names the trees that its entries make.
 fn assert_cache_tree_is_valid(case: &Case, index: &State) -> TestResult {
     let trees = gix_odb::memory::Proxy::new(case.objects()?, gix_testtools::object_hash());
-    let with_cache_tree = gix_write_tree::write_tree(index, index.tree(), &trees, Default::default())?;
-    let from_entries = gix_write_tree::write_tree(index, None, &trees, Default::default())?;
+    let with_cache_tree = index.write_tree(index.tree(), &trees, Default::default())?;
+    let from_entries = index.write_tree(None, &trees, Default::default())?;
     assert_eq!(
         (with_cache_tree.tree_id, with_cache_tree.cache_tree),
         (from_entries.tree_id, from_entries.cache_tree),

@@ -35,7 +35,6 @@ gix-trace = { version = "^0.3.0", path = "../gix-trace" }
 gix-utils = { version = "^0.5.1", path = "../gix-utils", features = ["progress"] }
 gix-worktree = { version = "^0.58.0", path = "../gix-worktree", default-features = false, features = ["attributes"] }
 gix-worktree-state = { version = "^0.36.0", path = "../gix-worktree-state" }
-gix-write-tree = { version = "^0.0.0", path = "../gix-write-tree" }
 
 bstr = { version = "1.12.0", default-features = false }
 filetime = "0.2.29"

@@ -295,7 +295,6 @@ members = [
     "gix-fsck",
     "gix-bundle",
     "gix-diffcore",
-    "gix-write-tree",
     "gix-add",
     "gix-switch",
     "gix-repack",

@@ -1,8 +1,8 @@
 //! The fixture records what `git write-tree` makes of the index of each of its cases: the root tree that it printed or
 //! the error with which it refused the index, the trees that it wrote, and the index that it left with the cache tree
-//! that it computed. The trees, cache trees and errors of this crate are compared with these. Indexes that git refuses to
-//! read, or that it would turn into broken trees, are built by the tests themselves, and so are the indexes whose cache
-//! trees are repaired, which are compared with those that `write_tree()` computes.
+//! that it computed. The trees, cache trees and errors of `State::write_tree()` are compared with these. Indexes that
+//! git refuses to read, or that it would turn into broken trees, are built by the tests themselves, and so are the
+//! indexes whose cache trees are repaired, which are compared with those that `State::write_tree()` computes.
 
 mod cache_tree;
 mod refused;
@@ -12,10 +12,12 @@ mod trees;
 use std::{collections::BTreeSet, path::PathBuf};
 
 use gix_hash::ObjectId;
-use gix_index::{State, entry, extension::Tree};
+use gix_index::{
+    State, entry,
+    extension::Tree,
+    write_tree::{Options, Outcome},
+};
 use gix_testtools::{TestResult, tempfile::TempDir};
-use gix_write_tree::{Options, Outcome, write_tree};
-use pretty_assertions::assert_eq;
 
 /// The script that makes a repository for each case and records what `git write-tree` makes of its index.
 const FIXTURE: &str = "make_write_tree.sh";
@@ -135,7 +137,7 @@ fn take_written(objects: &Objects) -> BTreeSet<ObjectId> {
 /// tree and the written trees are those of `git write-tree`, and return the outcome.
 fn assert_matches_git(case: &Case, index: &State, cache_tree: Option<&Tree>, options: Options) -> TestResult<Outcome> {
     let objects = case.objects()?;
-    let outcome = write_tree(index, cache_tree, &objects, options)?;
+    let outcome = index.write_tree(cache_tree, &objects, options)?;
     let name = case.name;
     assert_eq!(
         outcome.tree_id,

@@ -3,12 +3,11 @@ use gix_index::{
     State,
     entry::{Flags, Mode},
     extension::Tree,
+    write_tree::Options,
 };
 use gix_testtools::TestResult;
-use gix_write_tree::{Options, invalidate_path, repair_cache_tree, write_tree};
-use pretty_assertions::assert_eq;
 
-use crate::{Case, Objects, blob, new_index, no_objects, push, take_written};
+use super::{Case, Objects, blob, new_index, no_objects, push, take_written};
 
 /// The nodes of a cache tree by the paths of their directories, with the tree and the number of entries of the valid
 /// ones.
@@ -48,9 +47,9 @@ fn index_with(objects: &Objects, paths: &[&str]) -> TestResult<State> {
 fn without_a_cache_tree_the_node_of_every_directory_whose_tree_exists_is_valid() -> TestResult {
     let (objects, _dir) = no_objects()?;
     let index = index_with(&objects, &["a/b/x", "a/y", "c/z", "top"])?;
-    let written = write_tree(&index, None, &objects, Options::default())?;
+    let written = index.write_tree(None, &objects, Options::default())?;
     assert_eq!(
-        repair_cache_tree(&index, None, &objects)?,
+        index.repair_cache_tree(None, &objects)?,
         written.cache_tree,
         "the trees of all directories were written, so all of their nodes are valid"
     );
@@ -66,7 +65,7 @@ fn without_a_cache_tree_the_node_of_every_directory_whose_tree_exists_is_valid()
 fn the_nodes_of_directories_whose_trees_dont_exist_are_invalid_and_so_are_those_that_lead_to_them() -> TestResult {
     let (objects, _dir) = no_objects()?;
     let mut index = index_with(&objects, &["a/b/x", "a/y", "c/z"])?;
-    let before = write_tree(&index, None, &objects, Options::default())?;
+    let before = index.write_tree(None, &objects, Options::default())?;
     push(
         &mut index,
         "a/b/new",
@@ -76,22 +75,23 @@ fn the_nodes_of_directories_whose_trees_dont_exist_are_invalid_and_so_are_those_
     );
     index.sort_entries();
     let mut cache_tree = before.cache_tree;
-    invalidate_path(&mut cache_tree, "a/b/new".into());
+    cache_tree.invalidate_path("a/b/new".into());
 
     let (elsewhere, _elsewhere_dir) = no_objects()?;
-    let mut expected = nodes(&write_tree(&index, None, &elsewhere, Options { missing_ok: true })?.cache_tree);
+    let written_elsewhere = index.write_tree(None, &elsewhere, Options { missing_ok: true })?;
+    let mut expected = nodes(&written_elsewhere.cache_tree);
     for (path, node) in &mut expected {
         if ["", "a", "a/b"].contains(&path.as_str()) {
             *node = None;
         }
     }
     assert_eq!(
-        nodes(&repair_cache_tree(&index, Some(&cache_tree), &objects)?),
+        nodes(&index.repair_cache_tree(Some(&cache_tree), &objects)?),
         expected,
         "the tree of `a/b` with `a/b/new` doesn't exist, so neither do those of `a` and the root, while `c` keeps its tree"
     );
     assert_eq!(
-        nodes(&repair_cache_tree(&index, None, &objects)?),
+        nodes(&index.repair_cache_tree(None, &objects)?),
         expected,
         "without a cache tree, every directory is hashed, and the same trees exist"
     );
@@ -102,18 +102,18 @@ fn the_nodes_of_directories_whose_trees_dont_exist_are_invalid_and_so_are_those_
 fn valid_nodes_are_kept_without_their_entries_being_hashed() -> TestResult {
     let (objects, _dir) = no_objects()?;
     let index = index_with(&objects, &["c/z", "d/w"])?;
-    let written = write_tree(&index, None, &objects, Options::default())?;
+    let written = index.write_tree(None, &objects, Options::default())?;
     let mut stale = written.cache_tree.clone();
     stale.children[0].id = stale.children[1].id;
     assert_eq!(
-        repair_cache_tree(&index, Some(&stale), &objects)?,
+        index.repair_cache_tree(Some(&stale), &objects)?,
         stale,
         "the node of `c` names the tree of `d`, which exists and counts one entry as `c` does, so it is trusted"
     );
 
-    invalidate_path(&mut stale, "c/z".into());
+    stale.invalidate_path("c/z".into());
     assert_eq!(
-        repair_cache_tree(&index, Some(&stale), &objects)?,
+        index.repair_cache_tree(Some(&stale), &objects)?,
         written.cache_tree,
         "once `c/z` is invalidated, the trees of `c` and the root are hashed again"
     );
@@ -124,7 +124,7 @@ fn valid_nodes_are_kept_without_their_entries_being_hashed() -> TestResult {
 fn entries_added_with_intent_to_add_or_with_null_ids_make_the_nodes_of_their_directories_invalid() -> TestResult {
     let (objects, _dir) = no_objects()?;
     let mut index = index_with(&objects, &["a/x", "b/x", "c/y"])?;
-    write_tree(&index, None, &objects, Options::default())?;
+    index.write_tree(None, &objects, Options::default())?;
     let object_hash = gix_testtools::object_hash();
     push(
         &mut index,
@@ -135,7 +135,7 @@ fn entries_added_with_intent_to_add_or_with_null_ids_make_the_nodes_of_their_dir
     );
     push(&mut index, "b/null", Mode::FILE, object_hash.null(), Flags::empty());
     index.sort_entries();
-    let validity: Vec<_> = nodes(&repair_cache_tree(&index, None, &objects)?)
+    let validity: Vec<_> = nodes(&index.repair_cache_tree(None, &objects)?)
         .into_iter()
         .map(|(path, node)| (path, node.is_some()))
         .collect();
@@ -156,7 +156,7 @@ fn entries_added_with_intent_to_add_or_with_null_ids_make_the_nodes_of_their_dir
 fn the_cache_tree_of_an_empty_index_is_the_valid_empty_tree() -> TestResult {
     let (objects, _dir) = no_objects()?;
     assert_eq!(
-        nodes(&repair_cache_tree(&new_index(), None, &objects)?),
+        nodes(&new_index().repair_cache_tree(None, &objects)?),
         [(
             String::new(),
             Some((ObjectId::empty_tree(gix_testtools::object_hash()), 0))
@@ -170,12 +170,16 @@ fn the_cache_tree_of_an_empty_index_is_the_valid_empty_tree() -> TestResult {
 fn entries_that_write_tree_refuses_are_refused() -> TestResult {
     let case = Case::new("unmerged")?;
     let index = case.index()?;
-    let err = repair_cache_tree(&index, index.tree(), &case.objects()?).expect_err("unmerged entries have no tree");
+    let err = index
+        .repair_cache_tree(index.tree(), &case.objects()?)
+        .expect_err("unmerged entries have no tree");
     assert!(err.is_conflict(), "the conflicts have to be resolved first");
 
     let (objects, _dir) = no_objects()?;
     let index = index_with(&objects, &["a", "a/x"])?;
-    let err = repair_cache_tree(&index, None, &objects).expect_err("`a` can't be a file and a directory");
+    let err = index
+        .repair_cache_tree(None, &objects)
+        .expect_err("`a` can't be a file and a directory");
     assert!(err.is_corrupted(), "the index is corrupt");
     Ok(())
 }
