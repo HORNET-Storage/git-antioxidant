@@ -1,9 +1,8 @@
-use gix_delta::Index;
-use gix_pack::data::entry::Header;
+use gix_pack::data::{delta::Index, entry::Header};
 use gix_testtools::TestResult;
 
-/// Each delta that `git pack-objects` wrote into the pack of `make_deltas.sh` is the delta that gix-delta computes from
-/// the same base and target.
+/// Each delta that `git pack-objects` wrote into the pack of `make_deltas.sh` is the delta that `data::delta` computes
+/// from the same base and target.
 #[test]
 fn deltas_that_git_writes_have_the_same_bytes_here() -> TestResult {
     let object_hash = gix_testtools::object_hash();

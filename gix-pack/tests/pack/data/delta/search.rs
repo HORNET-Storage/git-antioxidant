@@ -11,14 +11,19 @@ use std::{
     },
 };
 
-use gix_delta::search::{Delta, InPack, Object, Options, find_deltas, name_hash};
 use gix_hash::ObjectId;
 use gix_object::Kind;
-use gix_pack::data::entry::Header;
+use gix_pack::data::{
+    delta::{
+        encode,
+        search::{Delta, InPack, Object, Options, find_deltas, name_hash},
+    },
+    entry::Header,
+};
 use gix_testtools::TestResult;
 use gix_utils::progress::{Count, Step, StepShared};
 
-use crate::{Packed, Rng, assert_pack_holds};
+use crate::data::delta::{Packed, Rng, assert_pack_holds};
 
 /// The kind and the data of objects by their id.
 type Data = HashMap<ObjectId, (Kind, Vec<u8>)>;
@@ -249,7 +254,7 @@ fn assert_deltas_build_their_objects(
                 assert_eq!(base.kind, object.kind, "the base of {} has its kind", object.id);
                 let bytes = match &delta.data {
                     Some(bytes) => bytes.clone(),
-                    None => gix_delta::encode(&data[&base.id].1, object_data).expect("neither is empty"),
+                    None => encode(&data[&base.id].1, object_data).expect("neither is empty"),
                 };
                 assert_eq!(bytes.len(), delta.size, "the delta of {} has its length", object.id);
                 Packed::delta(*kind, object_data, position[delta.base], bytes)
@@ -294,8 +299,7 @@ fn bases_are_those_of_git_pack_objects_with_one_thread() -> TestResult {
                     assert_eq!(base.id, *git_base, "{name}: the base of {}", object.id);
                     let ours = match &delta.data {
                         Some(data) => data.clone(),
-                        None => gix_delta::encode(&pack.data[&base.id].1, &pack.data[&object.id].1)
-                            .expect("neither is empty"),
+                        None => encode(&pack.data[&base.id].1, &pack.data[&object.id].1).expect("neither is empty"),
                     };
                     assert_eq!(
                         delta.size,
@@ -459,8 +463,8 @@ fn a_replaced_delta_leaves_the_cache() -> TestResult {
     };
     let near = edited(&[40]);
     let far = edited(&[10, 20, 30, 40, 50, 60]);
-    let near_delta = gix_delta::encode(&near, &text).expect("neither is empty");
-    let far_size = gix_delta::encode(&far, &text).expect("neither is empty").len();
+    let near_delta = encode(&near, &text).expect("neither is empty");
+    let far_size = encode(&far, &text).expect("neither is empty").len();
     assert!(
         near_delta.len() < far_size,
         "the target has a shorter delta against the near base"

@@ -1,8 +1,8 @@
-use gix_delta::{Index, encode};
 use gix_object::Kind::Blob;
+use gix_pack::data::delta::{Index, encode};
 use gix_testtools::TestResult;
 
-use crate::{Packed, Rng, assert_pack_holds};
+use crate::data::delta::{Packed, Rng, assert_pack_holds};
 
 #[test]
 fn edited_text_is_mostly_copied() -> TestResult {

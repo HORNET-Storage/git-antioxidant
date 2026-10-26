@@ -55,7 +55,7 @@ use gix_error::{Result, ResultExt, bail, cancelled, ensure, message};
 use gix_hash::ObjectId;
 use gix_utils::progress::{Count, StepShared};
 
-use crate::Index;
+use crate::data::delta::Index;
 
 /// Objects smaller than this many bytes are neither deltas nor bases.
 const MIN_SIZE: u64 = 50;

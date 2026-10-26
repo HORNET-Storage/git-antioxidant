@@ -1,4 +1,4 @@
-//! Every delta that gix-delta computes is checked by a reader of packs: the tests write packs that store objects as
+//! Every delta that `data::delta` computes is checked by a reader of packs: the tests write packs that store objects as
 //! these deltas and have `gix-pack` index them, which applies each delta and computes the id of each object from the
 //! result. The deltas that `git pack-objects` writes are compared with the ones computed here from the same objects.
 

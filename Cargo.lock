@@ -1859,20 +1859,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gix-delta"
-version = "0.0.0"
-dependencies = [
- "gix-error",
- "gix-hash",
- "gix-object",
- "gix-pack",
- "gix-parallel",
- "gix-testtools",
- "gix-utils",
- "gix-zlib",
-]
-
-[[package]]
 name = "gix-diff"
 version = "0.69.0"
 dependencies = [

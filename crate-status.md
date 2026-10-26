@@ -293,7 +293,17 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
             * [x] pack only changed objects as derived from input
             * [x] base object compression
             * [ ] delta compression
+               * [x] write the deltas that Git's `diff-delta.c` writes, from an index of the base that serves several objects
+               * [x] choose the base of each object as the delta search of `git pack-objects` does: its order, window, depth and
+                 size rules, window memory and delta cache
+               * [x] divide the search among threads that take work from each other, as `git pack-objects` does
+               * [x] leave objects that a pack stores whole out of the search among the objects of that pack, and keep the delta
+                 chains that a pack copies within the depth
+               * [ ] compress the deltas that it keeps, as Git does when it writes a pack to a file
+               * [ ] delta islands and the path walk
+               * [ ] name hash version 2
                * [ ] respect the `delta=false` attribute
+               * [ ] use them when writing packs (`data::output`)
             * [x] create 'thin' pack, i.e. deltas that are based on objects the other side has.
             * [x] parallel implementation that scales perfectly
         * [x] entries to pack data iterator
@@ -1052,20 +1062,6 @@ See its [README.md](https://github.com/GitoxideLabs/gitoxide/blob/main/gix-lock/
     * [ ] select objects by reachability, and write cruft packs
     * [ ] compute deltas
     * [ ] write multi-pack-indices and bitmaps
-* [x] API documentation
-    * [ ] Some examples
-
-### gix-delta
-* [ ] compute deltas and choose their bases as `git pack-objects` does
-    * [x] write the deltas that Git's `diff-delta.c` writes, from an index of the base that serves several objects
-    * [x] choose the base of each object as the delta search of `git pack-objects` does: its order, window, depth and
-      size rules, window memory and delta cache
-    * [x] divide the search among threads that take work from each other, as `git pack-objects` does
-    * [x] leave objects that a pack stores whole out of the search among the objects of that pack, and keep the delta
-      chains that a pack copies within the depth
-    * [ ] compress the deltas that it keeps, as Git does when it writes a pack to a file
-    * [ ] delta islands and the path walk
-    * [ ] name hash version 2
 * [x] API documentation
     * [ ] Some examples
 
