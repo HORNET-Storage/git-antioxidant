@@ -346,7 +346,10 @@ fn rename_by_similarity() -> TestResult {
             );
         }
         let out = out.expect("tracking enabled");
-        assert_eq!(out.num_similarity_checks, if percentage.is_some() { 1 } else { 0 });
+        assert_eq!(
+            out.num_similarity_checks, 0,
+            "like git, which compares sizes first, it doesn't estimate if 13 bytes are 76% similar to 20"
+        );
         assert_eq!(out.num_similarity_checks_skipped_for_rename_tracking_due_to_limit, 0);
         assert_eq!(out.num_similarity_checks_skipped_for_copy_tracking_due_to_limit, 0);
     }
@@ -456,6 +459,8 @@ fn copies_by_identity() -> TestResult {
             }),
         },
     )?;
+    // As for `git diff -C`, `base` is a source of copies as it was before its modification, and the added files are
+    // identical to it only after the modification.
     insta::assert_snapshot!(crate::normalize_debug_snapshot(&changes).0, @r#"
     [
         Modification {
@@ -465,41 +470,30 @@ fn copies_by_identity() -> TestResult {
             entry_mode: EntryMode(0o40000),
             id: Oid(2),
         },
-        Rewrite {
-            source_location: "base",
-            source_entry_mode: EntryMode(0o100644),
-            source_relation: None,
-            source_id: Oid(3),
-            diff: None,
+        Modification {
+            location: "base",
+            previous_entry_mode: EntryMode(0o100644),
+            previous_id: Oid(3),
             entry_mode: EntryMode(0o100644),
-            id: Oid(3),
+            id: Oid(4),
+        },
+        Addition {
             location: "c1",
             relation: None,
-            copy: true,
-        },
-        Rewrite {
-            source_location: "base",
-            source_entry_mode: EntryMode(0o100644),
-            source_relation: None,
-            source_id: Oid(3),
-            diff: None,
             entry_mode: EntryMode(0o100644),
-            id: Oid(3),
+            id: Oid(4),
+        },
+        Addition {
             location: "c2",
             relation: None,
-            copy: true,
-        },
-        Rewrite {
-            source_location: "base",
-            source_entry_mode: EntryMode(0o100644),
-            source_relation: None,
-            source_id: Oid(3),
-            diff: None,
             entry_mode: EntryMode(0o100644),
-            id: Oid(3),
+            id: Oid(4),
+        },
+        Addition {
             location: "dir/c3",
             relation: None,
-            copy: true,
+            entry_mode: EntryMode(0o100644),
+            id: Oid(4),
         },
     ]
     "#);
@@ -524,6 +518,8 @@ fn copies_by_similarity() -> TestResult {
             }),
         },
     )?;
+    // As `git diff -C` does, which reports similarities of 87%, 77% and 77%, the copies are found from `base` as it was
+    // before its modification, which is reported as well.
     insta::assert_snapshot!(crate::normalize_debug_snapshot(&changes).0, @r#"
     [
         Modification {
@@ -538,9 +534,17 @@ fn copies_by_similarity() -> TestResult {
             source_entry_mode: EntryMode(0o100644),
             source_relation: None,
             source_id: Oid(3),
-            diff: None,
+            diff: Some(
+                DiffLineStats {
+                    removals: 0,
+                    insertions: 1,
+                    before: 10,
+                    after: 11,
+                    similarity: 0.875,
+                },
+            ),
             entry_mode: EntryMode(0o100644),
-            id: Oid(3),
+            id: Oid(4),
             location: "c4",
             relation: None,
             copy: true,
@@ -553,14 +557,14 @@ fn copies_by_similarity() -> TestResult {
             diff: Some(
                 DiffLineStats {
                     removals: 0,
-                    insertions: 1,
-                    before: 11,
+                    insertions: 2,
+                    before: 10,
                     after: 12,
-                    similarity: 0.8888889,
+                    similarity: 0.77776664,
                 },
             ),
             entry_mode: EntryMode(0o100644),
-            id: Oid(4),
+            id: Oid(5),
             location: "c5",
             relation: None,
             copy: true,
@@ -573,25 +577,32 @@ fn copies_by_similarity() -> TestResult {
             diff: Some(
                 DiffLineStats {
                     removals: 0,
-                    insertions: 1,
-                    before: 11,
+                    insertions: 2,
+                    before: 10,
                     after: 12,
-                    similarity: 0.8888889,
+                    similarity: 0.77776664,
                 },
             ),
             entry_mode: EntryMode(0o100644),
-            id: Oid(5),
+            id: Oid(6),
             location: "dir/c6",
             relation: None,
             copy: true,
+        },
+        Modification {
+            location: "base",
+            previous_entry_mode: EntryMode(0o100644),
+            previous_id: Oid(3),
+            entry_mode: EntryMode(0o100644),
+            id: Oid(4),
         },
     ]
     "#);
 
     let out = out.expect("tracking enabled");
     assert_eq!(
-        out.num_similarity_checks, 2,
-        "two are similar, the other one is identical"
+        out.num_similarity_checks, 3,
+        "all three are similar to the old state of `base`"
     );
     assert_eq!(out.num_similarity_checks_skipped_for_rename_tracking_due_to_limit, 0);
     assert_eq!(out.num_similarity_checks_skipped_for_copy_tracking_due_to_limit, 0);
@@ -622,8 +633,8 @@ fn copies_in_entire_tree_by_similarity() -> TestResult {
 
     let out = out.expect("tracking enabled");
     assert_eq!(
-        out.num_similarity_checks, 3,
-        "it does have some candidates, probably for rename tracking"
+        out.num_similarity_checks, 0,
+        "the 4 bytes of the modified `b` are too few to be similar to any added file, so git doesn't estimate it"
     );
     assert_eq!(
         out.num_similarity_checks_skipped_for_rename_tracking_due_to_limit, 0,
@@ -701,7 +712,10 @@ fn copies_in_entire_tree_by_similarity() -> TestResult {
         ]
         "#);
     let out = out.expect("tracking enabled");
-    assert_eq!(out.num_similarity_checks, 22);
+    assert_eq!(
+        out.num_similarity_checks, 10,
+        "`newly-added` has 36 bytes, so like git, only the 10 sources of 18 to 72 bytes are compared with it"
+    );
     assert_eq!(
         out.num_similarity_checks_skipped_for_rename_tracking_due_to_limit, 0,
         "no limit configured"
@@ -772,12 +786,14 @@ fn copies_in_entire_tree_by_similarity_with_limit() -> TestResult {
     "#);
 
     let out = out.expect("tracking enabled");
-    assert_eq!(out.num_similarity_checks, 0, "similarity checks can't run");
+    // Like `git diff -C -C` with this limit, which suggests a limit of 15, only the modified `b` remains a source to
+    // estimate, as the 14 files that didn't change are left out, and its size rules out its similarity.
+    assert_eq!(out.num_similarity_checks, 0);
     assert_eq!(
         out.num_similarity_checks_skipped_for_rename_tracking_due_to_limit, 0,
         "no limit configured"
     );
-    assert_eq!(out.num_similarity_checks_skipped_for_copy_tracking_due_to_limit, 19);
+    assert_eq!(out.num_similarity_checks_skipped_for_copy_tracking_due_to_limit, 14);
 
     Ok(())
 }
@@ -797,6 +813,8 @@ fn copies_by_similarity_with_limit() -> TestResult {
         },
     )?;
 
+    // As `git diff -C` with this limit, which suggests a limit of 3, it finds no copies of `base` as it was before its
+    // modification.
     insta::assert_snapshot!(crate::normalize_debug_snapshot(&changes).0, @r#"
     [
         Modification {
@@ -806,29 +824,30 @@ fn copies_by_similarity_with_limit() -> TestResult {
             entry_mode: EntryMode(0o40000),
             id: Oid(2),
         },
-        Rewrite {
-            source_location: "base",
-            source_entry_mode: EntryMode(0o100644),
-            source_relation: None,
-            source_id: Oid(3),
-            diff: None,
+        Modification {
+            location: "base",
+            previous_entry_mode: EntryMode(0o100644),
+            previous_id: Oid(3),
             entry_mode: EntryMode(0o100644),
-            id: Oid(3),
-            location: "c4",
-            relation: None,
-            copy: true,
+            id: Oid(4),
         },
         Addition {
-            location: "c5",
+            location: "c4",
             relation: None,
             entry_mode: EntryMode(0o100644),
             id: Oid(4),
         },
         Addition {
-            location: "dir/c6",
+            location: "c5",
             relation: None,
             entry_mode: EntryMode(0o100644),
             id: Oid(5),
+        },
+        Addition {
+            location: "dir/c6",
+            relation: None,
+            entry_mode: EntryMode(0o100644),
+            id: Oid(6),
         },
     ]
     "#);
@@ -837,8 +856,8 @@ fn copies_by_similarity_with_limit() -> TestResult {
     assert_eq!(out.num_similarity_checks, 0);
     assert_eq!(out.num_similarity_checks_skipped_for_rename_tracking_due_to_limit, 0);
     assert_eq!(
-        out.num_similarity_checks_skipped_for_copy_tracking_due_to_limit, 2,
-        "limit prevents any similarity check from being performed, and identity fails in most places"
+        out.num_similarity_checks_skipped_for_copy_tracking_due_to_limit, 3,
+        "the limit prevents comparing the one source with the three added files, none of which is identical to it"
     );
 
     Ok(())
@@ -860,6 +879,8 @@ fn realistic_renames_by_identity() -> TestResult {
         },
     )?;
 
+    // As `git diff -C` does, the empty `file.rs` is copied to the first of the empty files that were added, in the
+    // order of their locations, and renamed to the last one.
     insta::assert_snapshot!(crate::normalize_debug_snapshot(&(changes.into_iter().filter(|c| !c.entry_mode().is_tree()).collect::<Vec<_>>())).0, @r#"
     [
         Rewrite {
@@ -872,13 +893,19 @@ fn realistic_renames_by_identity() -> TestResult {
             id: Oid(1),
             location: "git-index/src/file/mod.rs",
             relation: None,
-            copy: false,
+            copy: true,
         },
-        Addition {
-            location: "git-index/tests/index/file/access.rs",
-            relation: None,
+        Rewrite {
+            source_location: "git-index/src/file.rs",
+            source_entry_mode: EntryMode(0o100644),
+            source_relation: None,
+            source_id: Oid(1),
+            diff: None,
             entry_mode: EntryMode(0o100644),
             id: Oid(1),
+            location: "git-index/tests/index/file/access.rs",
+            relation: None,
+            copy: false,
         },
         Modification {
             location: "git-index/tests/index/file/mod.rs",
@@ -917,7 +944,10 @@ index e69de29..8ba3a16 100644
     }
 
     let out = out.expect("tracking enabled");
-    assert_eq!(out.num_similarity_checks, 1);
+    assert_eq!(
+        out.num_similarity_checks, 0,
+        "all added files are identical to a source"
+    );
     assert_eq!(out.num_similarity_checks_skipped_for_rename_tracking_due_to_limit, 0);
     assert_eq!(out.num_similarity_checks_skipped_for_copy_tracking_due_to_limit, 0);
 
@@ -1694,194 +1724,98 @@ fn realistic_renames_3_without_identity() -> TestResult {
         },
     )?;
 
-    // The same rewrites are found in both modes, but their emitted order follows object-id ordering.
-    match crate::fixture_hash_kind() {
-        gix_hash::Kind::Sha1 => {
-            insta::assert_snapshot!(crate::normalize_debug_snapshot(&(
-                changes
-                    .into_iter()
-                    .filter(|c| !c.entry_mode().is_tree() || c.relation().is_some_and(|r| matches!(r, Relation::Parent(_))))
-                    .collect::<Vec<_>>())).0,
-                @r#"
-            [
-                Rewrite {
-                    source_location: "src/plumbing/options.rs",
-                    source_entry_mode: EntryMode(0o100644),
-                    source_relation: Some(
-                        ChildOfParent(
-                            2,
-                        ),
-                    ),
-                    source_id: Oid(1),
-                    diff: None,
-                    entry_mode: EntryMode(0o100644),
-                    id: Oid(1),
-                    location: "src/plumbing-renamed/options/mod.rs",
-                    relation: Some(
-                        ChildOfParent(
-                            1,
-                        ),
-                    ),
-                    copy: false,
-                },
-                Rewrite {
-                    source_location: "src/plumbing/mod.rs",
-                    source_entry_mode: EntryMode(0o100644),
-                    source_relation: Some(
-                        ChildOfParent(
-                            2,
-                        ),
-                    ),
-                    source_id: Oid(2),
-                    diff: None,
-                    entry_mode: EntryMode(0o100644),
-                    id: Oid(2),
-                    location: "src/plumbing-renamed/mod.rs",
-                    relation: Some(
-                        ChildOfParent(
-                            1,
-                        ),
-                    ),
-                    copy: false,
-                },
-                Rewrite {
-                    source_location: "src/plumbing/main.rs",
-                    source_entry_mode: EntryMode(0o100644),
-                    source_relation: Some(
-                        ChildOfParent(
-                            2,
-                        ),
-                    ),
-                    source_id: Oid(3),
-                    diff: None,
-                    entry_mode: EntryMode(0o100644),
-                    id: Oid(3),
-                    location: "src/plumbing-renamed/main.rs",
-                    relation: Some(
-                        ChildOfParent(
-                            1,
-                        ),
-                    ),
-                    copy: false,
-                },
-                Rewrite {
-                    source_location: "src/plumbing",
-                    source_entry_mode: EntryMode(0o40000),
-                    source_relation: Some(
-                        Parent(
-                            2,
-                        ),
-                    ),
-                    source_id: Oid(4),
-                    diff: None,
-                    entry_mode: EntryMode(0o40000),
-                    id: Oid(5),
-                    location: "src/plumbing-renamed",
-                    relation: Some(
-                        Parent(
-                            1,
-                        ),
-                    ),
-                    copy: false,
-                },
-            ]
-            "#
-            );
-        }
-        gix_hash::Kind::Sha256 => {
-            insta::assert_snapshot!(crate::normalize_debug_snapshot(&(
-                changes
-                    .into_iter()
-                    .filter(|c| !c.entry_mode().is_tree() || c.relation().is_some_and(|r| matches!(r, Relation::Parent(_))))
-                    .collect::<Vec<_>>())).0,
-                @r#"
-            [
-                Rewrite {
-                    source_location: "src/plumbing/mod.rs",
-                    source_entry_mode: EntryMode(0o100644),
-                    source_relation: Some(
-                        ChildOfParent(
-                            2,
-                        ),
-                    ),
-                    source_id: Oid(1),
-                    diff: None,
-                    entry_mode: EntryMode(0o100644),
-                    id: Oid(1),
-                    location: "src/plumbing-renamed/mod.rs",
-                    relation: Some(
-                        ChildOfParent(
-                            1,
-                        ),
-                    ),
-                    copy: false,
-                },
-                Rewrite {
-                    source_location: "src/plumbing/main.rs",
-                    source_entry_mode: EntryMode(0o100644),
-                    source_relation: Some(
-                        ChildOfParent(
-                            2,
-                        ),
-                    ),
-                    source_id: Oid(2),
-                    diff: None,
-                    entry_mode: EntryMode(0o100644),
-                    id: Oid(2),
-                    location: "src/plumbing-renamed/main.rs",
-                    relation: Some(
-                        ChildOfParent(
-                            1,
-                        ),
-                    ),
-                    copy: false,
-                },
-                Rewrite {
-                    source_location: "src/plumbing/options.rs",
-                    source_entry_mode: EntryMode(0o100644),
-                    source_relation: Some(
-                        ChildOfParent(
-                            2,
-                        ),
-                    ),
-                    source_id: Oid(3),
-                    diff: None,
-                    entry_mode: EntryMode(0o100644),
-                    id: Oid(3),
-                    location: "src/plumbing-renamed/options/mod.rs",
-                    relation: Some(
-                        ChildOfParent(
-                            1,
-                        ),
-                    ),
-                    copy: false,
-                },
-                Rewrite {
-                    source_location: "src/plumbing",
-                    source_entry_mode: EntryMode(0o40000),
-                    source_relation: Some(
-                        Parent(
-                            2,
-                        ),
-                    ),
-                    source_id: Oid(4),
-                    diff: None,
-                    entry_mode: EntryMode(0o40000),
-                    id: Oid(5),
-                    location: "src/plumbing-renamed",
-                    relation: Some(
-                        Parent(
-                            1,
-                        ),
-                    ),
-                    copy: false,
-                },
-            ]
-            "#
-            );
-        }
-        _ => unreachable!("tests only support sha1 and sha256 fixtures"),
-    }
+    // The files are emitted in the order of the locations of their destinations as `git diff -M` reports them, and
+    // the directory that they were renamed with follows them.
+    insta::assert_snapshot!(crate::normalize_debug_snapshot(&(
+        changes
+            .into_iter()
+            .filter(|c| !c.entry_mode().is_tree() || c.relation().is_some_and(|r| matches!(r, Relation::Parent(_))))
+            .collect::<Vec<_>>())).0,
+        @r#"
+    [
+        Rewrite {
+            source_location: "src/plumbing/main.rs",
+            source_entry_mode: EntryMode(0o100644),
+            source_relation: Some(
+                ChildOfParent(
+                    2,
+                ),
+            ),
+            source_id: Oid(1),
+            diff: None,
+            entry_mode: EntryMode(0o100644),
+            id: Oid(1),
+            location: "src/plumbing-renamed/main.rs",
+            relation: Some(
+                ChildOfParent(
+                    1,
+                ),
+            ),
+            copy: false,
+        },
+        Rewrite {
+            source_location: "src/plumbing/mod.rs",
+            source_entry_mode: EntryMode(0o100644),
+            source_relation: Some(
+                ChildOfParent(
+                    2,
+                ),
+            ),
+            source_id: Oid(2),
+            diff: None,
+            entry_mode: EntryMode(0o100644),
+            id: Oid(2),
+            location: "src/plumbing-renamed/mod.rs",
+            relation: Some(
+                ChildOfParent(
+                    1,
+                ),
+            ),
+            copy: false,
+        },
+        Rewrite {
+            source_location: "src/plumbing/options.rs",
+            source_entry_mode: EntryMode(0o100644),
+            source_relation: Some(
+                ChildOfParent(
+                    2,
+                ),
+            ),
+            source_id: Oid(3),
+            diff: None,
+            entry_mode: EntryMode(0o100644),
+            id: Oid(3),
+            location: "src/plumbing-renamed/options/mod.rs",
+            relation: Some(
+                ChildOfParent(
+                    1,
+                ),
+            ),
+            copy: false,
+        },
+        Rewrite {
+            source_location: "src/plumbing",
+            source_entry_mode: EntryMode(0o40000),
+            source_relation: Some(
+                Parent(
+                    2,
+                ),
+            ),
+            source_id: Oid(4),
+            diff: None,
+            entry_mode: EntryMode(0o40000),
+            id: Oid(5),
+            location: "src/plumbing-renamed",
+            relation: Some(
+                Parent(
+                    1,
+                ),
+            ),
+            copy: false,
+        },
+    ]
+    "#
+    );
 
     let out = out.expect("tracking enabled");
     assert_eq!(

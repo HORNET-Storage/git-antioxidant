@@ -1,12 +1,16 @@
+//! The fixtures record what `git diff -M` reports for the trees of each of their cases, which the renames that the
+//! finder finds are compared with. The renames of a side of a merge are found among files kept in memory.
+
 use std::path::Path;
 
+use gix_diff::rewrites::rename::{Blobs, Content, Entry, MAX_SCORE, Options, Rename, detect};
 use gix_diff::tree::{Recorder, State, recorder::Change};
-use gix_diffcore::rename::{Blobs, Content, Entry, MAX_SCORE, Options, Rename, detect};
 use gix_hash::ObjectId;
 use gix_object::FindExt;
 use gix_odb::HeaderExt;
 use gix_testtools::TestResult;
 
+mod copies;
 mod merge;
 
 /// The script that makes a repository with an old and a new tree for each case and records what `git diff -M` reports
@@ -15,13 +19,16 @@ const FIXTURE: &str = "make_renames.sh";
 /// The script that makes a case whose files end in a line without a line feed, which git counts since version 2.44.
 const LAST_LINE_FIXTURE: &str = "make_unterminated_last_line.sh";
 
-/// What `git diff -M` reported for the trees of a case.
+/// What `git diff -M` or `git diff -C` reported for the trees of a case.
 struct Git {
-    /// The changes as `R<similarity> <source> <destination>`, `A <path>`, `D <path>`, `M <path>` or `T <path>`, in the
-    /// order of the paths of the destinations.
+    /// The changes as `R<similarity> <source> <destination>`, `C<similarity> <source> <destination>`, `A <path>`,
+    /// `D <path>`, `M <path>` or `T <path>`, in the order of the paths of the destinations.
     lines: Vec<String>,
     /// The limit that git suggested in its warning because `diff.renameLimit` prevented the similarity estimates.
     needed_limit: Option<usize>,
+    /// Whether git warned that it only found copies from modified paths, as `diff.renameLimit` allowed the similarity
+    /// estimates only without the files that didn't change.
+    copies_from_modified_paths_only: bool,
 }
 
 /// Find the renames between the trees of `case` that are at least `percentage` similar, with a rename limit of `limit`,
@@ -114,7 +121,7 @@ fn assert_matches_git_at(fixture: &Path, case: &str, percentage: u32, limit: usi
     }
     lines.sort_by(|a, b| key_path(a).cmp(key_path(b)));
 
-    let git = git_report(&dir, percentage, limit)?;
+    let git = git_report(&dir, &format!("{percentage}-{limit}"))?;
     pretty_assertions::assert_eq!(
         lines,
         git.lines,
@@ -148,10 +155,11 @@ fn assert_matches_git_at(fixture: &Path, case: &str, percentage: u32, limit: usi
     Ok(git)
 }
 
-/// What `git diff -M<percentage>%` reported for the trees in `dir` with `diff.renameLimit=<limit>`.
-fn git_report(dir: &Path, percentage: u32, limit: usize) -> TestResult<Git> {
-    let report = std::fs::read(dir.join(format!("{percentage}-{limit}.expected")))?;
-    let mut fields = report
+/// What git reported for the trees in `dir` in `<report>.expected` and `<report>.warnings`, for which the fixtures name
+/// each report after the options that git ran with.
+fn git_report(dir: &Path, report: &str) -> TestResult<Git> {
+    let expected = std::fs::read(dir.join(format!("{report}.expected")))?;
+    let mut fields = expected
         .split(|&byte| byte == 0)
         .filter(|field| !field.is_empty())
         .map(std::str::from_utf8);
@@ -159,7 +167,7 @@ fn git_report(dir: &Path, percentage: u32, limit: usize) -> TestResult<Git> {
     while let Some(status) = fields.next() {
         let status = status?;
         let mut line = status.to_owned();
-        for _ in 0..if status.starts_with('R') { 2 } else { 1 } {
+        for _ in 0..if status.starts_with(['R', 'C']) { 2 } else { 1 } {
             let path = fields
                 .next()
                 .ok_or("git names the paths of each change after its status")?;
@@ -170,7 +178,7 @@ fn git_report(dir: &Path, percentage: u32, limit: usize) -> TestResult<Git> {
     }
     lines.sort_by(|a, b| key_path(a).cmp(key_path(b)));
 
-    let warnings = std::fs::read_to_string(dir.join(format!("{percentage}-{limit}.warnings")))?;
+    let warnings = std::fs::read_to_string(dir.join(format!("{report}.warnings")))?;
     let needed_limit = match warnings.split_once("to at least ") {
         Some((_, advice)) => Some(advice.split(' ').next().unwrap_or_default().parse()?),
         None => {
@@ -181,7 +189,11 @@ fn git_report(dir: &Path, percentage: u32, limit: usize) -> TestResult<Git> {
             None
         }
     };
-    Ok(Git { lines, needed_limit })
+    Ok(Git {
+        lines,
+        needed_limit,
+        copies_from_modified_paths_only: warnings.contains("only found copies from modified paths"),
+    })
 }
 
 /// The path of the destination of a change, by which git orders its report.

@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use bstr::{BString, ByteSlice};
-use gix_diffcore::{
+use gix_diff::rewrites::{
     rename::{
         Blobs, Content, Entry, MAX_SCORE,
         merge::{

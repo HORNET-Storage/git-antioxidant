@@ -17,7 +17,7 @@ default = ["blob", "index"]
 sha1 = ["gix-hash/sha1"]
 ## Enable support for the SHA-256 hash by enabling the respective feature in the `gix-hash` crate.
 sha256 = ["gix-hash/sha256"]
-## Enable diffing of blobs using imara-diff.
+## Enable diffing of blobs using imara-diff, and the tracking of renames and copies.
 blob = [
     "dep:imara-diff",
     "dep:gix-filter",
@@ -27,7 +27,8 @@ blob = [
     "dep:gix-command",
     "dep:gix-tempfile",
     "dep:gix-trace",
-    "dep:gix-traverse"
+    "dep:gix-traverse",
+    "dep:gix-hashtable"
 ]
 ## Enable diffing of two indices, which also allows for a generic rewrite tracking implementation.
 index = ["dep:gix-index", "dep:gix-pathspec", "dep:gix-attributes"]
@@ -66,6 +67,7 @@ gix-fs = { version = "^0.24.0", path = "../gix-fs", optional = true }
 gix-tempfile = { version = "^26.0.0", path = "../gix-tempfile", optional = true }
 gix-trace = { version = "^0.3.0", path = "../gix-trace", optional = true }
 gix-traverse = { version = "^0.63.0", path = "../gix-traverse", optional = true }
+gix-hashtable = { version = "^0.18.0", path = "../gix-hashtable", optional = true }
 imara-diff = { package = "gix-imara-diff", version = "^0.3.1", optional = true, path = "../gix-imara-diff" }
 
 serde = { version = "1.0.114", optional = true, default-features = false, features = ["derive"] }

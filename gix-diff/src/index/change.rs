@@ -219,4 +219,21 @@ impl rewrites::tracker::Change for ChangeRef<'_, '_> {
             }
         }
     }
+
+    fn previous_id_and_entry_mode(&self) -> (&gix_hash::oid, tree::EntryMode) {
+        match self {
+            ChangeRef::Modification {
+                previous_id,
+                previous_entry_mode,
+                ..
+            } => (
+                previous_id,
+                previous_entry_mode
+                    .to_tree_entry_mode()
+                    // Default is for the impossible case - just don't let it participate in rename tracking.
+                    .unwrap_or(tree::EntryKind::Tree.into()),
+            ),
+            _ => self.id_and_entry_mode(),
+        }
+    }
 }

@@ -43,7 +43,8 @@ pub mod pipeline;
 ///
 pub mod platform;
 
-/// Information about the diff performed to detect similarity.
+/// Information about the lines that change between the source and the destination of a rename or copy, along with
+/// their similarity.
 #[derive(Debug, Default, Clone, Copy, PartialEq, PartialOrd)]
 pub struct DiffLineStats {
     /// The amount of lines to remove from the source to get to the destination.
@@ -55,8 +56,9 @@ pub struct DiffLineStats {
     /// The amount of lines of the new state, in the destination.
     pub after: usize,
     /// A range from 0 to 1.0, where 1.0 is a perfect match and 0.5 is a similarity of 50%.
-    /// Similarity is the ratio between all lines in the previous blob and the current blob,
-    /// calculated as `(old_lines_count - new_lines_count) as f32 / old_lines_count.max(new_lines_count) as f32`.
+    /// It is the similarity that Git estimates for renames and copies, as a fraction of
+    /// [`MAX_SCORE`](crate::rewrites::rename::MAX_SCORE): the share of the bytes of the larger file that the
+    /// destination has of the source.
     pub similarity: f32,
 }
 

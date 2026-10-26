@@ -7,6 +7,8 @@ use gix_diff::{
 use gix_hash::{ObjectId, oid};
 use gix_object::tree::{EntryKind, EntryMode};
 
+mod rename;
+mod strmap;
 mod tracker;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

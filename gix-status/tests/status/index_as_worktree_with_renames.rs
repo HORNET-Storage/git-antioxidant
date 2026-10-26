@@ -12,18 +12,28 @@ use crate::fixture_path;
 #[test]
 fn changed_and_untracked_and_renamed() {
     let expectations_with_dirwalk = [
-        // Not always will we match the right source to destinations, there is ambiguity.
+        // As `git diff -C30% --find-copies-harder` pairs them once the untracked files are added with `git add -N`,
+        // which takes the unchanged `empty` as a source like the status does: of the destinations of `dir/content`,
+        // the last in the order of their locations is its rename, and the others are its copies.
         Expectation::Rewrite {
             source_rela_path: "dir/content",
             dest_rela_path: "content-copy",
             dest_dirwalk_status: gix_dir::entry::Status::Untracked,
             diff: None,
-            copy: false,
+            copy: true,
         },
-        Expectation::DirwalkEntry {
-            rela_path: "content-copy-with-rewrite",
-            status: gix_dir::entry::Status::Untracked,
-            disk_kind: Some(gix_dir::entry::Kind::File),
+        Expectation::Rewrite {
+            source_rela_path: "dir/content",
+            dest_rela_path: "content-copy-with-rewrite",
+            dest_dirwalk_status: gix_dir::entry::Status::Untracked,
+            diff: Some(gix_diff::blob::DiffLineStats {
+                removals: 0,
+                insertions: 1,
+                before: 1,
+                after: 2,
+                similarity: 0.6666667,
+            }),
+            copy: true,
         },
         Expectation::Rewrite {
             source_rela_path: "dir/content2",
@@ -45,11 +55,12 @@ fn changed_and_untracked_and_renamed() {
             diff: None,
             copy: true,
         },
-        // This is just detected as untracked, related to how the rename-tracker matches pairs
-        Expectation::DirwalkEntry {
-            rela_path: "plainly-renamed-content",
-            status: gix_dir::entry::Status::Untracked,
-            disk_kind: Some(gix_dir::entry::Kind::File),
+        Expectation::Rewrite {
+            source_rela_path: "dir/content",
+            dest_rela_path: "plainly-renamed-content",
+            dest_dirwalk_status: gix_dir::entry::Status::Untracked,
+            diff: None,
+            copy: false,
         },
         Expectation::Rewrite {
             source_rela_path: "executable",
@@ -94,7 +105,7 @@ fn changed_and_untracked_and_renamed() {
         out.rewrites,
         Some(gix_diff::rewrites::Outcome {
             options: rewrites,
-            num_similarity_checks: 11,
+            num_similarity_checks: 9,
             num_similarity_checks_skipped_for_rename_tracking_due_to_limit: 0,
             num_similarity_checks_skipped_for_copy_tracking_due_to_limit: 0,
         })

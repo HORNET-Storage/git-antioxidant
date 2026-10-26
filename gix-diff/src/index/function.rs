@@ -163,7 +163,22 @@ where
         let out = tracker.emit(
             |dst, src| {
                 let change = if let Some(src) = src {
-                    let (lhs_path, lhs_index, lhs_mode, lhs_id) = src.change.fields();
+                    // The source of a copy of a modified entry is its state in `lhs`.
+                    let (lhs_path, lhs_index, lhs_mode, lhs_id) = match src.change {
+                        ChangeRef::Modification {
+                            location,
+                            previous_index,
+                            previous_entry_mode,
+                            previous_id,
+                            ..
+                        } => (
+                            location.as_ref(),
+                            *previous_index,
+                            *previous_entry_mode,
+                            previous_id.as_ref(),
+                        ),
+                        change => change.fields(),
+                    };
                     let (rhs_path, rhs_index, rhs_mode, rhs_id) = dst.change.fields();
                     ChangeRef::Rewrite {
                         source_location: Cow::Owned(lhs_path.into()),
@@ -195,13 +210,14 @@ where
             find,
             |push| {
                 for (index, entry) in lhs.entries().iter().enumerate() {
-                    let path = entry.path(rhs);
+                    let path = entry.path(lhs);
+                    // An entry that didn't change, which is its own previous state.
                     push(
                         ChangeRef::Modification {
                             location: Cow::Borrowed(path),
-                            previous_index: 0, /* does not matter */
+                            previous_index: index,
                             previous_entry_mode: entry.mode,
-                            previous_id: Cow::Owned(entry.id.kind().null()),
+                            previous_id: Cow::Borrowed(entry.id.as_ref()),
                             index,
                             entry_mode: entry.mode,
                             id: Cow::Borrowed(entry.id.as_ref()),

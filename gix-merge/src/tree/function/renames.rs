@@ -11,8 +11,10 @@
 use std::collections::{BTreeSet, HashMap, hash_map};
 
 use bstr::{BStr, BString, ByteSlice};
-use gix_diff::tree_with_rewrites::Change;
-use gix_diffcore::rename::{self as diffcore, MAX_SCORE};
+use gix_diff::{
+    rewrites::rename::{self as diffcore, MAX_SCORE},
+    tree_with_rewrites::Change,
+};
 use gix_error::{OptionExt, Result, ResultExt, message};
 use gix_filter::attributes::{StateRef, search::Outcome as Attributes};
 use gix_hash::ObjectId;

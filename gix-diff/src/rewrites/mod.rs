@@ -2,11 +2,16 @@ use std::collections::BTreeSet;
 
 use crate::{Rewrites, tree::visit::ChangeId};
 
+pub mod rename;
+pub mod strmap;
 /// Types related to the rename tracker for renames, rewrites and copies.
 pub mod tracker;
 
 /// A type to retain state related to an ongoing tracking operation to retain sets of interesting changes
 /// of which some are retained to at a later stage compute the ones that seem to be renames or copies.
+///
+/// It pairs files as [`rename::detect()`] and [`rename::copies::detect()`] do, following Git's rules, and matches
+/// directories that were deleted and added by their identity before that.
 pub struct Tracker<T> {
     /// The tracked items thus far, which will be used to determine renames/copies and rewrites later.
     items: Vec<tracker::Item<T>>,
@@ -21,10 +26,11 @@ pub struct Tracker<T> {
 /// Determine in which set of files to search for copies.
 #[derive(Default, Debug, Copy, Clone, Eq, PartialEq)]
 pub enum CopySource {
-    /// Find copies from the set of modified files only.
+    /// Find copies from the set of modified and deleted files only, as `git diff -C` does.
     #[default]
     FromSetOfModifiedFiles,
-    /// Find copies from the set of modified files, as well as all files known to the source (i.e. previous state of the tree).
+    /// Find copies from the set of modified and deleted files, as well as all files known to the source (i.e. previous
+    /// state of the tree), as `git diff --find-copies-harder` does.
     ///
     /// This can be an expensive operation as it scales exponentially with the total amount of files in the set.
     FromSetOfModifiedFilesAndAllSources,
@@ -55,11 +61,13 @@ impl Default for Copies {
 pub struct Outcome {
     /// The options used to guide the rewrite tracking. Either fully provided by the caller or retrieved from git configuration.
     pub options: Rewrites,
-    /// The amount of similarity checks that have been conducted to find renamed files and potentially copies.
+    /// The amount of similarity checks that have been conducted to find renamed files and potentially copies, each an
+    /// estimate of the similarity of two files as Git makes it.
     pub num_similarity_checks: usize,
     /// Set to the amount of worst-case rename permutations we didn't search as our limit didn't allow it.
     pub num_similarity_checks_skipped_for_rename_tracking_due_to_limit: usize,
-    /// Set to the amount of worst-case copy permutations we didn't search as our limit didn't allow it.
+    /// Set to the amount of worst-case copy permutations we didn't search as our limit didn't allow it, which is used
+    /// instead of the field for renames whenever copies are tracked as Git checks the limit only once then.
     pub num_similarity_checks_skipped_for_copy_tracking_due_to_limit: usize,
 }
 

@@ -294,7 +294,6 @@ members = [
     "gix-revwalk",
     "gix-fsck",
     "gix-bundle",
-    "gix-diffcore",
     "gix-add",
     "gix-switch",
     "gix-repack",

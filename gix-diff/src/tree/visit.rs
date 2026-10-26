@@ -141,6 +141,19 @@ mod change_impls {
                 | Change::Modification { entry_mode, oid, .. } => (oid, *entry_mode),
             }
         }
+
+        fn previous_id_and_entry_mode(&self) -> (&oid, EntryMode) {
+            match self {
+                Change::Addition { entry_mode, oid, .. } | Change::Deletion { entry_mode, oid, .. } => {
+                    (oid, *entry_mode)
+                }
+                Change::Modification {
+                    previous_entry_mode,
+                    previous_oid,
+                    ..
+                } => (previous_oid, *previous_entry_mode),
+            }
+        }
     }
 }
 

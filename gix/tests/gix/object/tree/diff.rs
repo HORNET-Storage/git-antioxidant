@@ -247,6 +247,30 @@ mod track_rewrites {
         insta::assert_debug_snapshot!(actual, @r#"
         [
             Rewrite {
+                source_location: "cli/src/commands/chmod.rs",
+                source_entry_mode: EntryMode(0o100644),
+                source_relation: None,
+                source_id: Sha1(8f55dec5b81779d23539fa7146d713cc42df70f4),
+                diff: Some(
+                    DiffLineStats {
+                        removals: 0,
+                        insertions: 17,
+                        before: 124,
+                        after: 141,
+                        similarity: 0.90605,
+                    },
+                ),
+                entry_mode: EntryMode(0o100644),
+                id: Sha1(94f78deb408d181ccea9da574d0e45ac32a98092),
+                location: "cli/src/commands/file/chmod.rs",
+                relation: Some(
+                    ChildOfParent(
+                        1,
+                    ),
+                ),
+                copy: false,
+            },
+            Rewrite {
                 source_location: "cli/src/commands/cat.rs",
                 source_entry_mode: EntryMode(0o100644),
                 source_relation: None,
@@ -257,7 +281,7 @@ mod track_rewrites {
                         insertions: 20,
                         before: 131,
                         after: 148,
-                        similarity: 0.900421,
+                        similarity: 0.9004167,
                     },
                 ),
                 entry_mode: EntryMode(0o100644),
@@ -271,26 +295,6 @@ mod track_rewrites {
                 copy: false,
             },
             Rewrite {
-                source_location: "cli/tests/test_cat_command.rs",
-                source_entry_mode: EntryMode(0o100644),
-                source_relation: None,
-                source_id: Sha1(8c80364c37b7fc364778efb4214575536e6a1df4),
-                diff: Some(
-                    DiffLineStats {
-                        removals: 17,
-                        insertions: 12,
-                        before: 123,
-                        after: 118,
-                        similarity: 0.77923656,
-                    },
-                ),
-                entry_mode: EntryMode(0o100644),
-                id: Sha1(45bb2cf6b7fa96a39c95301f619ca3e4cc3eb0f3),
-                location: "cli/tests/test_file_print_command.rs",
-                relation: None,
-                copy: false,
-            },
-            Rewrite {
                 source_location: "cli/tests/test_chmod_command.rs",
                 source_entry_mode: EntryMode(0o100644),
                 source_relation: None,
@@ -301,7 +305,7 @@ mod track_rewrites {
                         insertions: 19,
                         before: 244,
                         after: 250,
-                        similarity: 0.88720536,
+                        similarity: 0.8877,
                     },
                 ),
                 entry_mode: EntryMode(0o100644),
@@ -311,27 +315,23 @@ mod track_rewrites {
                 copy: false,
             },
             Rewrite {
-                source_location: "cli/src/commands/chmod.rs",
+                source_location: "cli/tests/test_cat_command.rs",
                 source_entry_mode: EntryMode(0o100644),
                 source_relation: None,
-                source_id: Sha1(8f55dec5b81779d23539fa7146d713cc42df70f4),
+                source_id: Sha1(8c80364c37b7fc364778efb4214575536e6a1df4),
                 diff: Some(
                     DiffLineStats {
-                        removals: 0,
-                        insertions: 17,
-                        before: 124,
-                        after: 141,
-                        similarity: 0.9060576,
+                        removals: 17,
+                        insertions: 12,
+                        before: 123,
+                        after: 118,
+                        similarity: 0.77923334,
                     },
                 ),
                 entry_mode: EntryMode(0o100644),
-                id: Sha1(94f78deb408d181ccea9da574d0e45ac32a98092),
-                location: "cli/src/commands/file/chmod.rs",
-                relation: Some(
-                    ChildOfParent(
-                        1,
-                    ),
-                ),
+                id: Sha1(45bb2cf6b7fa96a39c95301f619ca3e4cc3eb0f3),
+                location: "cli/tests/test_file_print_command.rs",
+                relation: None,
                 copy: false,
             },
             Modification {

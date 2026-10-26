@@ -10,7 +10,7 @@ use bstr::{BStr, BString, ByteSlice};
 use gix_error::Result;
 
 use super::{Blobs, Entry, MAX_SCORE, Rename, State, basename_min_score, effective_min_score, files};
-use crate::strmap;
+use crate::rewrites::strmap;
 
 /// The directory that stands for the destinations still unknown in the counts of a directory, `UNKNOWN_DIR`, which
 /// can't be the path of a directory.
@@ -131,7 +131,7 @@ pub fn detect(
     if state.sources.is_empty() || state.destinations.is_empty() {
         return Ok(Outcome::default());
     }
-    state.pair_identical();
+    state.pair_identical(false);
     if min_score == MAX_SCORE {
         return Ok(Outcome {
             renames: state.into_outcome(None).renames,

@@ -1,5 +1,10 @@
-//! Pair files that were deleted with files that were added, as `git diff -M` does, and as a merge does for each of its
-//! sides ([`merge`]).
+//! Pair files that were deleted with files that were added, as `git diff -M` does, as a merge does for each of its
+//! sides ([`merge`]), and with files that were modified or didn't change as well, as `git diff -C` does ([`copies`]).
+//!
+//! [`detect()`] does that as `diffcore-rename.c` and `diffcore-delta.c` do, so that it pairs the same files with the
+//! same similarity as git. The caller provides the deleted and added files, which a diff of the two trees yields, and
+//! the [`Blobs`] whose similarity is estimated, for example from an object database. The
+//! [`Tracker`](crate::rewrites::Tracker) finds the renames and copies among the changes of a diff with it.
 
 use std::{cmp::Ordering, collections::HashMap};
 
@@ -8,9 +13,11 @@ use gix_error::{Result, ResultExt, message};
 use gix_hash::oid;
 use gix_object::tree::EntryMode;
 
-use crate::similarity::Spans;
+use similarity::Spans;
 
+pub mod copies;
 pub mod merge;
+mod similarity;
 
 /// The similarity of identical files, of which [`Options::min_score`] and [`Rename::score`] are fractions.
 ///
@@ -115,6 +122,11 @@ pub struct Outcome {
     /// If [`Options::limit`] prevented the similarity estimates, the limit that would have allowed them, which
     /// `git diff` suggests in its warning.
     pub needed_limit: Option<usize>,
+    /// How often the similarity of a source and a destination was estimated from the data of both.
+    pub estimates: usize,
+    /// How many similarities [`Options::limit`] kept from being estimated: the number of the sources times the
+    /// number of the destinations that were left to compare.
+    pub skipped_estimates: usize,
 }
 
 /// Pair files that were added, the `destinations`, with files that were deleted, the `sources`, as `git diff -M` finds
@@ -150,7 +162,7 @@ pub fn detect(
 ) -> Result<Outcome> {
     let min_score = effective_min_score(options.min_score);
     let mut state = State::new(sorted_files(sources), sorted_files(destinations), blobs);
-    state.pair_identical();
+    state.pair_identical(false);
     if min_score == MAX_SCORE {
         return Ok(state.into_outcome(None));
     }
@@ -212,6 +224,13 @@ fn basename_min_score(min_score: u32) -> u32 {
     min_score + (MAX_SCORE - min_score) / 2
 }
 
+/// Whether the similarities of `sources` sources with `destinations` destinations are more than `limit`, Git's
+/// `diff.renameLimit`, allows to estimate: more than the square of the limit, while a limit of 0 allows any number.
+fn limit_is_exceeded(sources: usize, destinations: usize, limit: usize) -> bool {
+    // Saturating both products can hide an exceeded limit; u128 holds them exactly on supported targets.
+    limit > 0 && (sources as u128) * (destinations as u128) > (limit as u128).pow(2)
+}
+
 /// The files among `entries` that aren't trees and that `keep` accepts, in the order of `entries`.
 fn files<'a>(entries: &[Entry<'a>], keep: impl Fn(&Entry<'a>) -> bool) -> Vec<File<'a>> {
     entries
@@ -242,11 +261,15 @@ struct State<'a, 'b> {
     destinations: Vec<File<'a>>,
     /// The source that each destination was paired with, and the similarity of the two.
     pairs: Vec<Option<(usize, u32)>>,
-    /// Whether each source was paired with a destination.
+    /// Whether each source was paired with a destination, or is otherwise in use as git's `rename_used` counts it.
     source_is_paired: Vec<bool>,
     blobs: &'b mut dyn Blobs,
     /// The buffer that the data of blobs is read into.
     buf: Vec<u8>,
+    /// How often a similarity was estimated from the data of both files.
+    estimates: usize,
+    /// How many similarities the limit kept from being estimated.
+    skipped_estimates: usize,
 }
 
 impl<'a, 'b> State<'a, 'b> {
@@ -258,11 +281,16 @@ impl<'a, 'b> State<'a, 'b> {
             destinations,
             blobs,
             buf: Vec::new(),
+            estimates: 0,
+            skipped_estimates: 0,
         }
     }
 
-    /// Pair each destination with a source that has the same blob, as `find_exact_renames()` does.
-    fn pair_identical(&mut self) {
+    /// Pair each destination with a source that has the same blob, as `find_exact_renames()` does. Without `copies`,
+    /// only unpaired sources are candidates, and a source with the file name of the destination is preferred. With
+    /// `copies`, as `git diff -C` has it, sources that are already paired remain candidates, but unpaired ones are
+    /// preferred, and of these the one with the file name of the destination.
+    fn pair_identical(&mut self, copies: bool) {
         let mut sources_by_id = gix_hashtable::HashMap::<&oid, Vec<usize>>::default();
         for (source, file) in self.sources.iter().enumerate() {
             sources_by_id.entry(file.entry.id).or_default().push(source);
@@ -281,21 +309,27 @@ impl<'a, 'b> State<'a, 'b> {
                 continue;
             };
             let target_name = file_name(target.location);
-            let mut best = None;
+            // Like git, score a source 1 if it is unpaired and 1 if it has the file name of the destination, and take
+            // the first of the best.
+            let mut best: Option<(usize, u8)> = None;
             for &source in candidates
                 .iter()
                 .filter(|&&source| {
-                    !self.source_is_paired[source] && modes_can_pair(self.sources[source].entry.mode, target.mode)
+                    (copies || !self.source_is_paired[source])
+                        && modes_can_pair(self.sources[source].entry.mode, target.mode)
                 })
                 .take(MAX_IDENTICAL_CANDIDATES)
             {
-                if file_name(self.sources[source].entry.location) == target_name {
-                    best = Some(source);
-                    break;
+                let score = u8::from(!self.source_is_paired[source])
+                    + u8::from(file_name(self.sources[source].entry.location) == target_name);
+                if best.is_none_or(|(_, best_score)| score > best_score) {
+                    best = Some((source, score));
+                    if score == 2 {
+                        break;
+                    }
                 }
-                best.get_or_insert(source);
             }
-            if let Some(source) = best {
+            if let Some((source, _)) = best {
                 self.pair(source, destination, MAX_SCORE, None);
             }
         }
@@ -364,18 +398,43 @@ impl<'a, 'b> State<'a, 'b> {
         sources: &[usize],
         mut directories: Option<&mut merge::Directories<'a, '_>>,
     ) -> Result<Option<usize>> {
-        let destinations: Vec<_> = (0..self.destinations.len())
-            .filter(|&destination| self.pairs[destination].is_none())
-            .collect();
+        let destinations = self.unpaired_destinations();
         if sources.is_empty() || destinations.is_empty() {
             return Ok(None);
         }
-        if limit > 0 && (sources.len() as u128) * (destinations.len() as u128) > (limit as u128).pow(2) {
+        if limit_is_exceeded(sources.len(), destinations.len(), limit) {
+            self.skipped_estimates = sources.len().saturating_mul(destinations.len());
             return Ok(Some(sources.len().max(destinations.len())));
         }
 
+        let candidates = self.estimate_candidates(min_score, sources, &destinations)?;
+        for candidate in candidates
+            .into_iter()
+            .map_while(|candidate| candidate.filter(|candidate| candidate.score >= min_score))
+        {
+            if self.pairs[candidate.destination].is_none() && !self.source_is_paired[candidate.source] {
+                self.pair(
+                    candidate.source,
+                    candidate.destination,
+                    candidate.score,
+                    directories.as_deref_mut(),
+                );
+            }
+        }
+        Ok(None)
+    }
+
+    /// Estimate the similarity of each of `sources` with each of `destinations`, keep the four most similar sources of
+    /// each destination, and return these candidates from the most similar to the least, as `diffcore_rename_extended()`
+    /// sorts its matrix, with the places that no source took last.
+    fn estimate_candidates(
+        &mut self,
+        min_score: u32,
+        sources: &[usize],
+        destinations: &[usize],
+    ) -> Result<Vec<Option<Candidate>>> {
         let mut candidates = Vec::with_capacity(destinations.len() * CANDIDATES_PER_DESTINATION);
-        for &destination in &destinations {
+        for &destination in destinations {
             let destination_name = file_name(self.destinations[destination].entry.location);
             let mut best = [None; CANDIDATES_PER_DESTINATION];
             // Like git, this offers every source, even one that isn't similar at all, as it takes a place that a more
@@ -394,20 +453,7 @@ impl<'a, 'b> State<'a, 'b> {
         // Like git's, this sort is stable, which keeps equally good candidates in the order of their destinations and
         // of their places among the candidates of a destination.
         candidates.sort_by(|a, b| by_preference(a.as_ref(), b.as_ref()));
-        for candidate in candidates
-            .into_iter()
-            .map_while(|candidate| candidate.filter(|candidate| candidate.score >= min_score))
-        {
-            if self.pairs[candidate.destination].is_none() && !self.source_is_paired[candidate.source] {
-                self.pair(
-                    candidate.source,
-                    candidate.destination,
-                    candidate.score,
-                    directories.as_deref_mut(),
-                );
-            }
-        }
-        Ok(None)
+        Ok(candidates)
     }
 
     /// Estimate the similarity of `source` and `destination` as `estimate_similarity()` does, without reading files
@@ -428,6 +474,7 @@ impl<'a, 'b> State<'a, 'b> {
         if destination_size == 0 {
             return Ok(0);
         }
+        self.estimates += 1;
         let copied = source
             .spans(self.blobs, &mut self.buf)?
             .copied_into(destination.spans(self.blobs, &mut self.buf)?);
@@ -459,6 +506,13 @@ impl<'a, 'b> State<'a, 'b> {
             .collect()
     }
 
+    /// The destinations that aren't paired yet, in their order.
+    fn unpaired_destinations(&self) -> Vec<usize> {
+        (0..self.destinations.len())
+            .filter(|&destination| self.pairs[destination].is_none())
+            .collect()
+    }
+
     fn into_outcome(self, needed_limit: Option<usize>) -> Outcome {
         let renames = self
             .pairs
@@ -472,7 +526,12 @@ impl<'a, 'b> State<'a, 'b> {
                 })
             })
             .collect();
-        Outcome { renames, needed_limit }
+        Outcome {
+            renames,
+            needed_limit,
+            estimates: self.estimates,
+            skipped_estimates: self.skipped_estimates,
+        }
     }
 }
 
@@ -549,7 +608,7 @@ fn by_preference(a: Option<&Candidate>, b: Option<&Candidate>) -> Ordering {
 
 #[cfg(test)]
 mod tests {
-    use super::git_table_grows_with_last_insertion;
+    use super::{git_table_grows_with_last_insertion, limit_is_exceeded};
 
     #[test]
     fn gits_table_grows_with_the_last_source_for_some_numbers_of_sources() {
@@ -560,6 +619,44 @@ mod tests {
             growing,
             [205, 3277, 52429],
             "a table sized for these numbers of sources is just too small to hold them all"
+        );
+    }
+
+    #[test]
+    fn overflowing_products_are_compared_without_saturation() {
+        for limit in [70_000, usize::MAX / 2] {
+            assert!(
+                limit_is_exceeded(limit + 1, limit + 1, limit),
+                "candidate counts just above the limit must be rejected even when both products overflow usize"
+            );
+            assert!(
+                !limit_is_exceeded(limit, limit, limit),
+                "a product equal to the squared limit is allowed"
+            );
+            assert!(
+                !limit_is_exceeded(limit - 1, limit, limit),
+                "a product below the squared limit is allowed even when both products overflow usize"
+            );
+        }
+    }
+
+    #[test]
+    fn maximum_counts_and_unbalanced_candidates() {
+        assert!(
+            !limit_is_exceeded(usize::MAX, usize::MAX, usize::MAX),
+            "squaring the largest supported count must not overflow the comparison"
+        );
+        assert!(
+            !limit_is_exceeded(0, usize::MAX, 1),
+            "without sources there are no comparisons to limit"
+        );
+        assert!(
+            limit_is_exceeded(usize::MAX, 1, 1),
+            "the product, not the smaller candidate count, determines whether the limit is exceeded"
+        );
+        assert!(
+            !limit_is_exceeded(usize::MAX, usize::MAX, 0),
+            "a limit of 0 allows any number of comparisons"
         );
     }
 }

@@ -1,8 +1,7 @@
 use gix_error::Result;
 use std::num::NonZeroU32;
 
-use gix_diff::{blob::TokenSource, tree::Visit};
-use gix_diffcore::rename::MAX_SCORE;
+use gix_diff::{blob::TokenSource, rewrites::rename::MAX_SCORE, tree::Visit};
 use gix_error::{ErrorExt, OptionExt, ResultExt, message};
 use gix_hash::ObjectId;
 use gix_object::{
@@ -789,13 +788,13 @@ fn find_rename_at_file_path(
     let sources: Vec<_> = deletions
         .files
         .iter()
-        .map(|(location, entry_mode, source_id)| gix_diffcore::rename::Entry {
+        .map(|(location, entry_mode, source_id)| gix_diff::rewrites::rename::Entry {
             location: location.as_bstr(),
             mode: *entry_mode,
             id: source_id,
         })
         .collect();
-    let destination = gix_diffcore::rename::Entry {
+    let destination = gix_diff::rewrites::rename::Entry {
         location: file_path,
         mode,
         id: &id,
@@ -808,13 +807,13 @@ fn find_rename_at_file_path(
         drivers: resource_cache.filter.drivers(),
         attributes,
     };
-    let options = gix_diffcore::rename::Options {
+    let options = gix_diff::rewrites::rename::Options {
         min_score: rewrites.percentage.map_or(MAX_SCORE, |percentage| {
             (percentage.clamp(0.0, 1.0) * MAX_SCORE as f32).round() as u32
         }),
         limit: rewrites.limit,
     };
-    let outcome = gix_diffcore::rename::detect(&sources, &[destination], &mut blobs, options)?;
+    let outcome = gix_diff::rewrites::rename::detect(&sources, &[destination], &mut blobs, options)?;
     Ok(outcome.renames.first().map(|rename| {
         let (source_location, _, source_id) = &deletions.files[rename.source];
         TreeDiffChange::Rewrite {
@@ -907,8 +906,8 @@ impl<O: gix_object::FindObjectOrHeader> RenameBlobs<'_, O> {
     }
 }
 
-impl<O: gix_object::FindObjectOrHeader> gix_diffcore::rename::Blobs for RenameBlobs<'_, O> {
-    fn size(&mut self, entry: &gix_diffcore::rename::Entry<'_>) -> Result<u64> {
+impl<O: gix_object::FindObjectOrHeader> gix_diff::rewrites::rename::Blobs for RenameBlobs<'_, O> {
+    fn size(&mut self, entry: &gix_diff::rewrites::rename::Entry<'_>) -> Result<u64> {
         let id = entry.id;
         Ok(self
             .objects
@@ -920,15 +919,15 @@ impl<O: gix_object::FindObjectOrHeader> gix_diffcore::rename::Blobs for RenameBl
 
     fn content<'buf>(
         &mut self,
-        entry: &gix_diffcore::rename::Entry<'_>,
+        entry: &gix_diff::rewrites::rename::Entry<'_>,
         buf: &'buf mut Vec<u8>,
-    ) -> Result<(&'buf [u8], gix_diffcore::rename::Content)> {
+    ) -> Result<(&'buf [u8], gix_diff::rewrites::rename::Content)> {
         let binary = self.binary(entry.location, entry.mode)?;
         let data = self.objects.find_blob(entry.id, buf)?.data;
         let content = match binary {
-            Some(true) => gix_diffcore::rename::Content::Binary,
-            Some(false) => gix_diffcore::rename::Content::Text,
-            None => gix_diffcore::rename::Content::from_data(data),
+            Some(true) => gix_diff::rewrites::rename::Content::Binary,
+            Some(false) => gix_diff::rewrites::rename::Content::Text,
+            None => gix_diff::rewrites::rename::Content::from_data(data),
         };
         Ok((data, content))
     }

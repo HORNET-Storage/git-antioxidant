@@ -245,7 +245,10 @@ fn rename_by_similarity() -> TestResult {
             "#);
         }
         let out = out.expect("tracking enabled");
-        assert_eq!(out.num_similarity_checks, if percentage.is_some() { 1 } else { 0 });
+        assert_eq!(
+            out.num_similarity_checks, 0,
+            "like git, which compares sizes first, it doesn't estimate if 13 bytes are 76% similar to 20"
+        );
         assert_eq!(out.num_similarity_checks_skipped_for_rename_tracking_due_to_limit, 0);
         assert_eq!(out.num_similarity_checks_skipped_for_copy_tracking_due_to_limit, 0);
     }
@@ -372,52 +375,46 @@ fn copies_by_identity() -> TestResult {
             ..Default::default()
         }),
     )?;
+    // As for `git diff -C`, `base` is a source of copies as it was before its modification, and the added files are
+    // identical to it only after the modification.
     insta::assert_snapshot!(crate::normalize_debug_snapshot(&changes).0, @r#"
     [
-        Rewrite {
-            source_location: "base",
-            source_index: 3,
-            source_entry_mode: Mode(
+        Modification {
+            location: "base",
+            previous_index: 3,
+            previous_entry_mode: Mode(
                 FILE,
             ),
-            source_id: Oid(1),
+            previous_id: Oid(1),
+            index: 3,
+            entry_mode: Mode(
+                FILE,
+            ),
+            id: Oid(2),
+        },
+        Addition {
             location: "c1",
             index: 4,
             entry_mode: Mode(
                 FILE,
             ),
-            id: Oid(1),
-            copy: true,
+            id: Oid(2),
         },
-        Rewrite {
-            source_location: "base",
-            source_index: 3,
-            source_entry_mode: Mode(
-                FILE,
-            ),
-            source_id: Oid(1),
+        Addition {
             location: "c2",
             index: 5,
             entry_mode: Mode(
                 FILE,
             ),
-            id: Oid(1),
-            copy: true,
+            id: Oid(2),
         },
-        Rewrite {
-            source_location: "base",
-            source_index: 3,
-            source_entry_mode: Mode(
-                FILE,
-            ),
-            source_id: Oid(1),
+        Addition {
             location: "dir/c3",
             index: 9,
             entry_mode: Mode(
                 FILE,
             ),
-            id: Oid(1),
-            copy: true,
+            id: Oid(2),
         },
     ]
     "#);
@@ -439,6 +436,8 @@ fn copies_by_similarity() -> TestResult {
             ..Default::default()
         }),
     )?;
+    // As `git diff -C` does, which reports similarities of 87%, 77% and 77%, the copies are found from `base` as it was
+    // before its modification, which is reported as well.
     insta::assert_snapshot!(crate::normalize_debug_snapshot(&changes).0, @r#"
     [
         Rewrite {
@@ -453,7 +452,7 @@ fn copies_by_similarity() -> TestResult {
             entry_mode: Mode(
                 FILE,
             ),
-            id: Oid(1),
+            id: Oid(2),
             copy: true,
         },
         Rewrite {
@@ -468,7 +467,7 @@ fn copies_by_similarity() -> TestResult {
             entry_mode: Mode(
                 FILE,
             ),
-            id: Oid(2),
+            id: Oid(3),
             copy: true,
         },
         Rewrite {
@@ -483,16 +482,29 @@ fn copies_by_similarity() -> TestResult {
             entry_mode: Mode(
                 FILE,
             ),
-            id: Oid(3),
+            id: Oid(4),
             copy: true,
+        },
+        Modification {
+            location: "base",
+            previous_index: 3,
+            previous_entry_mode: Mode(
+                FILE,
+            ),
+            previous_id: Oid(1),
+            index: 3,
+            entry_mode: Mode(
+                FILE,
+            ),
+            id: Oid(2),
         },
     ]
     "#);
 
     let out = out.expect("tracking enabled");
     assert_eq!(
-        out.num_similarity_checks, 2,
-        "two are similar, the other one is identical"
+        out.num_similarity_checks, 3,
+        "all three are similar to the old state of `base`"
     );
     assert_eq!(out.num_similarity_checks_skipped_for_rename_tracking_due_to_limit, 0);
     assert_eq!(out.num_similarity_checks_skipped_for_copy_tracking_due_to_limit, 0);
@@ -520,8 +532,8 @@ fn copies_in_entire_tree_by_similarity() -> TestResult {
 
     let out = out.expect("tracking enabled");
     assert_eq!(
-        out.num_similarity_checks, 3,
-        "it does have some candidates, probably for rename tracking"
+        out.num_similarity_checks, 0,
+        "the 4 bytes of the modified `b` are too few to be similar to any added file, so git doesn't estimate it"
     );
     assert_eq!(
         out.num_similarity_checks_skipped_for_rename_tracking_due_to_limit, 0,
@@ -559,7 +571,7 @@ fn copies_in_entire_tree_by_similarity() -> TestResult {
                 copy: true,
             },
             Rewrite {
-                source_location: "r/c3di",
+                source_location: "dir/c6",
                 source_index: 12,
                 source_entry_mode: Mode(
                     FILE,
@@ -604,7 +616,10 @@ fn copies_in_entire_tree_by_similarity() -> TestResult {
         ]
         "#);
     let out = out.expect("tracking enabled");
-    assert_eq!(out.num_similarity_checks, 22);
+    assert_eq!(
+        out.num_similarity_checks, 10,
+        "`newly-added` has 36 bytes, so like git, only the 10 sources of 18 to 72 bytes are compared with it"
+    );
     assert_eq!(
         out.num_similarity_checks_skipped_for_rename_tracking_due_to_limit, 0,
         "no limit configured"
@@ -630,7 +645,8 @@ fn copies_in_entire_tree_by_similarity_with_limit() -> TestResult {
         }),
     )?;
 
-    // Again, it finds a different first match for the rewrite compared to tree-traversal, expected for now.
+    // Like `git diff -C -C` with this limit, which suggests a limit of 15, only the modified `b` remains a source to
+    // estimate, as the 14 files that didn't change are left out.
     insta::assert_snapshot!(crate::normalize_debug_snapshot(&changes).0, @r#"
     [
         Rewrite {
@@ -649,7 +665,7 @@ fn copies_in_entire_tree_by_similarity_with_limit() -> TestResult {
             copy: true,
         },
         Rewrite {
-            source_location: "r/c3di",
+            source_location: "dir/c6",
             source_index: 12,
             source_entry_mode: Mode(
                 FILE,
@@ -688,12 +704,15 @@ fn copies_in_entire_tree_by_similarity_with_limit() -> TestResult {
     "#);
 
     let out = out.expect("tracking enabled");
-    assert_eq!(out.num_similarity_checks, 0, "similarity checks can't run");
+    assert_eq!(
+        out.num_similarity_checks, 0,
+        "the size of `b` rules out its similarity with `newly-added`"
+    );
     assert_eq!(
         out.num_similarity_checks_skipped_for_rename_tracking_due_to_limit, 0,
         "no limit configured"
     );
-    assert_eq!(out.num_similarity_checks_skipped_for_copy_tracking_due_to_limit, 21);
+    assert_eq!(out.num_similarity_checks_skipped_for_copy_tracking_due_to_limit, 14);
 
     Ok(())
 }
@@ -711,6 +730,8 @@ fn realistic_renames_by_identity() -> TestResult {
         }),
     )?;
 
+    // As `git diff -C` does, the empty `file.rs` is copied to the first of the empty files that were added, in the
+    // order of their locations, and renamed to the last one.
     insta::assert_snapshot!(crate::normalize_debug_snapshot(&(changes.into_iter().collect::<Vec<_>>())).0, @r#"
     [
         Rewrite {
@@ -726,15 +747,22 @@ fn realistic_renames_by_identity() -> TestResult {
                 FILE,
             ),
             id: Oid(1),
-            copy: false,
+            copy: true,
         },
-        Addition {
+        Rewrite {
+            source_location: "git-index/src/file.rs",
+            source_index: 18,
+            source_entry_mode: Mode(
+                FILE,
+            ),
+            source_id: Oid(1),
             location: "git-index/tests/index/file/access.rs",
             index: 45,
             entry_mode: Mode(
                 FILE,
             ),
             id: Oid(1),
+            copy: false,
         },
         Modification {
             location: "git-index/tests/index/file/mod.rs",
@@ -753,7 +781,10 @@ fn realistic_renames_by_identity() -> TestResult {
     "#);
 
     let out = out.expect("tracking enabled");
-    assert_eq!(out.num_similarity_checks, 1);
+    assert_eq!(
+        out.num_similarity_checks, 0,
+        "all added files are identical to a source"
+    );
     assert_eq!(out.num_similarity_checks_skipped_for_rename_tracking_due_to_limit, 0);
     assert_eq!(out.num_similarity_checks_skipped_for_copy_tracking_due_to_limit, 0);
 
@@ -1082,114 +1113,57 @@ fn realistic_renames_3_without_identity() -> TestResult {
         }),
     )?;
 
-    // We don't actually track directory renames here, only file-level rewrites show up.
-    // Their order depends on fixture hash kind because exact-match rewrite tracking sorts candidates by object id first,
-    // and SHA-1/SHA-256 produce a different id ordering for these same files.
-    match crate::fixture_hash_kind() {
-        gix_hash::Kind::Sha1 => {
-            insta::assert_snapshot!(crate::normalize_debug_snapshot(&(changes.into_iter().collect::<Vec<_>>())).0, @r#"
-            [
-                Rewrite {
-                    source_location: "src/plumbing/options.rs",
-                    source_index: 4,
-                    source_entry_mode: Mode(
-                        FILE,
-                    ),
-                    source_id: Oid(1),
-                    location: "src/plumbing-renamed/options/mod.rs",
-                    index: 4,
-                    entry_mode: Mode(
-                        FILE,
-                    ),
-                    id: Oid(1),
-                    copy: false,
-                },
-                Rewrite {
-                    source_location: "src/plumbing/mod.rs",
-                    source_index: 3,
-                    source_entry_mode: Mode(
-                        FILE,
-                    ),
-                    source_id: Oid(2),
-                    location: "src/plumbing-renamed/mod.rs",
-                    index: 3,
-                    entry_mode: Mode(
-                        FILE,
-                    ),
-                    id: Oid(2),
-                    copy: false,
-                },
-                Rewrite {
-                    source_location: "src/plumbing/main.rs",
-                    source_index: 2,
-                    source_entry_mode: Mode(
-                        FILE,
-                    ),
-                    source_id: Oid(3),
-                    location: "src/plumbing-renamed/main.rs",
-                    index: 2,
-                    entry_mode: Mode(
-                        FILE,
-                    ),
-                    id: Oid(3),
-                    copy: false,
-                },
-            ]
-            "#);
-        }
-        gix_hash::Kind::Sha256 => {
-            insta::assert_snapshot!(crate::normalize_debug_snapshot(&(changes.into_iter().collect::<Vec<_>>())).0, @r#"
-            [
-                Rewrite {
-                    source_location: "src/plumbing/mod.rs",
-                    source_index: 3,
-                    source_entry_mode: Mode(
-                        FILE,
-                    ),
-                    source_id: Oid(1),
-                    location: "src/plumbing-renamed/mod.rs",
-                    index: 3,
-                    entry_mode: Mode(
-                        FILE,
-                    ),
-                    id: Oid(1),
-                    copy: false,
-                },
-                Rewrite {
-                    source_location: "src/plumbing/main.rs",
-                    source_index: 2,
-                    source_entry_mode: Mode(
-                        FILE,
-                    ),
-                    source_id: Oid(2),
-                    location: "src/plumbing-renamed/main.rs",
-                    index: 2,
-                    entry_mode: Mode(
-                        FILE,
-                    ),
-                    id: Oid(2),
-                    copy: false,
-                },
-                Rewrite {
-                    source_location: "src/plumbing/options.rs",
-                    source_index: 4,
-                    source_entry_mode: Mode(
-                        FILE,
-                    ),
-                    source_id: Oid(3),
-                    location: "src/plumbing-renamed/options/mod.rs",
-                    index: 4,
-                    entry_mode: Mode(
-                        FILE,
-                    ),
-                    id: Oid(3),
-                    copy: false,
-                },
-            ]
-            "#);
-        }
-        _ => unreachable!("tests only support sha1 and sha256 fixtures"),
-    }
+    // We don't actually track directory renames here, only file-level rewrites show up, in the order of the locations
+    // of their destinations as `git diff -M` reports them.
+    insta::assert_snapshot!(crate::normalize_debug_snapshot(&(changes.into_iter().collect::<Vec<_>>())).0, @r#"
+    [
+        Rewrite {
+            source_location: "src/plumbing/main.rs",
+            source_index: 2,
+            source_entry_mode: Mode(
+                FILE,
+            ),
+            source_id: Oid(1),
+            location: "src/plumbing-renamed/main.rs",
+            index: 2,
+            entry_mode: Mode(
+                FILE,
+            ),
+            id: Oid(1),
+            copy: false,
+        },
+        Rewrite {
+            source_location: "src/plumbing/mod.rs",
+            source_index: 3,
+            source_entry_mode: Mode(
+                FILE,
+            ),
+            source_id: Oid(2),
+            location: "src/plumbing-renamed/mod.rs",
+            index: 3,
+            entry_mode: Mode(
+                FILE,
+            ),
+            id: Oid(2),
+            copy: false,
+        },
+        Rewrite {
+            source_location: "src/plumbing/options.rs",
+            source_index: 4,
+            source_entry_mode: Mode(
+                FILE,
+            ),
+            source_id: Oid(3),
+            location: "src/plumbing-renamed/options/mod.rs",
+            index: 4,
+            entry_mode: Mode(
+                FILE,
+            ),
+            id: Oid(3),
+            copy: false,
+        },
+    ]
+    "#);
 
     let out = out.expect("tracking enabled");
     assert_eq!(

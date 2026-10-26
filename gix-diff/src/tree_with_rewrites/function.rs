@@ -262,17 +262,16 @@ mod tree_to_changes {
         }
 
         fn visit_nontree(&mut self, entry: &EntryRef<'_>) -> gix_traverse::tree::visit::Action {
-            if entry.mode.is_blob() {
-                (self.push)(
-                    Change::Modification {
-                        previous_entry_mode: entry.mode,
-                        previous_oid: gix_hash::ObjectId::null(entry.oid.kind()),
-                        entry_mode: entry.mode,
-                        oid: entry.oid.to_owned(),
-                    },
-                    self.recorder.path(),
-                );
-            }
+            // Like `git diff --find-copies-harder`, take every file of the source tree, links and submodules included.
+            (self.push)(
+                Change::Modification {
+                    previous_entry_mode: entry.mode,
+                    previous_oid: gix_hash::ObjectId::null(entry.oid.kind()),
+                    entry_mode: entry.mode,
+                    oid: entry.oid.to_owned(),
+                },
+                self.recorder.path(),
+            );
             std::ops::ControlFlow::Continue(true)
         }
     }

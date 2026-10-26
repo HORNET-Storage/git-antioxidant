@@ -11,7 +11,7 @@
 use std::{cmp::Ordering, collections::HashMap};
 
 use bstr::{BStr, BString, ByteSlice};
-use gix_diffcore::{
+use gix_diff::rewrites::{
     rename::merge::{DirectoryRelevance, SourceRelevance},
     strmap,
 };

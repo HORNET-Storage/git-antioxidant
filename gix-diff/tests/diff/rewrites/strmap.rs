@@ -1,4 +1,4 @@
-use gix_diffcore::strmap::iteration_order;
+use gix_diff::rewrites::strmap::iteration_order;
 
 // The expected orders are those that git 2.55.0 visits: a program linked with its `libgit.a` read the keys one per line,
 // added each to an empty `strintmap` with `strintmap_set()`, its line number as the value, and printed the values in the

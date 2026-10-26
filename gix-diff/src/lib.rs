@@ -28,14 +28,18 @@ pub struct Rewrites {
     /// This field is similar to `git diff -M50%`.
     ///
     /// If `None`, files are only considered equal if their content matches 100%.
-    /// Note that values greater than 1.0 have no different effect than 1.0.
+    /// Note that values greater than 1.0 have no different effect than 1.0, and that 0.0 means 50% as `-M0%` does.
     pub percentage: Option<f32>,
     /// The amount of files to consider for fuzzy rename or copy tracking. Defaults to 1000, meaning that only 1000*1000
     /// combinations can be tested for fuzzy matches, i.e. the ones that try to find matches by comparing similarity.
-    /// If 0, there is no limit.
+    /// If 0, there is no limit. Like Git's `diff.renameLimit`, it applies to the files that are left to compare once
+    /// identical files were paired, and once files with a unique file name were paired as well if only renames are
+    /// tracked. When copies are tracked, sources remain to be compared even if they were paired already.
     ///
     /// If the limit would not be enough to test the entire set of combinations, the algorithm will trade in precision and not
-    /// run the fuzzy version of identity tests at all. That way results are never partial.
+    /// run the fuzzy version of identity tests at all. That way results are never partial. Only when copies are found
+    /// in all files of the source tree, and the limit allows it without the files that didn't change, are these left
+    /// out instead.
     pub limit: usize,
 
     /// If `true`, empty blobs will be tracked. If `false`, they do not participate in rename tracking.

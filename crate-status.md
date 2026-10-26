@@ -374,16 +374,19 @@ Check out the [performance discussion][gix-diff-performance] as well.
         * [ ] white-space related settings
     * **lines**
         * [x] Simple line-by-line diffs powered by the `imara-diff` crate.
-* **generic rename tracker to find renames and copies**
-    * [x] find blobs by exact match
-    * [x] find blobs by similarity check
-    * [ ] heuristics to find best candidate
-    * [ ] find by basename to support similarity check
-        - Not having it can lead to issues when files with the same or similar content are part of a move
-          as files can be lost that way.
+* **rename tracker to find renames and copies as git's `diffcore-rename.c` and `diffcore-delta.c` do**
+    * [x] find blobs by exact match, preferring sources with the file name of the destination, in git's order
+    * [x] find by basename: pair files whose file name is unique among the remaining sources and destinations
+    * [x] find blobs by similarity check, estimated as `diffcore-delta.c` does, within `diff.renameLimit`
+    * [x] heuristics to find best candidate: the four most similar sources of each destination, most similar first
+    * [x] copies (`-C`, `--find-copies-harder`), with git's choice between rename and copy
+    * [x] the renames of each side of a merge as merge-ort finds them, with its directory rename hints and counts
+    * [ ] break rewrites (`-B`) and merge them back
     * [x] directory tracking
         - [x] by identity
         - [ ] by similarity
+* [ ] pickaxe (`-S`, `-G`)
+* [ ] order files (`-O`)
 * **blob**
     * [x] a choice of to-worktree, to-git and to-worktree-if-needed conversions
     * [x] `textconv` filters
@@ -1007,19 +1010,6 @@ See its [README.md](https://github.com/GitoxideLabs/gitoxide/blob/main/gix-lock/
 * [ ] create a bundle from an archive
    * [ ] respect `export-ignore` and `export-subst`
 * [ ] integrate bundle bootstrapping and bundle-uri metadata for clone/fetch
-* [x] API documentation
-    * [ ] Some examples
-
-### gix-diffcore
-* [ ] find renames among the changes between two trees as `git diff -M` does
-    * [x] pair identical files, preferring sources with the file name of the destination, in git's order
-    * [x] pair files whose file name is unique among the remaining sources and destinations
-    * [x] estimate the similarity of the remaining files as `diffcore-delta.c` does, within `diff.renameLimit`
-    * [ ] copies (`-C`, `--find-copies-harder`)
-    * [ ] break rewrites (`-B`) and merge them back
-    * [ ] directory rename hints for merges
-* [ ] pickaxe (`-S`, `-G`)
-* [ ] order files (`-O`)
 * [x] API documentation
     * [ ] Some examples
 
