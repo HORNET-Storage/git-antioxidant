@@ -6,11 +6,11 @@ use std::sync::atomic::AtomicBool;
 use gix_hash::ObjectId;
 use gix_index::entry;
 use gix_object::{FindExt, Write, tree::EntryKind};
-use gix_switch::{Context, switch};
 use gix_testtools::TestResult;
+use gix_worktree_state::{switch, switch::Context};
 use pretty_assertions::assert_eq;
 
-use crate::{Case, Snapshot, switched};
+use crate::switch::{Case, Snapshot, switched};
 
 #[test]
 fn indices_with_entries_that_are_excluded_from_a_sparse_checkout_are_refused() -> TestResult {

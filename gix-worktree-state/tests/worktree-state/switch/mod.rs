@@ -18,9 +18,12 @@ use bstr::BString;
 use filetime::FileTime;
 use gix_hash::{ObjectId, oid};
 use gix_index::{State, entry, extension::Tree};
-use gix_switch::{Context, Options, Outcome, Refusals, Switched, switch};
 use gix_testtools::{TestResult, tempfile::TempDir};
 use gix_worktree::stack::state::attributes::Source;
+use gix_worktree_state::{
+    switch,
+    switch::{Context, Options, Outcome, Refusals, Switched},
+};
 use pretty_assertions::assert_eq;
 
 /// The script that makes the cases whose results are the same on all hosts.
@@ -105,12 +108,9 @@ impl Case {
         read_index(&self.git_dir().join("index"))
     }
 
-    /// The object database of the case's repository.
-    fn objects(&self) -> TestResult<gix_odb::Handle> {
-        Ok(gix_odb::at(
-            self.git_dir().join("objects"),
-            gix_testtools::object_hash(),
-        )?)
+    /// The object database of the case's repository, in a handle that the switch can send to other threads.
+    fn objects(&self) -> TestResult<gix_odb::HandleArc> {
+        Ok(gix_odb::at(self.git_dir().join("objects"), gix_testtools::object_hash())?.into_arc()?)
     }
 
     /// The trees that git switched between: the tree of `HEAD`, which is `None` on a branch without commits, and the tree

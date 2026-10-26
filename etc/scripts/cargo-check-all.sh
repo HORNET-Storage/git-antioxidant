@@ -77,6 +77,7 @@ cargo check -p gix-revision --no-default-features --features sha1,describe
 cargo check -p gix-mailmap --features serde
 cargo check -p gix-url --all-features
 cargo check -p gix-status --all-features
+cargo check -p gix-worktree-state --features sha1,switch
 cargo check -p gix-parallel --no-default-features
 cargo check -p gix-parallel --all-features
 cargo check -p gix-parallel --features parallel

@@ -9,12 +9,14 @@ use gix_index::{
     State,
     entry::{Flags, Mode, Stat, stat},
 };
-use gix_worktree_state::checkout;
 
 use crate::{
-    Options, Switched, Unremoved,
-    path::{self, LeadingPath, LeadingPaths},
-    plan::{Action, Plan},
+    checkout,
+    switch::{
+        Options, Switched, Unremoved,
+        path::{self, LeadingPath, LeadingPaths},
+        plan::{Action, Plan},
+    },
 };
 
 /// Return the index that `index` becomes with `plan`: removed entries are gone, changed entries have the object and mode
@@ -244,7 +246,7 @@ where
     checkout_options.overwrite_existing = true;
     checkout_options.keep_going = true;
     // The worktree changed already, so the checkout isn't interrupted.
-    let (mut outcome, error) = match gix_worktree_state::checkout(
+    let (mut outcome, error) = match crate::checkout(
         &mut files,
         worktree,
         objects,

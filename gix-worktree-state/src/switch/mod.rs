@@ -44,25 +44,14 @@
 //! * Interruption is honored until the worktree changes, after which the switch completes.
 //! * Files are overwritten in place, so their hard links see the new content and they keep their permissions other than
 //!   the executable bit, where Git replaces them with new files.
-#![deny(unsafe_code, missing_docs)]
+//!
+//! [`switch()`]: crate::switch()
 
-use std::{
-    path::Path,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::{path::Path, sync::atomic::AtomicBool};
 
-use bstr::{BString, ByteSlice};
-use filetime::FileTime;
-use gix_error::{Result, bail};
-use gix_hash::oid;
-use gix_index::{State, entry::Flags};
+use bstr::BString;
 
-mod apply;
-mod check;
-mod path;
-mod plan;
-
-/// What [`switch()`] needs to compare the worktree with the index.
+/// What [`switch()`](crate::switch()) needs to compare the worktree with the index.
 pub struct Context<'a> {
     /// A stack in the [`AttributesAndIgnoreStack`](gix_worktree::stack::State::AttributesAndIgnoreStack) state, as
     /// [`State::for_add()`](gix_worktree::stack::State::for_add()) creates it for the index, for the attributes that the
@@ -78,7 +67,7 @@ pub struct Context<'a> {
     pub should_interrupt: &'a AtomicBool,
 }
 
-/// Options for [`switch()`].
+/// Options for [`switch()`](crate::switch()).
 #[derive(Clone)]
 pub struct Options {
     /// How the files of added and changed entries are checked out. Git reads the attributes of a checkout from the
@@ -90,13 +79,13 @@ pub struct Options {
     /// apply to the comparison of the worktree with the index. `destination_is_initially_empty`, `overwrite_existing` and
     /// `keep_going` are ignored, as the files in the way are checked before anything changes, and errors of single files
     /// are reported instead of stopping the checkout.
-    pub checkout: gix_worktree_state::checkout::Options,
+    pub checkout: crate::checkout::Options,
     /// Whether to read the metadata of the files of a directory all at once while comparing the worktree with the index,
     /// which makes the comparison faster on Windows and has no effect elsewhere.
     pub fscache: bool,
 }
 
-/// What [`switch()`] did.
+/// What [`switch()`](crate::switch()) did.
 #[derive(Debug)]
 pub enum Outcome {
     /// The index and its worktree were switched to the new tree.
@@ -118,7 +107,7 @@ pub struct Switched {
     /// their paths. Git warns about them.
     pub unremoved: Vec<Unremoved>,
     /// What the checkout of the added and changed entries did, including the files that couldn't be written.
-    pub checkout: gix_worktree_state::checkout::Outcome,
+    pub checkout: crate::checkout::Outcome,
     /// The error that stopped the checkout before all files were written, if one did. The index holds the new entries
     /// regardless, and those whose files weren't written show up as changed in the worktree.
     pub checkout_error: Option<gix_error::Error>,
@@ -133,7 +122,8 @@ pub struct Unremoved {
     pub error: gix_error::Error,
 }
 
-/// The paths that kept [`switch()`] from changing anything, each list sorted, in the groups of Git's messages.
+/// The paths that kept [`switch()`](crate::switch()) from changing anything, each list sorted, in the groups of Git's
+/// messages.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Refusals {
     /// Paths with conflicts, for which Git says that the current index has to be resolved first, and that each of them
@@ -208,122 +198,8 @@ impl Refusals {
     }
 }
 
-/// Switch `index` and the files of `worktree`, its root, from `old_tree` to `new_tree`, as `git read-tree -m -u` does, and
-/// return what changed.
-///
-/// `old_tree` is the tree that `index` was made from or last committed, usually that of `HEAD`, or `None` if there is none,
-/// as in a repository without commits. `objects` has both trees, the trees and blobs that the new tree adds or changes, and
-/// the `.gitattributes` files of the new tree.
-///
-/// If the switch would lose changes or untracked files, nothing changes and [`Outcome::Refused`] lists the paths, as the
-/// [crate documentation](crate) describes. Otherwise, `index` and the worktree are switched, and the timestamp of `index`
-/// becomes the time at which this function began.
-///
-/// ### Errors
-///
-/// Nothing changes if `index` is sparse or has entries that are excluded from a sparse checkout, if the stack of `ctx`
-/// doesn't provide both attributes and exclude patterns, if a tree doesn't use the hash of `index`, can't be read or has an
-/// entry that can't be checked out, or if the switch is interrupted before the worktree changes. Once the worktree changes,
-/// the errors of single files are reported in [`Switched`] instead.
-pub fn switch<O>(
-    index: &mut State,
-    worktree: &Path,
-    old_tree: Option<&oid>,
-    new_tree: &oid,
-    objects: O,
-    ctx: Context<'_>,
-    options: Options,
-) -> Result<Outcome>
-where
-    O: gix_object::Find + gix_object::Exists + Send + Clone,
-{
-    if index.is_sparse()
-        || index
-            .entries()
-            .iter()
-            .any(|entry| entry.flags.contains(Flags::SKIP_WORKTREE))
-    {
-        bail!("Indices with entries that are excluded from a sparse checkout can't be switched".unsupported());
-    }
-    if !matches!(
-        ctx.stack.state(),
-        gix_worktree::stack::State::AttributesAndIgnoreStack { .. }
-    ) {
-        bail!("The stack has to provide both attributes and exclude patterns".validation());
-    }
-    let object_hash = index.object_hash();
-    if new_tree.kind() != object_hash || old_tree.is_some_and(|old_tree| old_tree.kind() != object_hash) {
-        bail!("The trees have to use the hash of the index".validation());
-    }
-    let _span = gix_trace::coarse!("gix_switch::switch()", entries = index.entries().len());
-    let start = FileTime::now();
-    let Context {
-        stack,
-        git_dir_realpath,
-        current_dir,
-        should_interrupt,
-    } = ctx;
-
-    let unmerged = unmerged_paths(index);
-    if !unmerged.is_empty() {
-        return Ok(Outcome::Refused(Refusals {
-            unmerged,
-            ..Default::default()
-        }));
-    }
-    let changes = plan::changes(old_tree, new_tree, &objects, options.checkout.validate)?;
-    check_interrupt(should_interrupt)?;
-    let mut refusals = Refusals::default();
-    let plan = plan::Plan::new(index, changes, &mut refusals.staged_changes);
-    let ignore_case = options.checkout.fs.ignore_case;
-    let cwd = path::relative_current_dir(worktree, current_dir, options.checkout.fs);
-    let cwd = cwd.as_ref().map(|cwd| cwd.as_bstr());
-    {
-        let lookup = ignore_case.then(|| index.prepare_icase_backing());
-        check::Checker {
-            index,
-            lookup: lookup.as_ref(),
-            worktree,
-            objects: &objects,
-            stack,
-            pathspec: gix_pathspec::Search::from_specs(std::iter::empty(), None, worktree)?,
-            git_dir_realpath,
-            current_dir,
-            cwd,
-            should_interrupt,
-            options: &options,
-        }
-        .check(&plan, &mut refusals)?;
-    }
-    check_interrupt(should_interrupt)?;
-    if !refusals.is_empty() {
-        return Ok(Outcome::Refused(refusals.finish()));
-    }
-
-    let mut result = apply::result_index(index, &plan, &objects, options.checkout.stat_options)?;
-    check_interrupt(should_interrupt)?;
-    let switched = apply::update_worktree(index, &mut result, &plan, worktree, objects, cwd, &options);
-    result.set_timestamp(start);
-    *index = result;
-    Ok(Outcome::Switched(switched))
-}
-
-/// Return the paths of the conflicts in `index`.
-fn unmerged_paths(index: &State) -> Vec<BString> {
-    let mut paths: Vec<BString> = index
-        .entries()
-        .iter()
-        .filter(|entry| entry.stage_raw() != 0)
-        .map(|entry| entry.path(index).to_owned())
-        .collect();
-    paths.dedup();
-    paths
-}
-
-/// Fail if `should_interrupt` is set.
-fn check_interrupt(should_interrupt: &AtomicBool) -> Result<()> {
-    if should_interrupt.load(Ordering::Relaxed) {
-        bail!("The switch was interrupted".cancelled());
-    }
-    Ok(())
-}
+mod apply;
+mod check;
+pub(crate) mod function;
+mod path;
+mod plan;

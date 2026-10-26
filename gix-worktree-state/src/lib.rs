@@ -4,3 +4,8 @@
 ///
 pub mod checkout;
 pub use checkout::function::checkout;
+
+#[cfg(feature = "switch")]
+pub mod switch;
+#[cfg(feature = "switch")]
+pub use switch::function::switch;

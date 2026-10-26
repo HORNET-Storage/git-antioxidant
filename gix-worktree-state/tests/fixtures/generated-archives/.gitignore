@@ -34,3 +34,11 @@ make_ignorecase_collisions_sha256.tar
 # Records native symlink chains and cycles created by the host's Git.
 make_symlink_chains.tar
 make_symlink_chains_sha256.tar
+# Records whether the file system has executable bits and ignores the case of
+# file names, which decide how `git switch` treats these cases.
+make_switch_host.tar
+make_switch_host_sha256.tar
+# Records `git switch` with symbolic links, which archives can't represent on
+# all hosts.
+make_switch_symlinks.tar
+make_switch_symlinks_sha256.tar

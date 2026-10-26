@@ -1,11 +1,11 @@
 //! The cases where this crate deviates from git, most of which it refuses where git loses data.
 
 use bstr::ByteSlice;
-use gix_switch::Refusals;
 use gix_testtools::TestResult;
+use gix_worktree_state::switch::Refusals;
 use pretty_assertions::assert_eq;
 
-use crate::{Case, Item, Snapshot, records, refused, switched, worktree};
+use crate::switch::{Case, Item, Snapshot, records, refused, switched, worktree};
 
 /// Assert that a switch of a copy of `case` is refused with `expected`, which leaves the index and the worktree of the
 /// copy as they were.
@@ -235,12 +235,12 @@ fn a_named_pipe_in_a_directory_that_a_file_replaces_is_refused() -> TestResult {
 /// The cases whose results depend on whether the file system of the host ignores the case of file names, which
 /// `git init` recorded in their configuration.
 mod host {
-    use gix_switch::Refusals;
     use gix_testtools::TestResult;
+    use gix_worktree_state::switch::Refusals;
     use pretty_assertions::assert_eq;
 
     use super::{assert_git_switched, assert_refused, git_has_entry, git_item};
-    use crate::{Case, HOST_FIXTURE, Item, assert_matches_git, switched};
+    use crate::switch::{Case, HOST_FIXTURE, Item, assert_matches_git, switched};
 
     #[test]
     fn a_new_entry_that_only_differs_in_case_from_one_that_stays_is_refused_where_case_is_ignored() -> TestResult {
@@ -270,12 +270,12 @@ mod host {
 
 /// The cases with symbolic links.
 mod symlinks {
-    use gix_switch::Refusals;
     use gix_testtools::TestResult;
+    use gix_worktree_state::switch::Refusals;
     use pretty_assertions::assert_eq;
 
     use super::{assert_git_switched, assert_refused, git_item};
-    use crate::{Case, Item, SYMLINKS_FIXTURE};
+    use crate::switch::{Case, Item, SYMLINKS_FIXTURE};
 
     #[test]
     #[cfg_attr(

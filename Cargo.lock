@@ -2582,36 +2582,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gix-switch"
-version = "0.0.0"
-dependencies = [
- "bstr",
- "filetime",
- "gix-attributes",
- "gix-config",
- "gix-diff",
- "gix-dir",
- "gix-error",
- "gix-filter",
- "gix-fs",
- "gix-hash",
- "gix-ignore",
- "gix-index",
- "gix-object",
- "gix-odb",
- "gix-parallel",
- "gix-path",
- "gix-pathspec",
- "gix-status",
- "gix-testtools",
- "gix-trace",
- "gix-utils",
- "gix-worktree",
- "gix-worktree-state",
- "pretty_assertions",
-]
-
-[[package]]
 name = "gix-tempfile"
 version = "26.0.0"
 dependencies = [
@@ -2835,15 +2805,23 @@ name = "gix-worktree-state"
 version = "0.36.0"
 dependencies = [
  "bstr",
+ "filetime",
+ "gix-attributes",
+ "gix-config",
+ "gix-diff",
+ "gix-dir",
  "gix-error",
  "gix-filter",
  "gix-fs",
  "gix-hash",
+ "gix-ignore",
  "gix-index",
  "gix-object",
  "gix-odb",
  "gix-parallel",
  "gix-path",
+ "gix-pathspec",
+ "gix-status",
  "gix-testtools",
  "gix-trace",
  "gix-utils",
@@ -2851,6 +2829,7 @@ dependencies = [
  "gix-worktree-state",
  "insta",
  "io-close",
+ "pretty_assertions",
  "walkdir",
 ]
 

@@ -5,7 +5,7 @@ use gix_index::{State, entry};
 use gix_testtools::TestResult;
 use pretty_assertions::assert_eq;
 
-use crate::{Case, switched};
+use crate::switch::{Case, switched};
 
 /// The first second of the year 2000, a time long before the tests run.
 const YEAR_2000: u32 = 946_684_800;

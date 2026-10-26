@@ -20,8 +20,9 @@ use gix_status::index_as_worktree::{
     traits::{FastEq, SubmoduleStatus},
 };
 
-use crate::{
-    Options, Refusals, check_interrupt,
+use crate::switch::{
+    Options, Refusals,
+    function::check_interrupt,
     path::{self, LeadingPath, LeadingPaths},
     plan::{Action, Plan},
 };

@@ -145,7 +145,6 @@ is usable to some extent.
   * `gitoxide-core`
 * **very early**  _(possibly without any documentation and many rough edges)_
   * [gix-blame](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-blame)
-  * [gix-switch](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-switch)
   * [gix-repack](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-repack)
 * **idea** _(just a name placeholder)_
   * [gix-note](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-note)

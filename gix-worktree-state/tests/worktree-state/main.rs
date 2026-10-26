@@ -1,4 +1,6 @@
 mod checkout;
+#[cfg(feature = "switch")]
+mod switch;
 
 use std::path::{Path, PathBuf};
 

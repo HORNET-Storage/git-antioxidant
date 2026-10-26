@@ -3,7 +3,7 @@
 use gix_testtools::TestResult;
 use pretty_assertions::assert_eq;
 
-use crate::{Case, assert_matches_git, refused};
+use crate::switch::{Case, assert_matches_git, refused};
 
 #[test]
 fn every_kind_of_change_is_made_in_a_clean_worktree() -> TestResult {
@@ -137,7 +137,7 @@ mod host {
     use gix_testtools::TestResult;
     use pretty_assertions::assert_eq;
 
-    use crate::{Case, HOST_FIXTURE, Item, assert_matches_git, refused, switched, worktree};
+    use crate::switch::{Case, HOST_FIXTURE, Item, assert_matches_git, refused, switched, worktree};
 
     #[test]
     fn files_are_executable_as_their_new_entries_are_if_the_file_system_has_executable_bits() -> TestResult {
@@ -183,7 +183,7 @@ mod host {
 mod symlinks {
     use gix_testtools::TestResult;
 
-    use crate::{Case, SYMLINKS_FIXTURE, assert_matches_git, switched};
+    use crate::switch::{Case, SYMLINKS_FIXTURE, assert_matches_git, switched};
 
     #[test]
     #[cfg_attr(

@@ -294,7 +294,6 @@ members = [
     "gix-revwalk",
     "gix-fsck",
     "gix-bundle",
-    "gix-switch",
     "gix-repack",
     "tests/tools",
     "tests/it",
