@@ -7,7 +7,7 @@ use std::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use bstr::{BStr, BString, ByteSlice};
+use crate::bstr::{BStr, BString, ByteSlice};
 use gix_error::{ErrorExt, OptionExt, Result, ResultExt, bail, message};
 use gix_filter::pipeline::convert::ToGitOutcome;
 use gix_hash::ObjectId;

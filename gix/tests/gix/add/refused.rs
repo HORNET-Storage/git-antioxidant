@@ -3,12 +3,12 @@
 use std::sync::atomic::AtomicBool;
 
 use filetime::FileTime;
-use gix_add::{Context, add_all};
+use gix::add::plumbing::{Context, add_all};
 use gix_index::{State, entry, extension::Tree};
 use gix_testtools::TestResult;
 use pretty_assertions::assert_eq;
 
-use crate::{Case, Objects, Record, pathspec_search, records, repository_head};
+use crate::add::{Case, Objects, Record, pathspec_search, records, repository_head};
 
 /// What `index` holds: its entries with their stat information, its timestamp and its cache tree.
 fn contents(index: &State) -> (Vec<(Record, entry::Stat)>, FileTime, Option<Tree>) {

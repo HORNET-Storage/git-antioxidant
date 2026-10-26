@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use bstr::{BStr, BString, ByteSlice};
+use crate::bstr::{BStr, BString, ByteSlice};
 use filetime::FileTime;
 use gix_hash::ObjectId;
 use gix_index::{
@@ -10,7 +10,7 @@ use gix_index::{
     entry::{Flags, Mode, Stat, stat},
 };
 
-use crate::{
+use super::{
     Outcome,
     find::Tracked,
     read::{Update, Work},

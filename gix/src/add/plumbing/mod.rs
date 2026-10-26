@@ -30,7 +30,6 @@
 //! * Files are read into memory in full before their blobs are written.
 //! * Warnings about line endings that a checkout would change are traced instead of printed if the filter pipeline is
 //!   configured to warn about them.
-#![deny(unsafe_code, missing_docs)]
 
 use std::{
     path::Path,
@@ -150,7 +149,7 @@ where
     ) {
         bail!("The stack has to provide both attributes and exclude patterns".validation());
     }
-    let _span = gix_trace::coarse!("gix_add::add_all()", entries = index.entries().len());
+    let _span = gix_trace::coarse!("gix::add::plumbing::add_all()", entries = index.entries().len());
     let start = FileTime::now();
     let Context {
         pathspec,

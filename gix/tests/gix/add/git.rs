@@ -2,7 +2,7 @@
 
 use gix_testtools::TestResult;
 
-use crate::{Case, assert_entries_match_git, assert_matches_git};
+use crate::add::{Case, assert_entries_match_git, assert_matches_git};
 
 #[test]
 fn a_new_repository_gets_an_index_with_its_files_except_the_ignored_ones() -> TestResult {
@@ -191,7 +191,7 @@ fn the_text_attribute_converts_line_endings_without_autocrlf() -> TestResult {
 mod host {
     use gix_testtools::TestResult;
 
-    use crate::{Case, assert_matches_git};
+    use crate::add::{Case, assert_matches_git};
 
     const FIXTURE: &str = "make_add_host.sh";
 
@@ -212,7 +212,7 @@ mod host {
 mod symlinks {
     use gix_testtools::TestResult;
 
-    use crate::{Case, assert_matches_git};
+    use crate::add::{Case, assert_matches_git};
 
     const FIXTURE: &str = "make_add_symlinks.sh";
 

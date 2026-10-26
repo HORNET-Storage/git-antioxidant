@@ -210,6 +210,8 @@ pub use types::{
 #[cfg(feature = "attributes")]
 pub use types::{Pathspec, PathspecDetached, Submodule};
 
+#[cfg(feature = "add")]
+pub mod add;
 ///
 pub mod clone;
 pub mod commit;

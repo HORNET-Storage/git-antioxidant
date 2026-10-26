@@ -13,8 +13,8 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
-use bstr::BString;
-use gix_add::{Context, Options, Outcome, add_all};
+use gix::add::plumbing::{Context, Options, Outcome, add_all};
+use gix::bstr::BString;
 use gix_hash::ObjectId;
 use gix_index::{State, entry};
 use gix_testtools::{TestResult, tempfile::TempDir};

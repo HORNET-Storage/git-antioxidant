@@ -6,7 +6,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use bstr::{BStr, BString};
+use crate::bstr::{BStr, BString};
 use gix_dir::entry::Kind;
 use gix_error::{Result, ResultExt, message};
 use gix_hash::ObjectId;
@@ -16,7 +16,7 @@ use gix_status::index_as_worktree::{
     traits::{CompareBlobs, ReadData, SubmoduleStatus},
 };
 
-use crate::Options;
+use super::Options;
 
 /// What the comparison found out about an entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

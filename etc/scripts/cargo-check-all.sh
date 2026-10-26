@@ -125,6 +125,7 @@ cargo check -p gix --no-default-features --features credentials --tests
 cargo check -p gix --no-default-features --features index --tests
 cargo check -p gix --no-default-features --features interrupt --tests
 cargo check -p gix --no-default-features --features blame --tests
+cargo check -p gix --no-default-features --features add --tests
 cargo check -p gix --no-default-features --features sha1
 cargo check -p gix --no-default-features --features sha1,sha256
 cargo check -p gix --no-default-features --features sha256

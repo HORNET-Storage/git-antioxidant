@@ -1,6 +1,8 @@
 mod util;
 use util::*;
 
+#[cfg(feature = "add")]
+mod add;
 mod clone;
 mod clone_refs;
 mod commit;

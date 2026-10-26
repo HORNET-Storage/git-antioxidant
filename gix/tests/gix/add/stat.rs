@@ -8,7 +8,7 @@ use gix_index::{State, entry, extension::Tree};
 use gix_testtools::TestResult;
 use pretty_assertions::assert_eq;
 
-use crate::{Case, Objects};
+use crate::add::{Case, Objects};
 
 /// The first second of the year 2000, a time long before the tests run.
 const YEAR_2000: i64 = 946_684_800;
