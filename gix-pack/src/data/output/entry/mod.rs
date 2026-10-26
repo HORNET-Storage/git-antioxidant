@@ -143,20 +143,29 @@ impl output::Entry {
             id: count.id.to_owned(),
             kind: Kind::Base(obj.kind),
             decompressed_size: obj.data.len(),
-            compressed_data: {
-                let mut out = gix_zlib::stream::deflate::Write::new(Vec::new(), compression);
-                if let Err(err) = std::io::copy(&mut &*obj.data, &mut out) {
-                    match err.kind() {
-                        std::io::ErrorKind::Other => {
-                            bail!(err.and_raise(message("Failed to compress pack entry")));
-                        }
-                        err => unreachable!("Should never see other errors than zlib, but got {:?}", err),
-                    }
-                }
-                out.flush()
-                    .or_raise(|| message("Failed to finish compressing pack entry"))?;
-                out.into_inner()
+            compressed_data: deflate(obj.data, compression)?,
+        })
+    }
+
+    /// Create a new instance for the object `id` that is stored as `delta`, which builds it from the object at
+    /// `base_index` among the entries written before it, deflating `delta` with `compression`.
+    ///
+    /// This is how `git pack-objects` writes the deltas that it computes, such as those of
+    /// [`find_deltas()`](crate::data::delta::search::find_deltas()): the delta is compressed like the data of an object
+    /// stored whole, and the entry refers to its base by the distance to the base's offset in the pack.
+    pub fn from_delta(
+        id: ObjectId,
+        base_index: usize,
+        delta: &[u8],
+        compression: gix_zlib::Compression,
+    ) -> Result<Self> {
+        Ok(output::Entry {
+            id,
+            kind: Kind::DeltaRef {
+                object_index: base_index,
             },
+            decompressed_size: delta.len(),
+            compressed_data: deflate(delta, compression)?,
         })
     }
 
@@ -187,4 +196,20 @@ impl output::Entry {
             },
         }
     }
+}
+
+/// `data` compressed with `compression`, as the data of a pack entry.
+fn deflate(data: &[u8], compression: gix_zlib::Compression) -> Result<Vec<u8>> {
+    let mut out = gix_zlib::stream::deflate::Write::new(Vec::new(), compression);
+    if let Err(err) = std::io::copy(&mut &*data, &mut out) {
+        match err.kind() {
+            std::io::ErrorKind::Other => {
+                bail!(err.and_raise(message("Failed to compress pack entry")));
+            }
+            err => unreachable!("Should never see other errors than zlib, but got {:?}", err),
+        }
+    }
+    out.flush()
+        .or_raise(|| message("Failed to finish compressing pack entry"))?;
+    Ok(out.into_inner())
 }
