@@ -1,5 +1,6 @@
 //! Deltas are copied from the combined packs, and chains of deltas that are longer than the delta depth are cut as git
-//! cuts them.
+//! cuts them. The search for deltas is left out with a window of 0, so that the objects that the cut chains leave whole
+//! remain whole; `computed.rs` compares the deltas of repacks with the search with those of git.
 
 use gix_odb::repack::Options;
 use gix_testtools::TestResult;
@@ -24,6 +25,7 @@ fn chains_are_cut_every_delta_depth_plus_one_deltas() -> TestResult {
 
         let outcome = case.repack(Options {
             delta_depth,
+            window: 0,
             ..Options::default()
         })?;
 

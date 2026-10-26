@@ -20,3 +20,9 @@ make_replaced_history_sha256.tar
 make_repo_multi_index_no_sha256.tar
 # The fixture is 2MB in size, so let's not track it (like its SHA-1 sibling).
 make_repo_multi_index_without-multi-index_sha256.tar
+# `make_repack_deltas.sh` records the packs that the installed `git repack` writes. Their compressed data depends on the
+# zlib that git uses, the bases of the pack made with a window memory on the sizes that git's structures have on the
+# platform, and those of the packs made with several threads on the speed of the threads, so the fixture is made with
+# the `git` of each host instead of being archived.
+make_repack_deltas.tar
+make_repack_deltas_sha256.tar

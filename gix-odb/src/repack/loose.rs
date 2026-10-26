@@ -5,6 +5,7 @@ use std::{
 };
 
 use gix_error::{Result, ResultExt, bail, cancelled, message};
+use gix_hash::ObjectId;
 
 use crate::repack::Survey;
 
@@ -39,6 +40,41 @@ pub fn too_many_loose_objects(objects_dir: &Path, object_hash: gix_hash::Kind, l
         }
     }
     false
+}
+
+/// The loose objects of the object database in `objects_dir`, whose object ids are `object_hash` hashes, in the order
+/// in which git lists them: the fanout directories from `00` to `ff`, and the objects in each in the order in which
+/// the file system lists them. Fanout directories that don't exist hold no objects, and files whose names aren't object
+/// ids are left out.
+pub(crate) fn list(objects_dir: &Path, object_hash: gix_hash::Kind) -> Result<Vec<ObjectId>> {
+    let name_len = object_hash.len_in_hex() - 2;
+    let mut ids = Vec::new();
+    let mut hex = Vec::with_capacity(object_hash.len_in_hex());
+    for fanout in 0..=u8::MAX {
+        let fanout = format!("{fanout:02x}");
+        let dir = objects_dir.join(&fanout);
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err).or_raise(|| message!("Could not list the loose objects in {}", dir.display())),
+        };
+        for entry in entries {
+            let name = entry
+                .or_raise(|| message!("Could not list the loose objects in {}", dir.display()))?
+                .file_name();
+            let name = name.as_encoded_bytes();
+            if name.len() != name_len {
+                continue;
+            }
+            hex.clear();
+            hex.extend_from_slice(fanout.as_bytes());
+            hex.extend_from_slice(name);
+            if let Ok(id) = ObjectId::from_hex(&hex) {
+                ids.push(id);
+            }
+        }
+    }
+    Ok(ids)
 }
 
 /// Remove the loose objects of the object database in `objects_dir` that a pack holds, as `git prune-packed` does, and

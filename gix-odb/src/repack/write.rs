@@ -12,6 +12,7 @@ use gix_utils::progress::{self, BoxedDynNestedProgress, Count, DynNestedProgress
 
 use crate::repack::{
     Options, Written,
+    deltas::Computed,
     plan::{Location, Plan},
 };
 
@@ -172,6 +173,7 @@ impl Producer<'_> {
             objects,
             next: 0,
             buf: Vec::new(),
+            base_buf: Vec::new(),
             failed: false,
         };
         let mut pack = output::bytes::FromEntriesIter::new(
@@ -200,6 +202,8 @@ struct Entries<'a> {
     /// The position in the pack of the next object to produce.
     next: usize,
     buf: Vec<u8>,
+    /// The data of the base of a delta that is computed again.
+    base_buf: Vec<u8>,
     /// Whether an entry couldn't be produced, after which no more entries are produced.
     failed: bool,
 }
@@ -237,10 +241,14 @@ impl Entries<'_> {
         Ok(entries)
     }
 
-    /// The entry of the object at `index` in the plan, copied from its pack where possible.
+    /// The entry of the object at `index` in the plan: the delta that the search computed for it, or else its entry
+    /// copied from its pack where possible.
     fn entry(&mut self, index: usize) -> Result<output::Entry> {
         let plan = self.producer.plan;
         let object = &plan.objects[index];
+        if let (Some(computed), Some(base)) = (&plan.computed[index], plan.bases[index]) {
+            return self.computed_delta(object.id, base as usize, computed);
+        }
         let Location::Packed {
             source,
             offset,
@@ -295,18 +303,43 @@ impl Entries<'_> {
 
     /// The entry of the object `id` with its data compressed anew.
     fn whole(&mut self, id: ObjectId) -> Result<output::Entry> {
-        let Some(data) = self
-            .objects
-            .try_find(&id, &mut self.buf)
-            .or_raise(|| message!("Could not read the object {id}"))?
-        else {
-            bail!("The object {id} disappeared before it was written".not_found());
-        };
+        let data = read(&self.objects, &id, &mut self.buf)?;
         let count = output::Count {
             id,
             entry_pack_location: output::count::PackLocation::NotLookedUp,
         };
         output::Entry::from_data(&count, &data, self.producer.compression)
+    }
+
+    /// The entry of the object `id` as the delta that the search computed against the object at `base` in the plan,
+    /// which is computed again if the search didn't keep it, as git's `write_object()` does.
+    fn computed_delta(&mut self, id: ObjectId, base: usize, computed: &Computed) -> Result<output::Entry> {
+        let (base_index, compression) = (self.producer.positions[base], self.producer.compression);
+        if let Some(delta) = &computed.data {
+            return output::Entry::from_delta(id, base_index, delta, compression);
+        }
+        let base_id = self.producer.plan.objects[base].id;
+        let base_data = read(&self.objects, &base_id, &mut self.base_buf)?;
+        let data = read(&self.objects, &id, &mut self.buf)?;
+        let delta = gix_pack::data::delta::encode(base_data.data, data.data).unwrap_or_default();
+        ensure!(
+            delta.len() == computed.size,
+            "The delta of {id} against {base_id} has {} bytes when it is computed again, instead of {}",
+            delta.len(),
+            computed.size
+        );
+        output::Entry::from_delta(id, base_index, &delta, compression)
+    }
+}
+
+/// Read the object `id` from `objects` into `buf`.
+fn read<'a>(objects: &crate::Handle, id: &ObjectId, buf: &'a mut Vec<u8>) -> Result<gix_object::Data<'a>> {
+    match objects
+        .try_find(id, buf)
+        .or_raise(|| message!("Could not read the object {id}"))?
+    {
+        Some(data) => Ok(data),
+        None => bail!("The object {id} disappeared before it was written".not_found()),
     }
 }
 

@@ -313,7 +313,10 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
                * [ ] delta islands and the path walk
                * [ ] name hash version 2
                * [ ] respect the `delta=false` attribute
-               * [ ] use them when writing packs (`data::output`)
+               * [x] write a computed delta as an entry of `data::output` (`output::Entry::from_delta()`), as the `repack` of
+                 `gix-odb` does
+               * [ ] use them in `data::output::entry::iter_from_counts()`, which needs the name hashes of the counted objects,
+                 a search of the objects that it doesn't copy as deltas, and a write order that puts each base before its deltas
             * [x] create 'thin' pack, i.e. deltas that are based on objects the other side has.
             * [x] parallel implementation that scales perfectly
         * [x] entries to pack data iterator
@@ -374,7 +377,8 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
         * [x] decide whether a repository needs a repack, as the auto condition of the `geometric-repack` task of
           `git maintenance` does
         * [ ] select objects by reachability, and write cruft packs
-        * [ ] compute deltas
+        * [x] compute deltas as `git repack` does: search the objects that aren't copied as deltas in Git's order, with the
+          name hashes of its walk, and write each delta after its base
         * [ ] write multi-pack-indices and bitmaps
 * [x] API documentation
     * [x] Some examples

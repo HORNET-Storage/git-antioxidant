@@ -1,17 +1,26 @@
 use std::{
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use gix_error::{Result, ResultExt, bail, cancelled, ensure, message};
-use gix_hash::ObjectId;
-use gix_pack::data::entry::Header;
+use gix_hash::{ObjectId, oid};
+use gix_pack::cache::lru::MemoryCappedHashmap;
+use gix_pack::data::{decode::header::ResolvedBase, delta::search::InPack, entry::Header};
 use gix_utils::progress::{self, Count, DynNestedProgress, Progress};
 
-use crate::repack::Pack;
+use crate::repack::{
+    Options, Pack,
+    deltas::{self, Computed, Facts},
+    loose, names,
+};
 
 /// How many objects are looked at between two checks of the interrupt flag.
 const OBJECTS_PER_INTERRUPT_CHECK: usize = 4096;
+
+/// How many bytes of decoded delta bases git keeps while it reads objects by default, its `core.deltaBaseCacheLimit`.
+const DELTA_BASE_CACHE_LIMIT: usize = 96 * 1024 * 1024;
 
 /// A combined pack, opened to copy its entries.
 pub(crate) struct Source {
@@ -49,15 +58,15 @@ impl Source {
         Ok(Source { data, index, entries })
     }
 
-    /// The id of the object that the entry at `offset` applies to, if it's a delta.
-    fn delta_base(&self, offset: u64) -> Result<Option<ObjectId>> {
-        let entry = self.data.entry(offset).or_raise(|| {
-            message!(
-                "Could not read the entry at offset {offset} of {}",
-                self.data.path().display()
-            )
-        })?;
-        Ok(match entry.header {
+    /// The kind and the size of the object at `offset`, and if the entry is a delta, the id of the object that it
+    /// applies to and its length, as `git pack-objects` reads them in its `check_object()`.
+    fn describe(&self, offset: u64, inflate: &mut gix_zlib::Inflate) -> Result<Described> {
+        let pack_path = || self.data.path().display();
+        let entry = self
+            .data
+            .entry(offset)
+            .or_raise(|| message!("Could not read the entry at offset {offset} of {}", pack_path()))?;
+        let delta_base = match entry.header {
             Header::RefDelta { base_id } => Some(base_id),
             Header::OfsDelta { base_distance } => {
                 let position = Header::verified_base_pack_offset(offset, base_distance).and_then(|base_offset| {
@@ -68,12 +77,33 @@ impl Source {
                 let Some(position) = position else {
                     bail!(
                         "The delta at offset {offset} of {} doesn't apply to an entry before it".corrupted(),
-                        self.data.path().display()
+                        pack_path()
                     );
                 };
                 Some(self.index.oid_at_index(self.entries[position].1).to_owned())
             }
             Header::Commit | Header::Tree | Header::Blob | Header::Tag => None,
+        };
+        let delta = delta_base.map(|base| (base, entry.decompressed_size));
+        // Like git, look for the objects that deltas refer to by id in the same pack only.
+        let resolve = |id: &oid| -> Result<Option<ResolvedBase>> {
+            self.index
+                .lookup(id)
+                .map(|position| {
+                    self.data
+                        .entry(self.index.pack_offset_at_index(position))
+                        .map(ResolvedBase::InPack)
+                })
+                .transpose()
+        };
+        let header = self
+            .data
+            .decode_header(entry, inflate, &resolve)
+            .or_raise(|| message!("Could not read the object at offset {offset} of {}", pack_path()))?;
+        Ok(Described {
+            kind: header.kind,
+            size: header.object_size,
+            delta,
         })
     }
 }
@@ -92,6 +122,15 @@ pub(crate) enum Location {
     Loose,
 }
 
+/// What a combined pack holds at an offset.
+struct Described {
+    kind: gix_object::Kind,
+    /// The size of the object's data.
+    size: u64,
+    /// The id of the object that the entry applies to and the length of the delta, if it's a delta.
+    delta: Option<(ObjectId, u64)>,
+}
+
 /// An object of the new pack.
 pub(crate) struct Object {
     pub(crate) id: ObjectId,
@@ -104,9 +143,12 @@ pub(crate) struct Plan {
     pub(crate) sources: Vec<Source>,
     /// The objects of the new pack, in the order they were selected in.
     pub(crate) objects: Vec<Object>,
-    /// For each object, the object that its delta applies to as an index into `objects`, if the delta is copied from
-    /// its pack, or `None` if the object is stored whole.
+    /// For each object, the object that it is stored as a delta of as an index into `objects`, whether the delta is
+    /// copied from its pack or was computed, or `None` if the object is stored whole.
     pub(crate) bases: Vec<Option<u32>>,
+    /// For each object, the delta that the search computed for it, or `None` if its delta is copied or it is stored
+    /// whole.
+    pub(crate) computed: Vec<Option<Computed>>,
     /// The indices into `objects` in the order the objects are written in, each delta after the object it applies to.
     pub(crate) order: Vec<u32>,
     /// The loose objects that couldn't be read or whose data doesn't hash to their name.
@@ -115,31 +157,40 @@ pub(crate) struct Plan {
 
 impl Plan {
     /// Select the objects of the `combined` packs and the loose objects of the object database in `objects_dir` that
-    /// none of the `excluded` packs holds, as `git pack-objects --stdin-packs --unpacked` does if the `combined` packs
-    /// are its included and the `excluded` packs its excluded packs, and plan which deltas to copy, in chains of at most
-    /// `delta_depth` deltas.
+    /// neither the `retained` nor the `kept` packs hold, as `git pack-objects --stdin-packs --unpacked` does with
+    /// `--honor-pack-keep` if the `combined` packs are its included and the `retained` packs its excluded packs. Plan
+    /// the deltas of the new pack as it does: copy deltas in chains of at most [`Options::delta_depth`] deltas, and
+    /// search deltas for the other objects with the name hashes of its walk through the history of the combined packs
+    /// and the loose commits.
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         objects_dir: &Path,
         object_hash: gix_hash::Kind,
         combined: &[&Pack],
-        excluded: &[&Pack],
-        delta_depth: u32,
+        retained: &[&Pack],
+        kept: &[&Pack],
+        options: &Options,
         progress: &mut dyn DynNestedProgress,
         should_interrupt: &AtomicBool,
     ) -> Result<Self> {
         let mut selecting = progress.add_child("select objects".into());
         selecting.init(None, progress::count("objects"));
-        let excluded = excluded
-            .iter()
-            .map(|pack| open_index(pack, object_hash))
-            .collect::<Result<Vec<_>>>()?;
-        let is_excluded = |id: &ObjectId| excluded.iter().any(|index| index.lookup(id).is_some());
+        let open_indices = |packs: &[&Pack]| {
+            packs
+                .iter()
+                .map(|pack| open_index(pack, object_hash))
+                .collect::<Result<Vec<_>>>()
+        };
+        let (retained, kept) = (open_indices(retained)?, open_indices(kept)?);
+        let is_retained = |id: &oid| retained.iter().any(|index| index.lookup(id).is_some());
+        let is_excluded = |id: &oid| is_retained(id) || kept.iter().any(|index| index.lookup(id).is_some());
 
-        // Like git, copy each object from the combined pack modified last among those that hold it.
+        // Like git, list the objects of the combined pack modified last first, and copy each object from the first
+        // combined pack that holds it.
         let mut combined = combined.to_vec();
         combined.sort_by(|a, b| {
-            b.modified
-                .cmp(&a.modified)
+            seconds(b.modified)
+                .cmp(&seconds(a.modified))
                 .then_with(|| a.index_path.cmp(&b.index_path))
         });
         let sources = combined
@@ -148,11 +199,22 @@ impl Plan {
             .collect::<Result<Vec<_>>>()?;
 
         let mut selection = Selection::default();
+        // The commits that the walk for name hashes starts at.
+        let mut commits = Vec::new();
+        let mut inflate = gix_zlib::Inflate::default();
         for (source_index, source) in sources.iter().enumerate() {
             for (entry, &(offset, position)) in source.entries.iter().enumerate() {
                 check_interrupt(entry, should_interrupt)?;
                 let id = source.index.oid_at_index(position).to_owned();
-                if selection.contains(&id) || is_excluded(&id) {
+                if selection.contains(&id) {
+                    continue;
+                }
+                let described = source.describe(offset, &mut inflate)?;
+                // Like git, start the walk at the commits of the combined packs even if a pack that remains holds them.
+                if described.kind == gix_object::Kind::Commit {
+                    commits.push(id);
+                }
+                if is_excluded(&id) {
                     continue;
                 }
                 let end = source
@@ -167,25 +229,51 @@ impl Plan {
                         end,
                         position,
                     },
+                    Selected {
+                        kind: described.kind,
+                        size: described.size,
+                        in_pack: Some(InPack {
+                            pack_id: source_index as u32,
+                            is_delta: described.delta.is_some(),
+                        }),
+                        delta: described.delta,
+                    },
                 )?;
                 selecting.inc();
             }
         }
 
-        let loose = crate::loose::Store::at(objects_dir, object_hash);
+        let store = crate::loose::Store::at(objects_dir, object_hash);
         let mut skipped_loose_objects = Vec::new();
         let mut buf = Vec::new();
-        for (count, id) in loose.iter().enumerate() {
+        for (count, id) in loose::list(objects_dir, object_hash)?.into_iter().enumerate() {
             check_interrupt(count, should_interrupt)?;
-            let id = id.or_raise(|| message!("Could not list the loose objects in {}", objects_dir.display()))?;
             if selection.contains(&id) || is_excluded(&id) {
+                // Like git, start the walk at every loose commit, even one that a pack holds.
+                if let Ok(Some((_, kind))) = store.try_header(&id)
+                    && kind == gix_object::Kind::Commit
+                {
+                    commits.push(id);
+                }
                 continue;
             }
-            match loose.try_find(&id, &mut buf) {
+            match store.try_find(&id, &mut buf) {
                 Ok(Some(data))
                     if gix_object::compute_hash(object_hash, data.kind, data.data).is_ok_and(|actual| actual == id) =>
                 {
-                    selection.add(id, Location::Loose)?;
+                    if data.kind == gix_object::Kind::Commit {
+                        commits.push(id);
+                    }
+                    selection.add(
+                        id,
+                        Location::Loose,
+                        Selected {
+                            kind: data.kind,
+                            size: data.data.len() as u64,
+                            in_pack: None,
+                            delta: None,
+                        },
+                    )?;
                     selecting.inc();
                 }
                 // The object was removed since its directory was listed.
@@ -200,34 +288,90 @@ impl Plan {
             }
         }
 
-        let Selection { objects, indices } = selection;
-        let mut bases = Vec::with_capacity(objects.len());
-        for object in &objects {
-            bases.push(match object.location {
-                Location::Packed { source, offset, .. } => sources[source]
-                    .delta_base(offset)?
-                    .and_then(|base_id| indices.get(&base_id).copied()),
-                Location::Loose => None,
-            });
-        }
+        let Selection {
+            objects,
+            selected,
+            indices,
+        } = selection;
+        let mut bases: Vec<Option<u32>> = selected
+            .iter()
+            .map(|selected| selected.delta.and_then(|(base_id, _)| indices.get(&base_id).copied()))
+            .collect();
+        // Like git, compare the length of a delta that can be copied with `core.bigFileThreshold` before chains are
+        // cut.
+        let facts: Vec<Facts> = selected
+            .iter()
+            .zip(&bases)
+            .map(|(selected, base)| Facts {
+                kind: selected.kind,
+                size: selected.size,
+                threshold_size: match (base, selected.delta) {
+                    (Some(_), Some((_, delta_size))) => delta_size,
+                    _ => selected.size,
+                },
+                in_pack: selected.in_pack,
+            })
+            .collect();
+        drop(selected);
         // As each object is copied from the first combined pack that holds it, deltas form cycles only where a pack
         // holds a delta whose base it doesn't hold. Chains can be longer than `delta_depth` in any pack.
-        break_delta_chains(&mut bases, delta_depth);
+        break_delta_chains(&mut bases, options.delta_depth.min(deltas::MAX_DEPTH));
+
+        let mut objects_handle = crate::at(objects_dir, object_hash)
+            .and_then(crate::Handle::into_arc)
+            .or_raise(|| message!("Could not open the object database at {}", objects_dir.display()))?;
+        // Like git, read the objects for the walk and the search through one cache of delta bases.
+        objects_handle.set_pack_cache(|| Box::new(MemoryCappedHashmap::new(DELTA_BASE_CACHE_LIMIT)));
+        let mut name_hashes = vec![0; objects.len()];
+        names::assign(
+            &objects_handle,
+            object_hash,
+            &commits,
+            is_retained,
+            &indices,
+            &mut name_hashes,
+            should_interrupt,
+        )?;
+        drop((commits, indices));
+        let mut searching = progress.add_child("find deltas".into());
+        searching.init(None, progress::count("objects"));
+        let computed = deltas::find(
+            &objects,
+            &facts,
+            &name_hashes,
+            &mut bases,
+            objects_handle,
+            options,
+            &searching,
+            should_interrupt,
+        )?;
         let order = write_order(&bases);
         Ok(Plan {
             sources,
             objects,
             bases,
+            computed,
             order,
             skipped_loose_objects,
         })
     }
 }
 
+/// What is known of a selected object when it is selected.
+struct Selected {
+    kind: gix_object::Kind,
+    size: u64,
+    in_pack: Option<InPack>,
+    /// The id of the object that its pack stores it as a delta of, and the length of the delta.
+    delta: Option<(ObjectId, u64)>,
+}
+
 /// The objects selected so far.
 #[derive(Default)]
 struct Selection {
     objects: Vec<Object>,
+    /// What is known of each object in `objects`.
+    selected: Vec<Selected>,
     /// The index of each selected object in `objects`.
     indices: gix_hashtable::HashMap<ObjectId, u32>,
 }
@@ -237,12 +381,13 @@ impl Selection {
         self.indices.contains_key(id)
     }
 
-    fn add(&mut self, id: ObjectId, location: Location) -> Result {
+    fn add(&mut self, id: ObjectId, location: Location, selected: Selected) -> Result {
         let Some(index) = u32::try_from(self.objects.len()).ok().filter(|&index| index < u32::MAX) else {
             bail!("The new pack would hold more objects than a pack can".unsupported());
         };
         self.indices.insert(id, index);
         self.objects.push(Object { id, location });
+        self.selected.push(selected);
         Ok(())
     }
 }
@@ -257,6 +402,17 @@ fn check_interrupt(count: usize, should_interrupt: &AtomicBool) -> Result {
         bail!(cancelled("Interrupted while selecting the objects of the new pack"));
     }
     Ok(())
+}
+
+/// The whole seconds since the epoch of `time`, rounded down, as git compares the times at which packs were modified.
+fn seconds(time: SystemTime) -> i64 {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_secs()).unwrap_or(i64::MAX),
+        Err(before) => {
+            let before = before.duration();
+            i64::try_from(before.as_secs()).map_or(i64::MIN, |seconds| -seconds - i64::from(before.subsec_nanos() > 0))
+        }
+    }
 }
 
 /// Drop the deltas in `bases` that would form a cycle or a chain of more than `depth` deltas, as git's
@@ -317,8 +473,8 @@ fn break_delta_chains(bases: &mut [Option<u32>], depth: u32) {
 }
 
 /// The order in which to write the objects with `bases`, as they were selected but with each delta after the object it
-/// applies to. `bases` must not contain cycles.
-fn write_order(bases: &[Option<u32>]) -> Vec<u32> {
+/// applies to, as git's `write_one()` writes the base of a delta first. `bases` must not contain cycles.
+pub(crate) fn write_order(bases: &[Option<u32>]) -> Vec<u32> {
     let mut order = Vec::with_capacity(bases.len());
     let mut placed = vec![false; bases.len()];
     let mut chain = Vec::new();

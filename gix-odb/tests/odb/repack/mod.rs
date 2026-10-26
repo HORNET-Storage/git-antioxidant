@@ -3,9 +3,11 @@
 //! hold, and which loose objects and files of multi-pack-indices remained. What [`gix_odb::repack::repack()`] does with
 //! another copy of a case is compared with these, and checked with `git fsck` and `git verify-pack`. The fixture also
 //! records whether `git maintenance run --auto` repacks some of the cases, which [`gix_odb::repack::needs_repack()`] is
-//! compared with.
+//! compared with. A second fixture records the packs that git writes for cases whose objects it stores as deltas, which
+//! `computed` compares the deltas of the new pack with.
 
 mod auto;
+mod computed;
 mod deltas;
 mod deviation;
 mod git;
@@ -37,9 +39,14 @@ struct Case {
 impl Case {
     /// A copy of the case `name`.
     fn writable(name: &'static str) -> TestResult<Self> {
+        Self::of(FIXTURE, name)
+    }
+
+    /// A copy of the case `name` of the fixture made by the script `fixture`.
+    fn of(fixture: &str, name: &'static str) -> TestResult<Self> {
         Ok(Case {
             name,
-            tmp: gix_testtools::scripted_fixture_writable(FIXTURE)?,
+            tmp: gix_testtools::scripted_fixture_writable(fixture)?,
         })
     }
 

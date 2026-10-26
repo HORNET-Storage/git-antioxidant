@@ -24,7 +24,7 @@ sha256 = ["gix-hash/sha256", "gix-pack/sha256"]
 serde = ["dep:serde", "gix-hash/serde", "gix-object/serde", "gix-pack/serde"]
 ## Combine the packs of an object database into a geometric progression and pack its loose objects, as
 ## `git repack --geometric` does, with the `repack` module.
-repack = ["gix-pack/generate", "gix-pack/streaming-input", "gix-utils/io-pipe"]
+repack = ["gix-pack/generate", "gix-pack/streaming-input", "gix-pack/pack-cache-lru-dynamic", "gix-utils/io-pipe"]
 
 [dependencies]
 crc32fast = "1.5.0"
