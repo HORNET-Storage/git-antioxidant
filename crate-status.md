@@ -107,8 +107,7 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
             * [x] respect `diff.*.textconv`, `diff.*.cachetextconv` and external diff viewers with `diff.*.command`,
               [along with support for reading `diff` gitattributes](https://github.com/git/git/blob/73876f4861cd3d187a4682290ab75c9dccadbc56/Documentation/gitattributes.txt#L699:L699).
             * **rewrite tracking**
-                * **deviation** - git keeps up to four candidates whereas we use the first-found candidate that matches the similarity percentage.
-                  This can lead to different sources being found. As such, we also don't consider the filename at all.
+                * [x] choose the source of each rename and copy as git's `diffcore-rename.c` does, with `gix-diff`'s rename tracker
                 * [x] handle binary files correctly, and apply filters for that matter
                 * [x] computation limit with observable reduction of precision when it is hit, for copies and renames separately
                 * **by identity**
