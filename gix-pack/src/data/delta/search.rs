@@ -31,7 +31,8 @@
 //! part takes the second half of the objects left in the part with the most of them, if those are more than
 //! `2 × (window + 1)`, starting at the first object in that half whose name hash is 0 or differs from that of the object
 //! before, if there is one. Each part starts with an empty window, so the deltas depend on the speed of the threads, as
-//! they do in Git. With a single thread, they are the deltas of `git pack-objects --threads=1`.
+//! they do in Git. The threads read the objects one at a time, as Git's threads read them under one lock, which paces
+//! them as it paces Git's. With a single thread, the deltas are those of `git pack-objects --threads=1`.
 //!
 //! The memory of the window is counted with the sizes that Git's structures have on the platform, as Git counts it.
 //! Other sizes are 64-bit numbers, while Git for Windows counts some of them in 32 bits, which only makes a difference
@@ -162,7 +163,8 @@ pub struct Delta {
 /// newest first, and its preferred bases, but not the objects that the pack copies as deltas from another pack, nor
 /// those whose `delta` attribute is unset or that are larger than `core.bigFileThreshold`.
 ///
-/// * `find` reads the objects, a clone of it in each thread.
+/// * `find` reads the objects, one at a time for all threads, as Git reads them under one lock. A cache of delta bases
+///   that it holds thus serves all threads, as Git's does.
 /// * `progress` counts the objects that were tried as deltas, those that aren't preferred bases.
 /// * `should_interrupt` is checked before each object, and once it is set, the search stops with an error.
 ///
@@ -176,7 +178,7 @@ pub fn find_deltas<F>(
     options: Options,
 ) -> Result<Vec<Option<Delta>>>
 where
-    F: gix_object::Find + Clone + Send,
+    F: gix_object::Find + Send,
 {
     let mut deltas: Vec<Option<Delta>> = (0..objects.len()).map(|_| None).collect();
     if options.window == 0 || options.depth == 0 {
@@ -189,6 +191,7 @@ where
         return Ok(deltas);
     }
     list.sort_unstable_by(|&a, &b| compare(&objects[a], &objects[b]).then(a.cmp(&b)));
+    let find = Mutex::new(find);
     let shared = Shared {
         objects,
         list: &list,
@@ -201,9 +204,9 @@ where
     };
     let threads = gix_parallel::num_threads(options.thread_limit);
     let found = if threads > 1 {
-        shared.in_threads(find, threads)?
+        shared.in_threads(&find, threads)?
     } else {
-        let mut searcher = Searcher::new(find, &shared);
+        let mut searcher = Searcher::new(&find, &shared);
         let mut next = list.iter().copied();
         searcher.find_deltas(|| next.next())?;
         searcher.found
@@ -351,10 +354,11 @@ impl Shared<'_> {
     }
 
     /// Find the deltas with `threads` threads, which divide the search order and take work from each other as those of
-    /// Git's `ll_find_deltas()` do, and return them with the index of their object.
-    fn in_threads<F>(&self, find: F, threads: usize) -> Result<Vec<(usize, Delta)>>
+    /// Git's `ll_find_deltas()` do and read the objects with `find` one at a time, and return them with the index of their
+    /// object.
+    fn in_threads<F>(&self, find: &Mutex<F>, threads: usize) -> Result<Vec<(usize, Delta)>>
     where
-        F: gix_object::Find + Clone + Send,
+        F: gix_object::Find + Send,
     {
         let state = Mutex::new(self.divide(threads));
         let idle = Condvar::new();
@@ -368,13 +372,10 @@ impl Shared<'_> {
                     handles.push(None);
                     continue;
                 }
-                let (thread_find, thread_state) = (find.clone(), &state);
-                let idle = &idle;
+                let (thread_state, idle) = (&state, &idle);
                 let spawned = std::thread::Builder::new()
                     .name("gitoxide.find_deltas".into())
-                    .spawn_scoped(scope, move || {
-                        self.work(thread, thread_find, thread_state, idle, thread_ready)
-                    })
+                    .spawn_scoped(scope, move || self.work(thread, find, thread_state, idle, thread_ready))
                     .or_raise(|| message("Could not start a thread to look for deltas"));
                 match spawned {
                     Ok(handle) => {
@@ -439,7 +440,7 @@ impl Shared<'_> {
     fn work<F: gix_object::Find>(
         &self,
         thread: usize,
-        find: F,
+        find: &Mutex<F>,
         state: &Mutex<Vec<Part>>,
         idle: &Condvar,
         ready: &Condvar,
@@ -519,7 +520,8 @@ impl Drop for IdleOnPanic<'_> {
 
 /// A thread of the search, with a window of its own.
 struct Searcher<'a, F> {
-    find: F,
+    /// Reads the objects, one at a time for all threads.
+    find: &'a Mutex<F>,
     shared: &'a Shared<'a>,
     /// The places of the window, like Git's array of `struct unpacked`.
     slots: Vec<Slot>,
@@ -543,7 +545,7 @@ struct Slot {
 }
 
 impl<'a, F: gix_object::Find> Searcher<'a, F> {
-    fn new(find: F, shared: &'a Shared<'a>) -> Self {
+    fn new(find: &'a Mutex<F>, shared: &'a Shared<'a>) -> Self {
         Searcher {
             find,
             shared,
@@ -757,16 +759,16 @@ impl<'a, F: gix_object::Find> Searcher<'a, F> {
     }
 }
 
-/// Return the data of `object` from `data`, after reading it into `data` and counting its size in `memory` if it wasn't
-/// read yet, or return `None` if the object doesn't exist.
+/// Return the data of `object` from `data`, after reading it into `data` with `find`, which no other thread reads with
+/// meanwhile, and counting its size in `memory` if it wasn't read yet, or return `None` if the object doesn't exist.
 fn load<'d, F: gix_object::Find>(
     data: &'d mut Option<Vec<u8>>,
-    find: &F,
+    find: &Mutex<F>,
     object: &Object,
     memory: &mut u64,
 ) -> Result<Option<&'d [u8]>> {
     if data.is_none() {
-        let Some(read) = read(find, object)? else {
+        let Some(read) = read(&*lock(find), object)? else {
             return Ok(None);
         };
         *memory += object.size;

@@ -1,13 +1,13 @@
 //! The search is compared with the bases that `git pack-objects` chose for the objects of `make_deltas.sh` with a single
 //! thread, and each of its rules is checked with objects made for it. The deltas that several threads find are checked by
-//! building their objects from them.
+//! building their objects from them, and the threads are checked to read one object at a time.
 
 use std::{
     collections::HashMap,
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -48,6 +48,29 @@ impl gix_object::Find for Store {
             object_hash: id.kind(),
             data: buffer,
         }))
+    }
+}
+
+/// Objects in memory that count how many threads read them at the same time, and the most that ever did.
+struct Readers {
+    store: Store,
+    reading: AtomicUsize,
+    most: AtomicUsize,
+}
+
+impl gix_object::Find for Readers {
+    fn try_find<'a>(
+        &self,
+        id: &gix_hash::oid,
+        buffer: &'a mut Vec<u8>,
+    ) -> gix_error::Result<Option<gix_object::Data<'a>>> {
+        let reading = self.reading.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most.fetch_max(reading, Ordering::SeqCst);
+        // Reading takes long enough for threads that read at the same time to meet here.
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let found = self.store.try_find(id, buffer);
+        self.reading.fetch_sub(1, Ordering::SeqCst);
+        found
     }
 }
 
@@ -889,4 +912,48 @@ fn deltas_that_several_threads_find_build_their_objects() -> TestResult {
     };
     let (deltas, _) = search(&objects, &Store(Arc::new(pack.data.clone())), options)?;
     assert_deltas_build_their_objects(&objects, &pack.data, &deltas, options.depth)
+}
+
+/// Several threads read one object at a time, as Git's threads read objects under one lock, which paces them as it paces
+/// Git's. Without the `parallel` feature of `gix-parallel`, the search has a single thread.
+#[test]
+fn several_threads_read_one_object_at_a_time() -> TestResult {
+    let mut rng = Rng(0x6f6e_6520_6174_2061);
+    let mut objects = Objects::default();
+    for file in 0..16 {
+        let hash = name_hash(format!("dir/file-{file}.txt").as_bytes());
+        let mut versions = vec![rng.text(30)];
+        for _ in 1..4 {
+            let next = rng.edit_lines(versions.last().expect("there is a version"));
+            versions.push(next);
+        }
+        for version in versions.iter().rev() {
+            objects.blob(hash, version);
+        }
+    }
+    let readers = Readers {
+        store: Store(Arc::new(objects.data.clone())),
+        reading: AtomicUsize::new(0),
+        most: AtomicUsize::new(0),
+    };
+    // Each of the threads gets the versions of four files.
+    let options = Options {
+        window: 1,
+        thread_limit: Some(4),
+        ..Options::default()
+    };
+    let deltas = find_deltas(
+        &objects.list,
+        &readers,
+        &Counter::default(),
+        &AtomicBool::new(false),
+        options,
+    )?;
+    assert_deltas_build_their_objects(&objects.list, &objects.data, &deltas, options.depth)?;
+    assert_eq!(
+        readers.most.load(Ordering::SeqCst),
+        1,
+        "no two threads read at the same time"
+    );
+    Ok(())
 }
