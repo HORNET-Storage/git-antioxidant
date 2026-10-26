@@ -14,6 +14,7 @@ fn tree_merge_options() -> TestResult {
 }
 
 #[test]
+#[cfg(feature = "revision")]
 fn merges_ignore_big_file_threshold_as_git_does() -> TestResult {
     let repo = named_repo("make_merge_big_file_threshold.sh")?.with_object_memory();
     assert_eq!(
