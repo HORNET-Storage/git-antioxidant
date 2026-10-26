@@ -12,11 +12,11 @@ use std::{
 
 use gix_hash::ObjectId;
 use gix_object::Find;
-use gix_repack::Options;
+use gix_odb::repack::Options;
 use gix_testtools::TestResult;
 use gix_utils::progress::{self, Count, Id, MessageLevel, NestedProgress, Progress, Step, StepShared, UNKNOWN, Unit};
 
-use crate::{Case, file_name};
+use super::{Case, file_name};
 
 #[test]
 fn a_reader_that_opened_the_object_database_before_finds_every_object() -> TestResult {
@@ -55,7 +55,7 @@ fn a_reader_that_opened_the_object_database_before_finds_every_object() -> TestR
 fn an_interrupt_before_the_repack_leaves_the_object_database_as_it_was() -> TestResult {
     let case = Case::writable("geometric")?;
     let before = case.entries()?;
-    let err = gix_repack::repack(
+    let err = gix_odb::repack::repack(
         &case.objects_dir(),
         gix_testtools::object_hash(),
         &mut progress::Discard,
@@ -74,7 +74,7 @@ fn an_interrupt_while_the_pack_is_written_leaves_the_object_database_as_it_was()
     let before = case.entries()?;
     let should_interrupt = Arc::new(AtomicBool::new(false));
     let mut progress = InterruptWhenCounting::new("write pack", Arc::clone(&should_interrupt));
-    let err = gix_repack::repack(
+    let err = gix_odb::repack::repack(
         &case.objects_dir(),
         gix_testtools::object_hash(),
         &mut progress,

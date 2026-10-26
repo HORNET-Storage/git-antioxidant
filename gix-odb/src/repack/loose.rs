@@ -6,7 +6,7 @@ use std::{
 
 use gix_error::{Result, ResultExt, bail, cancelled, message};
 
-use crate::Survey;
+use crate::repack::Survey;
 
 /// How many loose objects are looked at between two checks of the interrupt flag.
 const OBJECTS_PER_INTERRUPT_CHECK: usize = 4096;
@@ -59,7 +59,7 @@ pub(crate) fn prune(objects_dir: &Path, object_hash: gix_hash::Kind, should_inte
         }
     }
 
-    let loose = gix_odb::loose::Store::at(objects_dir, object_hash);
+    let loose = crate::loose::Store::at(objects_dir, object_hash);
     let mut removed = 0;
     for (count, id) in loose.iter().enumerate() {
         if count.is_multiple_of(OBJECTS_PER_INTERRUPT_CHECK) && should_interrupt.load(Ordering::Relaxed) {

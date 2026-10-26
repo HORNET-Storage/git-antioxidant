@@ -5,7 +5,7 @@ use std::{
 
 use gix_error::{Result, ResultExt, message};
 
-use crate::{Pack, Written};
+use crate::repack::{Pack, Written};
 
 /// The extensions of the files of a pack, its index first, in the order git's `unlink_pack_path()` removes them.
 const PACK_FILES: [&str; 7] = ["idx", "pack", "rev", "keep", "bitmap", "promisor", "mtimes"];

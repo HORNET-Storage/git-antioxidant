@@ -10,7 +10,7 @@ use gix_object::Find;
 use gix_pack::data::output;
 use gix_utils::progress::{self, BoxedDynNestedProgress, Count, DynNestedProgress, Progress};
 
-use crate::{
+use crate::repack::{
     Options, Written,
     plan::{Location, Plan},
 };
@@ -162,7 +162,7 @@ impl Producer<'_> {
         writer: gix_utils::io::pipe::Writer,
         progress: BoxedDynNestedProgress,
     ) -> std::result::Result<(), Failure> {
-        let objects = gix_odb::at(self.objects_dir, self.object_hash)
+        let objects = crate::at(self.objects_dir, self.object_hash)
             .or_raise(|| message!("Could not open the object database at {}", self.objects_dir.display()))
             .map_err(Failure::Entry)?;
         let num_objects = self.plan.objects.len() as u32;
@@ -196,7 +196,7 @@ impl Producer<'_> {
 struct Entries<'a> {
     producer: Producer<'a>,
     /// The object database to read objects from that aren't copied from a pack.
-    objects: gix_odb::Handle,
+    objects: crate::Handle,
     /// The position in the pack of the next object to produce.
     next: usize,
     buf: Vec<u8>,

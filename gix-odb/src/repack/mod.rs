@@ -41,7 +41,6 @@
 //!   one.
 //! * Loose objects that can't be read or whose data doesn't hash to their name are left as they are and reported.
 //! * Packs with the same amount of objects are ordered by their path, where git leaves the order unspecified.
-#![deny(unsafe_code, missing_docs)]
 
 use std::{
     path::{Path, PathBuf},

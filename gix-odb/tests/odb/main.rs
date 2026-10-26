@@ -36,5 +36,7 @@ pub mod find;
 pub mod header;
 pub mod memory;
 pub mod regression;
+#[cfg(feature = "repack")]
+mod repack;
 pub mod sink;
 pub mod store;

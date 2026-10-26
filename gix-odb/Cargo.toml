@@ -22,6 +22,9 @@ sha1 = ["gix-hash/sha1", "gix-pack/sha1"]
 sha256 = ["gix-hash/sha256", "gix-pack/sha256"]
 ## Data structures implement `serde::Serialize` and `serde::Deserialize`.
 serde = ["dep:serde", "gix-hash/serde", "gix-object/serde", "gix-pack/serde"]
+## Combine the packs of an object database into a geometric progression and pack its loose objects, as
+## `git repack --geometric` does, with the `repack` module.
+repack = ["gix-pack/generate", "gix-pack/streaming-input", "gix-utils/io-pipe"]
 
 [dependencies]
 crc32fast = "1.5.0"
@@ -48,7 +51,7 @@ document-features = { version = "0.2.0", optional = true }
 
 [dev-dependencies]
 insta = "1.46.3"
-gix-odb = { path = ".", features = ["sha1", "sha256"] }
+gix-odb = { path = ".", features = ["sha1", "sha256", "repack"] }
 gix-hash = { path = "../gix-hash" }
 gix-testtools = { path = "../tests/tools", default-features = false, features = ["sha1", "sha256"] }
 gix-date = { path = "../gix-date" }
@@ -69,4 +72,4 @@ path = "tests/threaded.rs"
 required-features = ["gix-parallel/parallel"]
 
 [package.metadata.docs.rs]
-features = ["sha1", "document-features", "serde"]
+features = ["sha1", "document-features", "serde", "repack"]

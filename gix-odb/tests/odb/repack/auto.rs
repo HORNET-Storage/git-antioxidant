@@ -1,10 +1,10 @@
 //! Whether a repack is needed is decided as the auto condition of the `geometric-repack` task of `git maintenance`
 //! decides whether the task runs.
 
-use gix_repack::{needs_repack, too_many_loose_objects};
+use gix_odb::repack::{needs_repack, too_many_loose_objects};
 use gix_testtools::TestResult;
 
-use crate::FIXTURE;
+use super::FIXTURE;
 
 #[test]
 fn needs_repack_decides_as_git_maintenance_does() -> TestResult {

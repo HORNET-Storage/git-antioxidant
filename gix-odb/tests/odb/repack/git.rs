@@ -1,9 +1,9 @@
-//! The cases that [`gix_repack::repack()`] repacks as git does.
+//! The cases that [`gix_odb::repack::repack()`] repacks as git does.
 
-use gix_repack::Options;
+use gix_odb::repack::Options;
 use gix_testtools::TestResult;
 
-use crate::{Repacked, file_name, file_names, repack};
+use super::{Repacked, file_name, file_names, repack};
 
 /// Repack a copy of the case `name`, and check that the same packs, loose objects and files of multi-pack-indices remain
 /// as when git repacked it, and that the new pack holds the same objects as the pack that git wrote.
@@ -38,7 +38,7 @@ fn the_smallest_packs_and_the_loose_objects_are_combined() -> TestResult {
     );
 
     assert!(
-        !gix_repack::needs_repack(&case.objects_dir(), gix_testtools::object_hash(), 2, 1)?,
+        !gix_odb::repack::needs_repack(&case.objects_dir(), gix_testtools::object_hash(), 2, 1)?,
         "the packs form a progression now, and no object is loose"
     );
     let again = case.repack(Options::default())?;

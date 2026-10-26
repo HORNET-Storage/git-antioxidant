@@ -1,10 +1,10 @@
 //! Deltas are copied from the combined packs, and chains of deltas that are longer than the delta depth are cut as git
 //! cuts them.
 
-use gix_repack::Options;
+use gix_odb::repack::Options;
 use gix_testtools::TestResult;
 
-use crate::Case;
+use super::Case;
 
 #[test]
 fn chains_are_cut_every_delta_depth_plus_one_deltas() -> TestResult {

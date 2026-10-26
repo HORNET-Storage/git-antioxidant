@@ -8,7 +8,7 @@ use gix_hash::ObjectId;
 use gix_pack::data::entry::Header;
 use gix_utils::progress::{self, Count, DynNestedProgress, Progress};
 
-use crate::Pack;
+use crate::repack::Pack;
 
 /// How many objects are looked at between two checks of the interrupt flag.
 const OBJECTS_PER_INTERRUPT_CHECK: usize = 4096;
@@ -172,7 +172,7 @@ impl Plan {
             }
         }
 
-        let loose = gix_odb::loose::Store::at(objects_dir, object_hash);
+        let loose = crate::loose::Store::at(objects_dir, object_hash);
         let mut skipped_loose_objects = Vec::new();
         let mut buf = Vec::new();
         for (count, id) in loose.iter().enumerate() {

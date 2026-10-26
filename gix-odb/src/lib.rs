@@ -77,6 +77,9 @@ pub use store_impls::{dynamic as store, loose};
 
 pub mod alternate;
 
+#[cfg(feature = "repack")]
+pub mod repack;
+
 /// A way to access objects along with pre-configured thread-local caches for packed base objects as well as objects themselves.
 ///
 /// By default, no cache will be used.

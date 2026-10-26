@@ -103,7 +103,7 @@ impl Survey {
         self.packs.iter().filter(|pack| pack.is_geometric())
     }
 
-    /// The amount of the [geometric](Self::geometric()) packs with the fewest objects that [`repack()`](crate::repack())
+    /// The amount of the [geometric](Self::geometric()) packs with the fewest objects that [`repack()`](super::repack())
     /// combines with `split_factor`, as `git repack --geometric=<split_factor>` determines it.
     ///
     /// The packs up to the last one that holds fewer than `split_factor` times the objects of the pack before it are

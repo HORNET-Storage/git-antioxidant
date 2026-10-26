@@ -1,8 +1,8 @@
-//! Where [`gix_repack::repack()`] deviates from git, as the crate's documentation describes.
+//! Where [`gix_odb::repack::repack()`] deviates from git, as the module's documentation describes.
 
 use gix_testtools::TestResult;
 
-use crate::repack;
+use super::repack;
 
 #[test]
 fn promisor_packs_are_not_combined() -> TestResult {

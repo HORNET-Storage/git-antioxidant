@@ -364,6 +364,17 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
     * [ ] fetch missing objects on demand from promisor remotes
     * [ ] support multiple promisor remotes and `extensions.partialClone`
     * [ ] make object lookups, maintenance and connectivity checks promisor-aware
+* **repack** (with the `repack` feature)
+    * [ ] repack the objects of a repository as `git repack` does
+        * [x] combine the smallest packs and the loose objects into one pack, so that the packs form a geometric progression
+          as with `--geometric`, and leave kept, promisor and cruft packs as they are
+        * [x] copy deltas whose bases go into the new pack, breaking cycles and chains that are longer than the delta depth
+        * [x] remove the combined packs, the multi-pack-indices that list them and the loose objects that a pack holds
+        * [x] decide whether a repository needs a repack, as the auto condition of the `geometric-repack` task of
+          `git maintenance` does
+        * [ ] select objects by reachability, and write cruft packs
+        * [ ] compute deltas
+        * [ ] write multi-pack-indices and bitmaps
 * [x] API documentation
     * [x] Some examples
 
@@ -1031,20 +1042,6 @@ See its [README.md](https://github.com/GitoxideLabs/gitoxide/blob/main/gix-lock/
 * [ ] create a bundle from an archive
    * [ ] respect `export-ignore` and `export-subst`
 * [ ] integrate bundle bootstrapping and bundle-uri metadata for clone/fetch
-* [x] API documentation
-    * [ ] Some examples
-
-### gix-repack
-* [ ] repack the objects of a repository as `git repack` does
-    * [x] combine the smallest packs and the loose objects into one pack, so that the packs form a geometric progression
-      as with `--geometric`, and leave kept, promisor and cruft packs as they are
-    * [x] copy deltas whose bases go into the new pack, breaking cycles and chains that are longer than the delta depth
-    * [x] remove the combined packs, the multi-pack-indices that list them and the loose objects that a pack holds
-    * [x] decide whether a repository needs a repack, as the auto condition of the `geometric-repack` task of
-      `git maintenance` does
-    * [ ] select objects by reachability, and write cruft packs
-    * [ ] compute deltas
-    * [ ] write multi-pack-indices and bitmaps
 * [x] API documentation
     * [ ] Some examples
 

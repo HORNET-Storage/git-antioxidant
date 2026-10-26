@@ -1,8 +1,9 @@
 //! The fixture records what `git repack -d -l --geometric=2`, the repack of the `geometric-repack` task of
 //! `git maintenance`, does with a copy of each of its cases: which packs remained, which objects the packs that git wrote
-//! hold, and which loose objects and files of multi-pack-indices remained. What [`gix_repack::repack()`] does with another
-//! copy of a case is compared with these, and checked with `git fsck` and `git verify-pack`. The fixture also records
-//! whether `git maintenance run --auto` repacks some of the cases, which [`gix_repack::needs_repack()`] is compared with.
+//! hold, and which loose objects and files of multi-pack-indices remained. What [`gix_odb::repack::repack()`] does with
+//! another copy of a case is compared with these, and checked with `git fsck` and `git verify-pack`. The fixture also
+//! records whether `git maintenance run --auto` repacks some of the cases, which [`gix_odb::repack::needs_repack()`] is
+//! compared with.
 
 mod auto;
 mod deltas;
@@ -18,7 +19,7 @@ use std::{
 };
 
 use gix_hash::ObjectId;
-use gix_repack::{Options, Outcome, Survey};
+use gix_odb::repack::{Options, Outcome, Survey};
 use gix_testtools::{TestResult, tempfile::TempDir};
 use gix_utils::progress;
 
@@ -72,7 +73,7 @@ impl Case {
 
     /// Repack the object database of the case with `options`.
     fn repack(&self, options: Options) -> TestResult<Outcome> {
-        Ok(gix_repack::repack(
+        Ok(gix_odb::repack::repack(
             &self.objects_dir(),
             gix_testtools::object_hash(),
             &mut progress::Discard,

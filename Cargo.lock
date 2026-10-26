@@ -2452,22 +2452,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gix-repack"
-version = "0.0.0"
-dependencies = [
- "gix-error",
- "gix-hash",
- "gix-hashtable",
- "gix-object",
- "gix-odb",
- "gix-pack",
- "gix-testtools",
- "gix-trace",
- "gix-utils",
- "gix-zlib",
-]
-
-[[package]]
 name = "gix-revision"
 version = "0.51.0"
 dependencies = [
