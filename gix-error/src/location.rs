@@ -2,10 +2,27 @@ use std::{fmt, panic::Location};
 
 pub(crate) fn write(f: &mut fmt::Formatter<'_>, location: &Location<'_>) -> fmt::Result {
     if cfg!(feature = "error-print-location") {
-        let (package, source) = local_path(location.file());
-        write!(f, ", at {package}{source}:{}", location.line())?;
+        write!(f, ", at {}:{}", LocalPath(location.file()), location.line())?;
     }
     Ok(())
+}
+
+/// The path of a source file from its package directory, written with `/` separators on every platform
+/// so that an error reads the same on every system.
+struct LocalPath<'a>(&'a str);
+
+impl fmt::Display for LocalPath<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (package, source) = local_path(self.0);
+        f.write_str(package)?;
+        for (index, component) in source.split(['/', '\\']).enumerate() {
+            if index > 0 {
+                f.write_str("/")?;
+            }
+            f.write_str(component)?;
+        }
+        Ok(())
+    }
 }
 
 /// Location has no Cargo package metadata. Recognize conventional source directories;
@@ -78,11 +95,11 @@ mod tests {
             ),
             (
                 r"C:\Users\user\.cargo\registry\src\index.crates.io-hash\gix-url-0.39.0\src\parse.rs",
-                r"gix-url\src\parse.rs",
+                "gix-url/src/parse.rs",
             ),
             (
                 r"C:\checkout\gix-error\tests\error\main.rs",
-                r"gix-error\tests\error\main.rs",
+                "gix-error/tests/error/main.rs",
             ),
             ("/checkout/crate-1.2.3/src/main.rs", "crate-1.2.3/src/main.rs"),
             ("src/main.rs", "src/main.rs"),
@@ -93,8 +110,7 @@ mod tests {
             ("main.rs", "main.rs"),
             ("", ""),
         ] {
-            let (package, source) = super::local_path(input);
-            assert_eq!(format!("{package}{source}"), expected, "source path: {input}");
+            assert_eq!(super::LocalPath(input).to_string(), expected, "source path: {input}");
         }
     }
 }

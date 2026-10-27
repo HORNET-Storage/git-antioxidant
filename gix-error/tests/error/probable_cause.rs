@@ -1188,8 +1188,10 @@ fn converted_marker_roots_format_their_real_diagnostic() {
     let exn = VALIDATION.raise_typed();
     let exn = exn.chain(message("specific diagnostic"));
     let location = exn.frame().children()[0].location();
+    // Locations print with `/` on every platform.
+    let file = location.file().replace('\\', "/");
     let expected = if cfg!(all(feature = "auto-chain-error", not(feature = "tree-error"))) {
-        format!("specific diagnostic, at {}:{}", location.file(), location.line())
+        format!("specific diagnostic, at {file}:{}", location.line())
     } else {
         "specific diagnostic".into()
     };
@@ -1210,8 +1212,9 @@ fn converted_marker_roots_format_their_real_diagnostic() {
 fn converted_marker_only_errors_retain_their_root_diagnostic() {
     let exn = VALIDATION.raise_typed().chain(NOT_FOUND);
     let location = exn.frame().location();
+    let file = location.file().replace('\\', "/");
     let expected = if cfg!(all(feature = "auto-chain-error", not(feature = "tree-error"))) {
-        format!("Validation, at {}:{}", location.file(), location.line())
+        format!("Validation, at {file}:{}", location.line())
     } else {
         "Validation".into()
     };
@@ -1336,10 +1339,10 @@ fn source_markers_preserve_only_the_first_real_diagnostics_callsite() {
     .raise_typed();
     let location = exn.frame().location();
     insta::assert_compact_debug_snapshot!(exn, "the exception report retains the marker callsite on its first real diagnostic", @"
-    visible diagnostic, at gix-error/tests/error/probable_cause.rs:1336
+    visible diagnostic, at gix-error/tests/error/probable_cause.rs:1339
 
     Caused by:
-        0: native tail, at gix-error/tests/error/probable_cause.rs:1336
+        0: native tail, at gix-error/tests/error/probable_cause.rs:1339
     ");
 
     let error = exn.into_error();
@@ -1365,17 +1368,17 @@ fn source_markers_preserve_only_the_first_real_diagnostics_callsite() {
     }
     if cfg!(all(feature = "auto-chain-error", not(feature = "tree-error"))) {
         insta::assert_compact_debug_snapshot!(TestError::from(error), "normal test reports retain the original callsite after conversion", @"
-        visible diagnostic, at gix-error/tests/error/probable_cause.rs:1336
+        visible diagnostic, at gix-error/tests/error/probable_cause.rs:1339
 
         Caused by:
             0: native tail
         ");
     } else {
         insta::assert_compact_debug_snapshot!(TestError::from(error), "normal test reports retain the original callsite after conversion", @"
-        visible diagnostic, at gix-error/tests/error/probable_cause.rs:1336
+        visible diagnostic, at gix-error/tests/error/probable_cause.rs:1339
 
         Caused by:
-            0: native tail, at gix-error/tests/error/probable_cause.rs:1336
+            0: native tail, at gix-error/tests/error/probable_cause.rs:1339
         ");
     }
 }

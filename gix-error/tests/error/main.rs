@@ -26,14 +26,6 @@ mod utils {
         Exn::raise_all([e5, e4, e8], message("E6"))
     }
 
-    pub fn debug_string(input: impl std::fmt::Debug) -> String {
-        fixup_paths(format!("{input:?}"))
-    }
-
-    pub fn fixup_paths(input: String) -> String {
-        if cfg!(windows) { input.replace('\\', "/") } else { input }
-    }
-
     #[derive(Debug)]
     pub struct ErrorWithSource<E = Message>(pub &'static str, pub E);
 

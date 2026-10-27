@@ -36,7 +36,7 @@ fn from_exn_error() {
         @"one, at gix-error/tests/auto_chain_error.rs:29"
     );
     insta::assert_debug_snapshot!(err, @"one");
-    assert_eq!(err.source().map(debug_string), None);
+    assert!(err.source().is_none(), "a single message has no source");
 }
 
 #[cfg(not(feature = "tree-error"))]
@@ -83,7 +83,7 @@ fn from_exn_error_tree() {
         11: E11
     ");
     insta::assert_debug_snapshot!(
-        err.iter_errors().map(|err| fixup_paths(err.to_string())).collect::<Vec<_>>(),
+        err.iter_errors().map(ToString::to_string).collect::<Vec<_>>(),
         "error iteration exposes the original errors without their frame locations",
         @r#"
     [
@@ -103,7 +103,7 @@ fn from_exn_error_tree() {
     ]
     "#);
     insta::assert_debug_snapshot!(
-        err.iter_errors_with_locations().map(|source| fixup_paths(source.to_string())).collect::<Vec<_>>(),
+        err.iter_errors_with_locations().map(|source| source.to_string()).collect::<Vec<_>>(),
         "error iteration with locations exposes the same errors together with their caller locations",
         @r#"
     [
@@ -172,7 +172,7 @@ fn from_any_error() {
         message: "one",
     }
     "#);
-    assert_eq!(err.source().map(debug_string), None);
+    assert!(err.source().is_none(), "a native error without a source has none");
     insta::assert_debug_snapshot!(format_args!("{:#}", err.probable_cause()), "wrapping a native error preserves its diagnostic", @"one");
 }
 
@@ -224,14 +224,6 @@ pub fn new_tree_error() -> Exn<Message> {
     let e8 = e7.raise(message("E8"));
 
     Exn::raise_all([e5, e4, e8], message("E6"))
-}
-
-pub fn debug_string(input: impl std::fmt::Debug) -> String {
-    fixup_paths(format!("{input:?}"))
-}
-
-fn fixup_paths(input: String) -> String {
-    if cfg!(windows) { input.replace('\\', "/") } else { input }
 }
 
 #[test]

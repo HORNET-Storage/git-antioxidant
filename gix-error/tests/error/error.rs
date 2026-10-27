@@ -1,6 +1,6 @@
 use crate::ErrorWithSource;
 #[cfg(any(feature = "tree-error", not(feature = "auto-chain-error")))]
-use crate::{debug_string, fixup_paths, new_tree_error};
+use crate::new_tree_error;
 use gix_error::{Class, ClassificationMarker, Error, ErrorExt, Message, corruption, message, not_found, validation};
 #[cfg(any(feature = "tree-error", not(feature = "auto-chain-error")))]
 use std::error::Error as _;
@@ -16,7 +16,7 @@ fn from_exn_error() {
         @"one, at gix-error/tests/error/error.rs:11"
     );
     insta::assert_debug_snapshot!(err, "pretty Debug omits caller locations", @"one");
-    assert_eq!(err.source().map(debug_string), None);
+    assert!(err.source().is_none(), "a single message has no source");
 }
 
 #[cfg(any(feature = "tree-error", not(feature = "auto-chain-error")))]
@@ -79,7 +79,7 @@ fn from_exn_error_tree() {
     ]
     "#);
     insta::assert_debug_snapshot!(
-        err.iter_errors_with_locations().map(|source| fixup_paths(source.to_string())).collect::<Vec<_>>(),
+        err.iter_errors_with_locations().map(|source| source.to_string()).collect::<Vec<_>>(),
         "error iteration with locations exposes the same errors together with their caller locations",
         @r#"
     [
@@ -139,7 +139,7 @@ fn from_any_error() {
         message: "one",
     }
     "#);
-    assert_eq!(err.source().map(debug_string), None);
+    assert!(err.source().is_none(), "a native error without a source has none");
     insta::assert_debug_snapshot!(format_args!("{}", err.probable_cause()), "wrapping a native error preserves its diagnostic", @"one");
 }
 
@@ -721,12 +721,14 @@ fn public_error_reports_preserve_context_and_native_causes() {
             );
         }
     }
+    // Locations print with `/` on every platform.
+    let file = file!().replace('\\', "/");
     assert!(
-        format!("{error:?}").contains(file!()),
+        format!("{error:?}").contains(&file),
         "Debug reports include captured caller locations for main() errors"
     );
     assert!(
-        !format!("{error:#?}").contains(file!()) && !format!("{error:#}").contains(file!()),
+        !format!("{error:#?}").contains(&file) && !format!("{error:#}").contains(&file),
         "alternate reports omit caller locations"
     );
     assert!(

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{ErrorWithSource, fixup_paths, new_tree_error};
+use crate::{ErrorWithSource, new_tree_error};
 use gix_error::{Error, ResultExt, validation};
 use gix_error::{ErrorExt, bail, message};
 use gix_error::{Exn, ExnMessageResult, Message};
@@ -484,12 +484,12 @@ fn causes_display(err: &(dyn std::error::Error + 'static), style: Style) -> Vec<
     let mut out = Vec::new();
     let mut current = Some(err);
     while let Some(err) = current {
-        out.push(fixup_paths(match style {
+        out.push(match style {
             Style::Normal => err.to_string(),
             Style::Alternate => {
                 format!("{err:#}")
             }
-        }));
+        });
         current = err.source();
     }
     out
@@ -1002,7 +1002,7 @@ fn nested_error_formatting_prints_each_cause_once() {
     insta::assert_debug_snapshot!(format_args!("{}", err), "normal display shows the outermost error", @"outer-root");
 
     insta::assert_snapshot!(
-        fixup_paths(format!("{err:?}")),
+        format!("{err:?}"),
         "compact Debug expands nested error boundaries once and retains caller locations",
         @"
     outer-root, at gix-error/tests/error/exn.rs:999
@@ -1142,7 +1142,8 @@ Caused by:
     0: Message { message: "invalid input", class: Validation, values: {input: Bytes("ref\xff")} }"#;
     let compact = format!("{err:?}");
     let location = err.frame().location();
-    let at = format!(", at {}:{}", location.file(), location.line());
+    // Locations print with `/` on every platform.
+    let at = format!(", at {}:{}", location.file().replace('\\', "/"), location.line());
     assert_eq!(
         compact,
         format!(
