@@ -1211,3 +1211,221 @@ fn config_to_base_path() {
         assert_eq!(super::config_to_base_path(Path::new(input)), Path::new(expected));
     }
 }
+
+#[cfg(windows)]
+mod git_for_windows {
+    use std::{
+        ffi::OsString,
+        path::{Path, PathBuf},
+    };
+
+    use serial_test::serial;
+
+    use crate::env::{
+        git::{ConfigPaths, GIT_FOR_WINDOWS, GitForWindows, config_paths_from_executable},
+        tests::CurrentDir,
+    };
+
+    /// The directories of the platforms that Git for Windows is built for.
+    const PLATFORMS: &[&str] = &["clangarm64", "ucrt64", "mingw64", "mingw32"];
+
+    /// Create the parts that tell where a Git for Windows installation at `root` is: its launchers in `cmd` and `bin`,
+    /// and for each of `platforms`, its `git.exe` and the directory of Git's programs. The executables are empty
+    /// files, which can't be started.
+    fn install(root: &Path, platforms: &[&str]) -> std::io::Result<()> {
+        for launchers in ["cmd", "bin"] {
+            std::fs::create_dir_all(root.join(launchers))?;
+            std::fs::write(root.join(launchers).join("git.exe"), [])?;
+        }
+        for platform in platforms {
+            let platform = root.join(platform);
+            std::fs::create_dir_all(platform.join("bin"))?;
+            std::fs::write(platform.join("bin").join("git.exe"), [])?;
+            std::fs::create_dir_all(platform.join("libexec").join("git-core"))?;
+        }
+        Ok(())
+    }
+
+    /// Write `path` with `/`, as Git for Windows writes the paths it derives from its own location.
+    fn with_slashes(path: &Path) -> String {
+        path.to_str()
+            .expect("temporary paths are valid Unicode")
+            .replace('\\', "/")
+    }
+
+    fn find(dirs: &[PathBuf]) -> Option<GitForWindows> {
+        GitForWindows::find(dirs.iter().cloned())
+    }
+
+    fn derived_exec_path(installation: &GitForWindows) -> String {
+        installation
+            .exec_path(|_| None)
+            .into_os_string()
+            .into_string()
+            .expect("the installation's paths are valid Unicode")
+    }
+
+    #[test]
+    fn launchers_and_the_executable_of_a_platform_identify_the_installation() -> gix_testtools::TestResult {
+        for platform in PLATFORMS {
+            let tmp = tempfile::tempdir()?;
+            let root = tmp.path().join("Git");
+            install(&root, &[platform])?;
+            let expected_root = with_slashes(&root);
+            for dir in [root.join("cmd"), root.join("bin"), root.join(platform).join("bin")] {
+                let installation = find(&[tmp.path().join("elsewhere"), dir.clone()])
+                    .unwrap_or_else(|| panic!("the first git.exe, in {dir:?}, belongs to Git for Windows"));
+                assert_eq!(
+                    derived_exec_path(&installation),
+                    format!("{expected_root}/{platform}/libexec/git-core"),
+                    "Git derives its exec-path from the location of the git.exe that runs"
+                );
+                assert_eq!(installation.config_path(), format!("{expected_root}/etc/gitconfig"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_first_git_decides() -> gix_testtools::TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path().join("Git");
+        install(&root, &["mingw64"])?;
+        let other = tmp.path().join("other");
+        std::fs::create_dir(&other)?;
+        std::fs::write(other.join("git.exe"), [])?;
+        assert_eq!(
+            find(&[other, root.join("cmd")]),
+            None,
+            "the git.exe found first isn't Git for Windows', so only Git can tell where it's installed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn launchers_need_a_single_platform() -> gix_testtools::TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path().join("Git");
+        install(&root, &["mingw64", "ucrt64"])?;
+        for launcher in ["cmd", "bin"] {
+            assert_eq!(
+                find(&[root.join(launcher)]),
+                None,
+                "the launcher in {launcher} could start the git.exe of either platform"
+            );
+        }
+        let installation =
+            find(&[root.join("ucrt64").join("bin")]).expect("this git.exe is in the directory of its platform");
+        assert_eq!(
+            derived_exec_path(&installation),
+            format!("{}/ucrt64/libexec/git-core", with_slashes(&root))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn other_layouts_are_left_to_git() -> gix_testtools::TestResult {
+        let tmp = tempfile::tempdir()?;
+
+        let msys2 = tmp.path().join("msys64");
+        install(&msys2, &["mingw64"])?;
+        std::fs::remove_dir_all(msys2.join("cmd"))?;
+        for dir in [msys2.join("bin"), msys2.join("mingw64").join("bin")] {
+            assert_eq!(
+                find(&[dir]),
+                None,
+                "without a launcher in cmd, it's not Git for Windows, but maybe MSYS2"
+            );
+        }
+
+        let incomplete = tmp.path().join("Git");
+        install(&incomplete, &["mingw64"])?;
+        std::fs::remove_dir_all(incomplete.join("mingw64").join("libexec"))?;
+        for dir in [incomplete.join("cmd"), incomplete.join("mingw64").join("bin")] {
+            assert_eq!(find(&[dir]), None, "Git's programs are part of its installation");
+        }
+
+        let unrelated = tmp.path().join("tools");
+        std::fs::create_dir(&unrelated)?;
+        std::fs::write(unrelated.join("git.exe"), [])?;
+        assert_eq!(
+            find(&[unrelated]),
+            None,
+            "Git for Windows has git.exe only in its launchers' and platforms' directories"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn relative_and_unnormalized_directories_are_left_to_git() -> gix_testtools::TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path().join("Git");
+        install(&root, &["mingw64"])?;
+        for dir in [root.join("cmd").join("..").join("cmd"), root.join(".").join("cmd")] {
+            assert_eq!(find(&[dir]), None, "Git writes its location without such components");
+        }
+        let _cwd = CurrentDir::set(tmp.path())?;
+        assert_eq!(
+            find(&[Path::new("Git").join("cmd")]),
+            None,
+            "a relative directory depends on the current one"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn git_exec_path_is_used_as_git_uses_it() -> gix_testtools::TestResult {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path().join("Git");
+        install(&root, &["mingw64"])?;
+        let installation = find(&[root.join("cmd")]).expect("the installation is complete");
+        let custom = r"D:\custom\libexec\git-core";
+        assert_eq!(
+            installation
+                .exec_path(|name| (name == "GIT_EXEC_PATH").then(|| custom.into()))
+                .to_str(),
+            Some(custom),
+            "a set GIT_EXEC_PATH replaces the derived directory, as written"
+        );
+        assert_eq!(
+            installation
+                .exec_path(|name| (name == "GIT_EXEC_PATH").then(OsString::new))
+                .to_str(),
+            Some(format!("{}/mingw64/libexec/git-core", with_slashes(&root)).as_str()),
+            "Git ignores an empty GIT_EXEC_PATH"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_installation_in_use_agrees_with_git() -> gix_testtools::TestResult {
+        let Some(installation) = GIT_FOR_WINDOWS.as_ref() else {
+            // The first `git.exe` isn't Git for Windows', and Git is asked instead.
+            return Ok(());
+        };
+        let output = std::process::Command::new(crate::env::exe_invocation())
+            .arg("--exec-path")
+            .output()?;
+        assert!(output.status.success(), "Git for Windows can be started");
+        assert_eq!(
+            installation.exec_path(|name| std::env::var_os(name)).to_str(),
+            Some(std::str::from_utf8(&output.stdout)?.trim_end()),
+            "the exec-path is derived as Git derives it"
+        );
+        let reported = config_paths_from_executable();
+        if reported.installation.is_some() {
+            let config = installation.config_path();
+            assert_eq!(
+                reported,
+                ConfigPaths {
+                    installation: Some(config.clone().into()),
+                    installation_is_system: true,
+                    system: Some(config.into()),
+                },
+                "Git reports its system configuration, which it also uses as the installation's"
+            );
+        }
+        Ok(())
+    }
+}

@@ -19,8 +19,9 @@ mod git;
 ///
 /// ### Performance
 ///
-/// This can invoke the Git binary, which is slow on Windows. An unambiguous Git for Windows
-/// installation identified by `EXEPATH` avoids that invocation.
+/// This can invoke the Git binary, which is slow on Windows. A Git for Windows installation
+/// identified by an unambiguous `EXEPATH`, or recognized by the location of its `git.exe` as
+/// described for [`core_dir()`], avoids that invocation.
 pub fn installation_config() -> Option<&'static Path> {
     git::install_config_path().and_then(|p| crate::from_byte_slice(p).ok())
 }
@@ -46,7 +47,7 @@ pub fn installation_config_prefix() -> Option<&'static Path> {
 
 /// Return the unoverridden location of the system-wide Git configuration file.
 ///
-/// On Windows this shares the single Git invocation used by [`installation_config()`].
+/// On Windows this shares the discovery and caching of [`installation_config()`].
 /// The caller is responsible for applying `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM`.
 pub fn system_config() -> Option<&'static Path> {
     if cfg!(windows) {
@@ -170,6 +171,10 @@ pub fn xdg_config(file: &str, env_var: &mut dyn FnMut(&str) -> Option<OsString>)
 }
 
 static GIT_CORE_DIR: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
+    #[cfg(windows)]
+    if let Some(installation) = git::GIT_FOR_WINDOWS.as_ref() {
+        return Some(installation.exec_path(|name| std::env::var_os(name)));
+    }
     let mut cmd = std::process::Command::new(exe_invocation());
 
     #[cfg(windows)]
@@ -192,7 +197,11 @@ static GIT_CORE_DIR: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
         .into()
 });
 
-/// Return the directory obtained by calling `git --exec-path`.
+/// Return the directory of Git's own programs, as `git --exec-path` prints it.
+///
+/// On Windows, Git isn't started if the `git.exe` found first in `PATH`, or in a location Git for Windows is commonly
+/// installed to, belongs to a Git for Windows installation. Like Git, this derives the directory from the location of
+/// that executable then, unless `GIT_EXEC_PATH` is set.
 ///
 /// Returns `None` if Git could not be found or if it returned an error.
 pub fn core_dir() -> Option<&'static Path> {
@@ -254,7 +263,8 @@ pub fn installation_program(name: &str) -> Option<PathBuf> {
 ///
 /// ### Performance
 ///
-/// On Windows, this shares the discovery and caching of [`core_dir()`], which invokes the Git executable.
+/// On Windows, this shares the discovery and caching of [`core_dir()`], which invokes the Git executable only if it
+/// doesn't recognize a Git for Windows installation.
 pub fn git_program_dirs() -> &'static [PathBuf] {
     if cfg!(windows) {
         auxiliary::git_for_windows_program_dirs()
@@ -280,6 +290,9 @@ where
         .map(Path::to_path_buf)
 }
 
+/// The names of the directories that hold the programs of a platform in a Git for Windows installation, like `mingw64`.
+const GIT_FOR_WINDOWS_PLATFORMS: &[&str] = &["clangarm64", "ucrt64", "mingw64", "mingw32"];
+
 fn system_prefix_from_exepath_var<F>(var_os_func: F) -> Option<PathBuf>
 where
     F: Fn(&str) -> Option<OsString>,
@@ -287,7 +300,7 @@ where
     // Only attempt this optimization if the `EXEPATH` variable is set to an absolute path.
     let root = var_os_func("EXEPATH").map(PathBuf::from).filter(|r| r.is_absolute())?;
 
-    let mut candidates = ["clangarm64", "ucrt64", "mingw64", "mingw32"]
+    let mut candidates = GIT_FOR_WINDOWS_PLATFORMS
         .iter()
         .map(|component| root.join(component))
         .filter(|candidate| candidate.is_dir());
@@ -321,8 +334,9 @@ fn config_path_from_system_prefix(prefix: &Path) -> PathBuf {
 ///
 /// ### Performance
 ///
-/// On Windows, the slowest part is the launch of the Git executable in the PATH. This is often
-/// avoided by inspecting the environment, when launched from inside a Git Bash MSYS2 shell.
+/// On Windows, the slowest part is the launch of the Git executable in the PATH. It's avoided by
+/// inspecting the environment when launched from inside a Git Bash MSYS2 shell, and when Git for
+/// Windows is recognized by the location of its `git.exe`, as described for [`core_dir()`].
 ///
 /// ### When `None` is returned
 ///

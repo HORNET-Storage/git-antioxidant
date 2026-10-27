@@ -158,6 +158,8 @@ fn system_prefix() {
 
 #[cfg(windows)]
 mod windows_prefix {
+    use std::path::Path;
+
     #[test]
     fn mixed_installation_keeps_mingw64_active() -> gix_testtools::TestResult {
         Ok(mixed_installation("mingw64")?)
@@ -191,6 +193,68 @@ mod windows_prefix {
         assert!(
             gix_path::env::installation_config_is_system(),
             "the installation file has system scope"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn installation_is_found_by_the_location_of_git_without_starting_it() -> gix_testtools::TestResult {
+        if gix_testtools::run_in_isolated_process()? {
+            return Ok(());
+        }
+        let installation = tempfile::tempdir()?;
+        let root = installation.path().join("Git");
+        // The executables are empty files, so finding the installation's directories shows that Git wasn't started.
+        for file in ["cmd/git.exe", "mingw64/bin/git.exe", "usr/bin/sh.exe"] {
+            let file = root.join(file);
+            std::fs::create_dir_all(file.parent().expect("files are in directories"))?;
+            std::fs::write(file, [])?;
+        }
+        std::fs::create_dir_all(root.join("mingw64/libexec/git-core"))?;
+        let _env = gix_testtools::Env::new()
+            .set("PATH", root.join("cmd").to_str().expect("UTF-8 temporary path"))
+            .unset("EXEPATH")
+            .unset("GIT_EXEC_PATH");
+
+        let root = root.to_str().expect("UTF-8 temporary path").replace('\\', "/");
+        let core_dir = format!("{root}/mingw64/libexec/git-core");
+        assert_eq!(
+            gix_path::env::core_dir().and_then(Path::to_str),
+            Some(core_dir.as_str()),
+            "like Git, the exec-path is derived from the location of the git.exe in PATH"
+        );
+        let config = format!("{root}/etc/gitconfig");
+        assert_eq!(
+            gix_path::env::installation_config().and_then(Path::to_str),
+            Some(config.as_str())
+        );
+        assert!(gix_path::env::installation_config_is_system());
+        assert_eq!(
+            gix_path::env::system_config().and_then(Path::to_str),
+            Some(config.as_str()),
+            "Git for Windows reports its system configuration as the installation's"
+        );
+        assert_eq!(
+            gix_path::env::system_prefix().and_then(Path::to_str),
+            Some(format!("{root}/mingw64").as_str())
+        );
+        let program_dirs: Vec<_> = gix_path::env::git_program_dirs()
+            .iter()
+            .map(|dir| dir.to_str())
+            .collect();
+        assert_eq!(
+            program_dirs,
+            [
+                Some(core_dir.as_str()),
+                Some(format!("{root}/mingw64/bin").as_str()),
+                Some(format!("{root}/usr/bin").as_str())
+            ],
+            "Git for Windows' programs are found in its installation"
+        );
+        assert_eq!(
+            Path::new(gix_path::env::shell()).to_str(),
+            Some(format!("{root}/usr/bin/sh.exe").as_str()),
+            "the shell is that of the same installation"
         );
         Ok(())
     }

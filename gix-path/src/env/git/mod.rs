@@ -98,6 +98,98 @@ pub(super) const EXE_NAME: &str = "git.exe";
 #[cfg(not(windows))]
 pub(super) const EXE_NAME: &str = "git";
 
+/// The Git for Windows installation of the `git.exe` found first in `PATH`, or in [`ALTERNATIVE_LOCATIONS`].
+#[cfg(windows)]
+pub(super) static GIT_FOR_WINDOWS: LazyLock<Option<GitForWindows>> = LazyLock::new(|| {
+    let path = env::var_os("PATH").unwrap_or_default();
+    GitForWindows::find(env::split_paths(&path).chain(ALTERNATIVE_LOCATIONS.iter().cloned()))
+});
+
+/// A Git for Windows installation, recognized by the location of its `git.exe` without starting it.
+#[cfg(windows)]
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct GitForWindows {
+    /// The top-level directory of the installation, like `C:/Program Files/Git`, written with `/` as Git writes it.
+    root: String,
+    /// The directory of the platform that its `git.exe` is built for, like `mingw64`.
+    platform: String,
+}
+
+#[cfg(windows)]
+impl GitForWindows {
+    /// Recognize the installation of the first `git.exe` in `dirs`, which are searched in order, like `PATH`.
+    ///
+    /// Git for Windows runs `<root>/<platform>/bin/git.exe`, also when it's started through its launchers
+    /// `<root>/cmd/git.exe` and `<root>/bin/git.exe`, and derives its exec-path and its system configuration from that
+    /// location. As a launcher doesn't tell which platform it starts, exactly one platform directory with `bin/git.exe`
+    /// and `libexec/git-core` must exist then. Only Git for Windows has a launcher in `cmd`, which tells its
+    /// installations apart from MSYS2's.
+    ///
+    /// Return `None`, leaving it to Git to tell where it's installed, if the first `git.exe` isn't part of such an
+    /// installation, or if its directory is relative, has `.` or `..` components, is a verbatim path or isn't valid
+    /// Unicode.
+    pub(super) fn find(mut dirs: impl Iterator<Item = PathBuf>) -> Option<Self> {
+        use std::path::Component;
+
+        let dir = dirs.find(|dir| dir.join(EXE_NAME).is_file())?;
+        let is_plain_absolute = dir.is_absolute()
+            && !matches!(dir.components().next(), Some(Component::Prefix(prefix)) if prefix.kind().is_verbatim())
+            && !dir
+                .to_str()?
+                .split(['\\', '/'])
+                .any(|component| component == "." || component == "..");
+        if !is_plain_absolute {
+            return None;
+        }
+        let parent = dir.parent()?;
+        let dir_name = dir.file_name()?.to_str()?;
+        let platform_dir = parent.file_name().and_then(|name| name.to_str()).filter(|name| {
+            super::GIT_FOR_WINDOWS_PLATFORMS
+                .iter()
+                .any(|platform| name.eq_ignore_ascii_case(platform))
+        });
+        let (root, platform) = match platform_dir {
+            Some(platform) if dir_name.eq_ignore_ascii_case("bin") => (parent.parent()?, platform),
+            _ if dir_name.eq_ignore_ascii_case("cmd") || dir_name.eq_ignore_ascii_case("bin") => {
+                let mut platforms = super::GIT_FOR_WINDOWS_PLATFORMS.iter().copied().filter(|platform| {
+                    let platform = parent.join(platform);
+                    platform.join("bin").join(EXE_NAME).is_file() && platform.join("libexec").join("git-core").is_dir()
+                });
+                let platform = platforms.next()?;
+                if platforms.next().is_some() {
+                    return None;
+                }
+                (parent, platform)
+            }
+            _ => return None,
+        };
+        let is_git_for_windows =
+            root.join("cmd").join(EXE_NAME).is_file() && root.join(platform).join("libexec").join("git-core").is_dir();
+        if !is_git_for_windows {
+            return None;
+        }
+        Some(GitForWindows {
+            root: root.to_str()?.replace('\\', "/").trim_end_matches('/').to_owned(),
+            platform: platform.to_owned(),
+        })
+    }
+
+    /// Return the directory of Git's own programs as `git --exec-path` prints it: the value of `GIT_EXEC_PATH` as
+    /// obtained by `var` unless it's empty, like Git, or `<root>/<platform>/libexec/git-core`.
+    pub(super) fn exec_path(&self, var: impl Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
+        var("GIT_EXEC_PATH").filter(|path| !path.is_empty()).map_or_else(
+            || format!("{}/{}/libexec/git-core", self.root, self.platform).into(),
+            PathBuf::from,
+        )
+    }
+
+    /// Return the path of the system configuration, `<root>/etc/gitconfig`, which Git for Windows also reports as the
+    /// configuration of its installation.
+    pub(super) fn config_path(&self) -> String {
+        format!("{}/etc/gitconfig", self.root)
+    }
+}
+
 #[derive(Debug, Default, Eq, PartialEq)]
 struct ConfigPaths {
     installation: Option<BString>,
@@ -107,8 +199,9 @@ struct ConfigPaths {
 
 /// Obtain and cache the installation and system configuration paths.
 ///
-/// An unambiguous `EXEPATH` identifies Git for Windows' conventional configuration location.
-/// Otherwise, query the Git executable found in `PATH` or an alternative location.
+/// An unambiguous `EXEPATH`, or a Git for Windows installation recognized by the location of its
+/// `git.exe`, identifies Git for Windows' conventional configuration location. Otherwise, query
+/// the Git executable found in `PATH` or an alternative location.
 static GIT_CONFIG_PATHS: LazyLock<ConfigPaths> = LazyLock::new(|| {
     #[cfg(windows)]
     if let Some(system_prefix) = super::system_prefix_from_exepath_var(|key| std::env::var_os(key)) {
@@ -118,6 +211,15 @@ static GIT_CONFIG_PATHS: LazyLock<ConfigPaths> = LazyLock::new(|| {
             installation: system_config.clone(),
             installation_is_system: true,
             system: system_config,
+        };
+    }
+    #[cfg(windows)]
+    if let Some(installation) = GIT_FOR_WINDOWS.as_ref() {
+        let config = BString::from(installation.config_path());
+        return ConfigPaths {
+            installation: Some(config.clone()),
+            installation_is_system: true,
+            system: Some(config),
         };
     }
     config_paths_from_executable()
