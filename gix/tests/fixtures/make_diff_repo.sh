@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -eu -o pipefail
 
+# Create an empty file at each path that the `git ls-tree` lines on stdin name, with one `mkdir` and one `touch` for
+# all of them, as starting a process per path is slow on Windows. A path without a directory, like `rustfmt.toml`,
+# becomes a directory, which Git doesn't track.
+function create_files() {
+  local dirs=() files=() path
+  while read -r _ _ _ path; do
+    dirs+=("${path%/*}")
+    files+=("$path")
+  done
+  mkdir -p "${dirs[@]}"
+  touch "${files[@]}"
+}
+
 git init -q
 
 cat <<EOF >>.git/config
@@ -99,9 +112,7 @@ git commit -m "tc3-find-harder"
 
 rm -Rf ./*
 # from 92de081dc9ab5660cb18fa750452345dd63550ea~1 of `gitoxide`
-while read -r _ _ _ path; do
-  mkdir -p ${path%/*} && touch $path
-done <<EOF
+create_files <<EOF
 100644 blob 4d3da1c26ebc6e0edf617ff3cc8087eab493f61a	git-index/CHANGELOG.md
 100644 blob 921fafb8ad45eb9932b607cf51b9640b7a74f324	git-index/Cargo.toml
 100644 blob f239be693c0106cbd46e7889f718c7e41eb51fb0	git-index/README.md
@@ -156,9 +167,7 @@ git add . && git commit -m "r1-base"
 
 rm -Rf ./*
 # from 92de081dc9ab5660cb18fa750452345dd63550ea of `gitoxide`
-while read -r _ _ _ path; do
-  mkdir -p ${path%/*} && touch $path
-done <<EOF
+create_files <<EOF
 100644 blob 4d3da1c26ebc6e0edf617ff3cc8087eab493f61a	git-index/CHANGELOG.md
 100644 blob 921fafb8ad45eb9932b607cf51b9640b7a74f324	git-index/Cargo.toml
 100644 blob f239be693c0106cbd46e7889f718c7e41eb51fb0	git-index/README.md
@@ -215,9 +224,7 @@ git add . && git commit -m "r1-change"
 
 rm -Rf ./*
 # from d7ad650d3~1 of `gitoxide`
-while read -r _ _ _ path; do
-  mkdir -p ${path%/*} && touch $path
-done <<EOF
+create_files <<EOF
 100644 blob 4ecbcfe3b44969cd567f3514d84248d734acd6a3	git-revision/tests/spec/parse/navigate/colon_symbol.rs
 100644 blob 5bab15914e09a595f9debbad8fa6b86b020c49c8	git-revision/tests/spec/parse/navigate/mod.rs
 100644 blob 5f30877b015559fbb8d5058fcb005c43c49d3049	git-revision/tests/spec/parse/navigate/tilde_symbol.rs
@@ -469,9 +476,7 @@ git add . && git commit -m "r2-base"
 
 rm -Rf ./*
 # from d7ad650d3 of `gitoxide`
-while read -r _ _ _ path; do
-  mkdir -p ${path%/*} && touch $path
-done <<EOF
+create_files <<EOF
 100644 blob 4ecbcfe3b44969cd567f3514d84248d734acd6a3	git-revision/tests/spec/parse/navigate/colon_symbol.rs
 100644 blob 5bab15914e09a595f9debbad8fa6b86b020c49c8	git-revision/tests/spec/parse/navigate/mod.rs
 100644 blob 5f30877b015559fbb8d5058fcb005c43c49d3049	git-revision/tests/spec/parse/navigate/tilde_symbol.rs
@@ -723,9 +728,7 @@ git add . && git commit -m "r2-change"
 
 rm -Rf ./*
 # from faaf791cc of `gitoxide`
-while read -r _ _ _ path; do
-  mkdir -p ${path%/*} && touch $path
-done <<EOF
+create_files <<EOF
 100644 blob 75306517965a54731b94dca8bace640e856af115	rustfmt.toml
 100644 blob 653db61c27bc8676db65293799ee37b900d21cd1	src/plumbing-cli.rs
 100644 blob b30a19098c101818cb46aa1730681bb439827a0a	src/plumbing/main.rs
@@ -742,9 +745,7 @@ git add . && git commit -m "r3-base"
 
 rm -Rf ./*
 # from faaf791cc of `gitoxide`
-while read -r _ _ _ path; do
-  mkdir -p ${path%/*} && touch $path
-done <<EOF
+create_files <<EOF
 100644 blob 75306517965a54731b94dca8bace640e856af115	rustfmt.toml
 100644 blob 1414704becf8540873778861a10dc1d04a3cb04a	src/ein.rs
 100644 blob 653db61c27bc8676db65293799ee37b900d21cd1	src/gix.rs
