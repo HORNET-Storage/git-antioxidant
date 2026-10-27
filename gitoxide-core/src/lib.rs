@@ -91,12 +91,18 @@ pub mod trace;
 mod discover;
 pub use discover::discover;
 
+/// Write the trust level of each of `paths` derived from its ownership, along with the reason if it isn't trusted.
 pub fn trust(paths: &[std::path::PathBuf], mut out: impl std::io::Write) -> Result<()> {
     let trust_width = "Reduced".len();
     for path in paths {
-        let trust = gix::sec::Trust::from_path_ownership(path).or_error()?;
-        let trust = format!("{trust:?}");
-        writeln!(out, "{trust:<trust_width$} {}", path.display()).or_error()?;
+        let ownership = gix::sec::identity::path_ownership(path).or_error()?;
+        if ownership.is_current_user() {
+            let trust = format!("{:?}", gix::sec::Trust::Full);
+            writeln!(out, "{trust:<trust_width$} {}", path.display()).or_error()?;
+        } else {
+            let trust = format!("{:?}", gix::sec::Trust::Reduced);
+            writeln!(out, "{trust:<trust_width$} {} ({ownership})", path.display()).or_error()?;
+        }
     }
     Ok(())
 }

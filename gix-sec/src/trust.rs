@@ -2,6 +2,9 @@ use crate::Trust;
 
 impl Trust {
     /// Derive `Full` trust if `path` is owned by the user executing the current process, or `Reduced` trust otherwise.
+    ///
+    /// Ownership is determined by [`crate::identity::path_ownership()`] with Git's rules, so the only error is a
+    /// missing `path`, while paths whose owner can't be determined receive `Reduced` trust.
     pub fn from_path_ownership(path: &std::path::Path) -> std::io::Result<Self> {
         Ok(if crate::identity::is_path_owned_by_current_user(path)? {
             Trust::Full

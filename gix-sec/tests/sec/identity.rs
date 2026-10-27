@@ -1,4 +1,5 @@
 use crate::Result;
+use gix_sec::identity::Ownership;
 #[test]
 fn is_path_owned_by_current_user() -> Result {
     let dir = tempfile::tempdir()?;
@@ -6,6 +7,51 @@ fn is_path_owned_by_current_user() -> Result {
     std::fs::write(&file, [])?;
     assert!(gix_sec::identity::is_path_owned_by_current_user(&file)?);
     assert!(gix_sec::identity::is_path_owned_by_current_user(dir.path())?);
+    assert_eq!(gix_sec::identity::path_ownership(&file)?, Ownership::CurrentUser);
+    Ok(())
+}
+
+/// Missing paths are the only error, so callers can tell them apart from paths that are not owned.
+#[test]
+#[cfg(not(target_os = "wasi"))]
+fn missing_paths_are_not_found() -> Result {
+    let dir = tempfile::tempdir()?;
+    let missing = dir.path().join("missing");
+    for path in [missing.clone(), missing.join("deeper")] {
+        let err = gix_sec::identity::path_ownership(&path).expect_err("a missing path has no owner");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{path:?}");
+        let err = gix_sec::Trust::from_path_ownership(&path).expect_err("a missing path has no trust");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{path:?}");
+    }
+    Ok(())
+}
+
+/// Paths of other users aren't owned, and the owner is reported. `SUDO_UID` only matters when running as `root`.
+#[test]
+#[cfg(all(unix, not(target_os = "wasi")))]
+fn unix_paths_of_other_users_are_not_owned() -> Result {
+    use std::os::unix::fs::MetadataExt;
+
+    let current_uid = unsafe { libc::geteuid() };
+    if current_uid == 0 {
+        return Ok(());
+    }
+    let Some((path, owner)) = ["/", "/etc", "/bin/sh", "/dev/null"]
+        .into_iter()
+        .map(std::path::Path::new)
+        .filter_map(|path| std::fs::symlink_metadata(path).ok().map(|meta| (path, meta.uid())))
+        .find(|(_, owner)| *owner != current_uid)
+    else {
+        return Ok(());
+    };
+    assert_eq!(
+        gix_sec::identity::path_ownership(path)?,
+        Ownership::OtherUser {
+            owner: format!("uid {owner}"),
+            current_user: format!("uid {current_uid}"),
+        }
+    );
+    assert!(!gix_sec::identity::is_path_owned_by_current_user(path)?);
     Ok(())
 }
 
@@ -38,11 +84,35 @@ fn symlink_ownership_checks_inspect_the_link_itself() -> Result {
     Ok(())
 }
 
+/// Git for Windows considers the directory it uses as home directory owned by the current user, as long as `HOME`,
+/// or what Git for Windows uses instead, spells it like the resolved path with backslashes.
 #[test]
 #[cfg(windows)]
 fn windows_home() -> Result {
-    let home = gix_path::env::home_dir().expect("home dir is available");
-    assert!(gix_sec::identity::is_path_owned_by_current_user(&home)?);
+    let var = |name| std::env::var(name).ok();
+    let Some(home) = var("HOME").or_else(|| {
+        var("HOMEDRIVE")
+            .zip(var("HOMEPATH"))
+            .map(|(drive, path)| drive + &path)
+            .filter(|home| std::path::Path::new(home).is_dir())
+            .or_else(|| var("USERPROFILE"))
+    }) else {
+        return Ok(());
+    };
+    let resolved = std::fs::canonicalize(&home)?;
+    let resolved = resolved.to_str().expect("the home directory is valid Unicode");
+    let resolved = match resolved.strip_prefix(r"\\?\UNC\") {
+        Some(unc) => format!(r"\\{unc}"),
+        None => resolved.strip_prefix(r"\\?\").unwrap_or(resolved).to_owned(),
+    };
+    if !resolved.eq_ignore_ascii_case(&home) {
+        eprintln!("skipping as the home directory {home:?} isn't spelled like the resolved path {resolved:?}");
+        return Ok(());
+    }
+    assert_eq!(
+        gix_sec::identity::path_ownership(std::path::Path::new(&home))?,
+        Ownership::CurrentUser
+    );
     Ok(())
 }
 
@@ -146,10 +216,29 @@ fn windows_foreign_owned_path_is_not_owned_by_current_user() -> Result {
             !gix_sec::identity::is_path_owned_by_current_user(path)?,
             "a path owned by neither the current user nor Administrators must receive reduced trust: {path:?}"
         );
+        let ownership = gix_sec::identity::path_ownership(path)?;
+        assert!(
+            matches!(ownership, Ownership::OtherUser { .. }),
+            "the owner is reported: {ownership:?}"
+        );
         Ok(())
     }
 
-    let is_home_dir = |path: &Path| gix_path::realpath(path).ok() == gix_path::env::home_dir();
+    // Skip every directory that might be considered the home directory, which is owned by the current user.
+    let home_dirs: Vec<PathBuf> = ["HOME", "USERPROFILE"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .chain(
+            std::env::var_os("HOMEDRIVE")
+                .zip(std::env::var_os("HOMEPATH"))
+                .map(|(mut drive, path)| {
+                    drive.push(path);
+                    drive
+                }),
+        )
+        .filter_map(|home| std::fs::canonicalize(home).ok())
+        .collect();
+    let is_home_dir = |path: &Path| std::fs::canonicalize(path).is_ok_and(|path| home_dirs.contains(&path));
 
     if let Some(path) = std::env::var_os("GIX_TEST_FOREIGN_OWNED_PATH").map(PathBuf::from) {
         if !path.exists() {

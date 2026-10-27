@@ -724,6 +724,7 @@ Provide base-implementations for dealing with smudge and clean filters as well a
 
 Provides a trust model to share across gitoxide crates. It helps configuring how to interact with external processes, among other things.
 
+* [x] decide whether paths are owned by the current user like Git: on Unix with `SUDO_UID` for `root`, on Windows with the Administrators group, network shares and file systems that record no owner
 * **integrations**
    * [x] gix-config
    * [x] gix

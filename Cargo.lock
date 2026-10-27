@@ -2494,7 +2494,6 @@ version = "0.16.0"
 dependencies = [
  "bitflags 2.13.0",
  "document-features",
- "gix-path",
  "libc",
  "serde",
  "tempfile",
