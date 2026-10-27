@@ -241,6 +241,28 @@ pub fn installation_program(name: &str) -> Option<PathBuf> {
     })
 }
 
+/// Return the directories that Git puts in front of `PATH` for the programs it starts, in Git's order.
+///
+/// Git for Windows starts programs with its [`core_dir()`], the `bin` directory of its platform, such as `mingw64/bin`,
+/// and its `usr/bin` in front of `PATH`. Programs then find the shell, Unix tools, GnuPG and OpenSSH that it distributes,
+/// even if `PATH` doesn't contain them or contains other programs of the same name. Only existing directories are
+/// returned, and none if no Git for Windows installation is found.
+///
+/// ### Deviation
+///
+/// On other platforms, this is empty, although Git puts its [`core_dir()`] in front of `PATH` there as well.
+///
+/// ### Performance
+///
+/// On Windows, this shares the discovery and caching of [`core_dir()`], which invokes the Git executable.
+pub fn git_program_dirs() -> &'static [PathBuf] {
+    if cfg!(windows) {
+        auxiliary::git_for_windows_program_dirs()
+    } else {
+        &[]
+    }
+}
+
 fn is_bare_program_name(name: &str) -> bool {
     let mut components = Path::new(name).components();
     matches!(components.next(), Some(std::path::Component::Normal(_))) && components.next().is_none()

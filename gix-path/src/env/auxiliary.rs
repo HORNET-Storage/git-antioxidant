@@ -127,6 +127,39 @@ pub(super) fn find_git_associated_windows_executable_with_fallback(stem: &str) -
     })
 }
 
+/// Return the directories that Git for Windows puts in front of `PATH` for the programs it starts, in its order.
+///
+/// Git puts its `libexec/git-core` directory first, and Git for Windows adds the `bin` directory of its platform, which
+/// contains the `git` executable, and its `usr/bin`. Only existing directories are returned, and none if no Git for
+/// Windows installation is found.
+pub(super) fn git_for_windows_program_dirs() -> &'static [PathBuf] {
+    static DIRS: LazyLock<Vec<PathBuf>> = LazyLock::new(|| {
+        let (Some(root), Some(core)) = (git_for_windows_root(), super::core_dir()) else {
+            return Vec::new();
+        };
+        let Some(platform) = core.ancestors().nth(2) else {
+            return Vec::new();
+        };
+        [
+            core.to_owned(),
+            join_with_slash(platform, "bin"),
+            join_with_slash(root, "usr/bin"),
+        ]
+        .into_iter()
+        .filter(|dir| dir.is_dir())
+        .collect()
+    });
+    &DIRS
+}
+
+/// Append `relative` to `base` with `/`, to avoid introducing any `\` separators.
+fn join_with_slash(base: &Path, relative: &str) -> PathBuf {
+    let mut path = OsString::from(base);
+    path.push("/");
+    path.push(relative);
+    path.into()
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -200,5 +233,16 @@ mod tests {
                 .to_owned();
             assert_eq!(path, format!("{stem}.exe"), "should fall back for {stem:?}");
         }
+    }
+
+    #[test]
+    #[cfg_attr(not(windows), ignore = "only meaningful on Windows")]
+    fn git_for_windows_program_dirs() {
+        let dirs = super::git_for_windows_program_dirs();
+        let core_dir = crate::env::core_dir();
+        assert_eq!(dirs.len(), 3, "all three directories exist: {dirs:?}");
+        assert_eq!(Some(dirs[0].as_path()), core_dir, "the core directory comes first");
+        assert!(dirs[1].join("git.exe").is_file(), "next, the directory of `git.exe`");
+        assert!(dirs[2].join("sh.exe").is_file(), "last, `usr/bin` with the shell");
     }
 }

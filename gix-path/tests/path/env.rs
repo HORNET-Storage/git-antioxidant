@@ -134,6 +134,20 @@ fn installation_program_finds_programs_outside_the_core_directory() {
 }
 
 #[test]
+fn git_program_dirs() {
+    let dirs = gix_path::env::git_program_dirs();
+    if cfg!(windows) {
+        assert_eq!(
+            dirs.first().map(std::path::PathBuf::as_path),
+            gix_path::env::core_dir(),
+            "Git for Windows' own programs come first, starting with its core directory"
+        );
+    } else {
+        assert!(dirs.is_empty(), "only Git for Windows has such directories");
+    }
+}
+
+#[test]
 fn system_prefix() {
     assert_ne!(
         gix_path::env::system_prefix(),
