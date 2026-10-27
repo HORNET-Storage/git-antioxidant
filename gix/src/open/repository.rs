@@ -450,7 +450,11 @@ impl ThreadSafeRepository {
                 git_installation_config_path.as_deref(),
                 system_config_path.as_deref(),
                 *env,
-                config_permissions,
+                // Only `safe.directory` is read from it, which isn't part of the identity.
+                crate::open::permissions::Config {
+                    identity: false,
+                    ..config_permissions
+                },
                 lossy_config,
                 lenient_config,
                 api_config_overrides,

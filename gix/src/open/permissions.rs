@@ -30,6 +30,20 @@ pub struct Config {
     /// Whether to follow include files are encountered in loaded configuration,
     /// via `include` and `includeIf` sections.
     pub includes: bool,
+    /// Whether to load the identity, the names and email addresses that the `user`, `author` and `committer` sections
+    /// configure, from the system and global configuration files that `system`, `git` and `user` leave out.
+    ///
+    /// Programs that don't load the user's configuration, like those using [`Permissions::isolated()`], can use this to
+    /// act as the user configured. Like Git, the files are located with `HOME`, `XDG_CONFIG_HOME`, `GIT_CONFIG_GLOBAL`,
+    /// `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM`, and their includes are followed, whatever the
+    /// [environment permissions](Environment) and [`includes`](Self::includes) allow. The identity of each file takes
+    /// that file's precedence, below the repository's configuration. [`Environment::identity`] permits the identity's
+    /// environment variables, like `GIT_AUTHOR_NAME`.
+    ///
+    /// Git isn't started to find the files: the installation's configuration is left to
+    /// [`git_binary`](Self::git_binary), and on Windows, the system configuration is only found if its location is
+    /// known without starting Git, as [`gix_path::env::system_config_without_starting_git()`] describes.
+    pub identity: bool,
 }
 
 impl Config {
@@ -42,6 +56,7 @@ impl Config {
             user: true,
             env: true,
             includes: true,
+            identity: true,
         }
     }
 
@@ -54,6 +69,7 @@ impl Config {
             user: false,
             env: false,
             includes: false,
+            identity: false,
         }
     }
 }

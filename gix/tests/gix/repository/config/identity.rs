@@ -248,6 +248,258 @@ fn author_from_different_config_sections() -> TestResult {
     Ok(())
 }
 
+#[test]
+#[serial]
+fn isolated_options_can_load_just_the_configured_identity() -> TestResult {
+    let tmp = tempfile::tempdir()?;
+    let home = tmp.path().join("home");
+    std::fs::create_dir(&home)?;
+    std::fs::write(
+        home.join(".gitconfig"),
+        "[user]\n\tname = Global User\n\temail = global@example.com\n\tsigningKey = 1234\n\
+         [author]\n\tname = Global Author\n\
+         [a]\n\tglobal = yes\n",
+    )?;
+    let _env = gix_testtools::isolate_git_environment()?
+        .set("HOME", home.to_str().expect("UTF-8 temporary path"))
+        .unset("GIT_CONFIG_GLOBAL");
+    let git_dir = crate::init_repo_isolated(tmp.path().join("repo"), gix::create::Kind::Bare)?
+        .git_dir()
+        .to_owned();
+
+    let repo = gix::open_opts(&git_dir, isolated_with_identity())?;
+    let committer = repo
+        .committer()
+        .transpose()?
+        .expect("the user's configuration has a name and an email");
+    assert_eq!(committer.name, "Global User");
+    assert_eq!(committer.email, "global@example.com");
+    let author = repo
+        .author()
+        .transpose()?
+        .expect("the same configuration names the author");
+    assert_eq!(
+        author.name, "Global Author",
+        "`author.name` takes precedence over `user.name`"
+    );
+    assert_eq!(author.email, "global@example.com");
+    let config = repo.config_snapshot();
+    for key in ["a.global", "user.signingKey"] {
+        assert_eq!(
+            config.string(key),
+            None,
+            "{key} isn't part of the identity, so it isn't loaded"
+        );
+    }
+
+    let repo = gix::open_opts(&git_dir, gix::open::Options::isolated())?;
+    assert!(
+        repo.committer().is_none(),
+        "isolated options don't load the identity unless asked to"
+    );
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn the_configured_identity_follows_includes_and_yields_to_the_repository() -> TestResult {
+    use std::io::Write;
+
+    let tmp = tempfile::tempdir()?;
+    let home = tmp.path().join("home");
+    std::fs::create_dir(&home)?;
+    std::fs::write(
+        home.join(".gitconfig"),
+        "[user]\n\tname = Global User\n\temail = global@example.com\n\
+         [include]\n\tpath = included.config\n\
+         [includeIf \"gitdir:work/\"]\n\tpath = work.config\n\
+         [includeIf \"gitdir:elsewhere/\"]\n\tpath = elsewhere.config\n\
+         [includeIf \"hasconfig:remote.*.url:https://example.com/**\"]\n\tpath = remote.config\n",
+    )?;
+    std::fs::write(
+        home.join("included.config"),
+        "[committer]\n\tname = Included Committer\n",
+    )?;
+    std::fs::write(home.join("work.config"), "[user]\n\temail = work@example.com\n")?;
+    std::fs::write(
+        home.join("elsewhere.config"),
+        "[user]\n\temail = elsewhere@example.com\n",
+    )?;
+    std::fs::write(home.join("remote.config"), "[author]\n\tname = Remote Author\n")?;
+    let _env = gix_testtools::isolate_git_environment()?
+        .set("HOME", home.to_str().expect("UTF-8 temporary path"))
+        .unset("GIT_CONFIG_GLOBAL");
+    let work = tmp.path().join("work");
+    std::fs::create_dir(&work)?;
+    let git_dir = crate::init_repo_isolated(work.join("repo"), gix::create::Kind::Bare)?
+        .git_dir()
+        .to_owned();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(git_dir.join("config"))?
+        .write_all(b"[remote \"origin\"]\n\turl = https://example.com/project\n[user]\n\tname = Local User\n")?;
+
+    let repo = gix::open_opts(&git_dir, isolated_with_identity())?;
+    let committer = repo.committer().transpose()?.expect("configured");
+    assert_eq!(
+        committer.name, "Included Committer",
+        "the includes of the user's configuration are followed"
+    );
+    assert_eq!(
+        committer.email, "work@example.com",
+        "`gitdir:` conditions match the location of the repository"
+    );
+    let author = repo.author().transpose()?.expect("configured");
+    assert_eq!(
+        author.name, "Remote Author",
+        "`hasconfig:remote.*.url:` conditions match the remotes of the repository"
+    );
+    assert_eq!(
+        repo.config_snapshot().string("user.name").expect("configured"),
+        "Local User",
+        "the configuration of the repository takes precedence"
+    );
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn the_identity_of_each_file_keeps_the_precedence_of_its_file() -> TestResult {
+    let tmp = tempfile::tempdir()?;
+    let home = tmp.path().join("home");
+    std::fs::create_dir(&home)?;
+    std::fs::write(home.join(".gitconfig"), "[user]\n\tname = Global User\n")?;
+    let system_config = tmp.path().join("system.config");
+    std::fs::write(
+        &system_config,
+        "[user]\n\tname = System User\n\temail = system@example.com\n[a]\n\tsystem = yes\n",
+    )?;
+    let _env = gix_testtools::isolate_git_environment()?
+        .set("HOME", home.to_str().expect("UTF-8 temporary path"))
+        .unset("GIT_CONFIG_GLOBAL")
+        .unset("GIT_CONFIG_NOSYSTEM");
+    let git_dir = crate::init_repo_isolated(tmp.path().join("repo"), gix::create::Kind::Bare)?
+        .git_dir()
+        .to_owned();
+
+    for (system, user) in [(true, false), (false, true)] {
+        let mut options = isolated_with_identity().system_config_path(system_config.clone());
+        options.permissions.config.system = system;
+        options.permissions.config.user = user;
+        // Fully loaded user configuration is only found with `HOME` if the environment permissions allow it.
+        options.permissions.env.home = Permission::Allow;
+        let repo = gix::open_opts(&git_dir, options)?;
+        let committer = repo.committer().transpose()?.expect("configured");
+        assert_eq!(
+            committer.name, "Global User",
+            "the user's configuration takes precedence over the system's, with system: {system}, user: {user}"
+        );
+        assert_eq!(
+            committer.email, "system@example.com",
+            "the system's configuration supplies what the user's lacks"
+        );
+        assert_eq!(
+            repo.config_snapshot().string("a.system").is_some(),
+            system,
+            "only the identity of the system's configuration is loaded unless it's permitted"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn the_identity_is_found_where_git_finds_the_configuration() -> TestResult {
+    let tmp = tempfile::tempdir()?;
+    let home = tmp.path().join("home");
+    std::fs::create_dir(&home)?;
+    std::fs::write(home.join(".gitconfig"), "[user]\n\tname = Home User\n")?;
+    let xdg = tmp.path().join("xdg");
+    std::fs::create_dir_all(xdg.join("git"))?;
+    std::fs::write(
+        xdg.join("git").join("config"),
+        "[user]\n\tname = XDG User\n\temail = xdg@example.com\n",
+    )?;
+    let system = tmp.path().join("system.config");
+    std::fs::write(&system, "[author]\n\tname = System Author\n")?;
+    let global = tmp.path().join("global.config");
+    std::fs::write(&global, "[user]\n\tname = Global User\n\temail = global@example.com\n")?;
+    let env = gix_testtools::isolate_git_environment()?
+        .set("HOME", home.to_str().expect("UTF-8 temporary path"))
+        .set("XDG_CONFIG_HOME", xdg.to_str().expect("UTF-8 temporary path"))
+        .set("GIT_CONFIG_SYSTEM", system.to_str().expect("UTF-8 temporary path"))
+        .unset("GIT_CONFIG_GLOBAL");
+    let git_dir = crate::init_repo_isolated(tmp.path().join("repo"), gix::create::Kind::Bare)?
+        .git_dir()
+        .to_owned();
+
+    let repo = gix::open_opts(&git_dir, isolated_with_identity())?;
+    let committer = repo.committer().transpose()?.expect("configured");
+    assert_eq!(
+        committer.name, "Home User",
+        "`~/.gitconfig` takes precedence over the XDG configuration"
+    );
+    assert_eq!(
+        committer.email, "xdg@example.com",
+        "the XDG configuration supplies what `~/.gitconfig` lacks"
+    );
+    let author = repo.author().transpose()?.expect("configured");
+    assert_eq!(
+        author.name, "Home User",
+        "`GIT_CONFIG_NOSYSTEM` leaves the system configuration out"
+    );
+
+    let env = env.unset("GIT_CONFIG_NOSYSTEM");
+    let repo = gix::open_opts(&git_dir, isolated_with_identity())?;
+    let author = repo.author().transpose()?.expect("configured");
+    assert_eq!(
+        author.name, "System Author",
+        "`GIT_CONFIG_SYSTEM` locates the system configuration"
+    );
+
+    let _env = env.set("GIT_CONFIG_GLOBAL", global.to_str().expect("UTF-8 temporary path"));
+    let repo = gix::open_opts(&git_dir, isolated_with_identity())?;
+    let committer = repo.committer().transpose()?.expect("configured");
+    assert_eq!(committer.name, "Global User", "`GIT_CONFIG_GLOBAL` replaces both files");
+    assert_eq!(committer.email, "global@example.com");
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn loading_the_identity_never_starts_git() -> TestResult {
+    if gix_testtools::run_in_isolated_process()? {
+        return Ok(());
+    }
+    let tmp = tempfile::tempdir()?;
+    let home = tmp.path().join("home");
+    std::fs::create_dir(&home)?;
+    let _env = gix_testtools::isolate_git_environment()?
+        .set("HOME", home.to_str().expect("UTF-8 temporary path"))
+        .unset("GIT_CONFIG_GLOBAL")
+        .unset("GIT_CONFIG_NOSYSTEM");
+    let git_dir = crate::init_repo_isolated(tmp.path().join("repo"), gix::create::Kind::Bare)?
+        .git_dir()
+        .to_owned();
+
+    // Git writes this file if it's started, and this process hasn't located the configuration yet.
+    let trace = tmp.path().join("git.trace");
+    let _trace = Env::new().set("GIT_TRACE", trace.to_str().expect("UTF-8 temporary path"));
+    gix::open_opts(&git_dir, isolated_with_identity())?;
+    assert!(
+        !trace.exists(),
+        "the system and global configuration are located without starting Git"
+    );
+    Ok(())
+}
+
+/// Isolated options that also load the identity configured in the user's configuration files.
+fn isolated_with_identity() -> gix::open::Options {
+    let mut options = gix::open::Options::isolated();
+    options.permissions.config.identity = true;
+    options
+}
+
 fn allow_system_options(opts: gix::open::Options) -> gix::open::Options {
     opts.permissions(gix::open::Permissions {
         env: gix::open::permissions::Environment {

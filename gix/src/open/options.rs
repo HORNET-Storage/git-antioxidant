@@ -29,6 +29,9 @@ impl Default for Options {
 impl Options {
     /// Options configured to prevent accessing anything else than the repository configuration file, prohibiting
     /// accessing the environment or spreading beyond the git repository location.
+    ///
+    /// Enable [`permissions.config.identity`](crate::open::permissions::Config::identity) to load the identity
+    /// configured in the user's configuration files nonetheless.
     pub fn isolated() -> Self {
         Options::default().permissions(Permissions::isolated())
     }
@@ -76,7 +79,8 @@ impl Options {
     ///
     /// Common locations are `/etc/gitconfig` on Unix and `C:/ProgramData/Git/config` on Windows.
     ///
-    /// The file is loaded only when [`permissions.config.system`][Permissions::config] is enabled.
+    /// The file is loaded when [`permissions.config.system`][Permissions::config] is enabled, or only for the identity
+    /// it configures when [`permissions.config.identity`](crate::open::permissions::Config::identity) is.
     pub fn system_config_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.system_config_path = Some(path.into().into_boxed_path());
         self

@@ -218,21 +218,32 @@ pub(crate) fn source_path(
     permissions: open::permissions::Config,
     source_env: &mut dyn FnMut(&str) -> Option<OsString>,
 ) -> Option<std::path::PathBuf> {
-    let permitted = match source {
+    if !is_permitted(source, permissions) {
+        return None;
+    }
+    locate(source, git_installation_config_path, system_config_path, source_env)
+}
+
+/// Return whether `permissions` allow loading the repository-independent configuration `source` in full.
+fn is_permitted(source: gix_config::Source, permissions: open::permissions::Config) -> bool {
+    match source {
         gix_config::Source::GitInstallation => permissions.git_binary,
         gix_config::Source::System => permissions.system,
         gix_config::Source::Git => permissions.git,
         gix_config::Source::User => permissions.user,
         _ => false,
-    };
-    if !permitted {
-        return None;
     }
-    if matches!(source, gix_config::Source::GitInstallation | gix_config::Source::System)
-        && source_env("GIT_CONFIG_NOSYSTEM")
-            .and_then(|value| gix_config::Boolean::try_from(value).ok())
-            .is_some_and(|value| value.0)
-    {
+}
+
+/// Locate the file of the repository-independent configuration `source` with the environment of `source_env`, including
+/// explicit and environment path overrides.
+fn locate(
+    source: gix_config::Source,
+    git_installation_config_path: Option<&std::path::Path>,
+    system_config_path: Option<&std::path::Path>,
+    source_env: &mut dyn FnMut(&str) -> Option<OsString>,
+) -> Option<std::path::PathBuf> {
+    if matches!(source, gix_config::Source::GitInstallation | gix_config::Source::System) && is_nosystem(source_env) {
         return None;
     }
     match source {
@@ -242,6 +253,172 @@ pub(crate) fn source_path(
     }
     .map(ToOwned::to_owned)
     .or_else(|| source.storage_location(source_env))
+}
+
+/// Return whether `GIT_CONFIG_NOSYSTEM`, as obtained with `source_env`, leaves out the installation's and the system
+/// configuration.
+fn is_nosystem(source_env: &mut dyn FnMut(&str) -> Option<OsString>) -> bool {
+    source_env("GIT_CONFIG_NOSYSTEM")
+        .and_then(|value| gix_config::Boolean::try_from(value).ok())
+        .is_some_and(|value| value.0)
+}
+
+/// Locate the file of the system or global configuration `source` like [`locate()`], to load the identity it
+/// configures, with the environment of [`identity_source_env()`].
+///
+/// Git isn't started to find it, which only `git_binary` permits: the installation's configuration isn't located, and
+/// the system configuration only if its location is known without starting Git.
+fn locate_identity(
+    source: gix_config::Source,
+    system_config_path: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    match source {
+        gix_config::Source::System => {
+            if is_nosystem(&mut identity_source_env) {
+                return None;
+            }
+            system_config_path
+                .map(ToOwned::to_owned)
+                .or_else(|| identity_source_env("GIT_CONFIG_SYSTEM").map(std::path::PathBuf::from))
+                .or_else(|| gix_path::env::system_config_without_starting_git().map(ToOwned::to_owned))
+        }
+        gix_config::Source::Git | gix_config::Source::User => source.storage_location(&mut identity_source_env),
+        _ => None,
+    }
+}
+
+/// Provide the environment variables that locate Git's system and global configuration files, whatever the environment
+/// permissions, to load the identity that these files configure.
+fn identity_source_env(name: &str) -> Option<OsString> {
+    match name {
+        "HOME" | "XDG_CONFIG_HOME" | "GIT_CONFIG_GLOBAL" | "GIT_CONFIG_SYSTEM" | "GIT_CONFIG_NOSYSTEM" => {
+            gix_path::env::var(name)
+        }
+        _ => None,
+    }
+}
+
+/// A repository-independent configuration file, loaded in full or only for the identity it configures.
+struct GlobalFile {
+    meta: gix_config::file::Metadata,
+    identity_only: bool,
+}
+
+/// List the repository-independent configuration files in the order of their sources. Each is loaded in full if
+/// `permissions` allow its source, or only for the identity it configures if they allow loading the identity.
+///
+/// A file that several sources name is loaded once, at the position of the first, and in full if any of them loads it
+/// in full.
+fn global_files(
+    git_installation_config_path: Option<&std::path::Path>,
+    system_config_path: Option<&std::path::Path>,
+    permissions: open::permissions::Config,
+    source_env: &mut dyn FnMut(&str) -> Option<OsString>,
+) -> Vec<GlobalFile> {
+    let mut files = Vec::<GlobalFile>::new();
+    for &source in [
+        gix_config::source::Kind::GitInstallation,
+        gix_config::source::Kind::System,
+        gix_config::source::Kind::Global,
+    ]
+    .iter()
+    .flat_map(|kind| kind.sources())
+    {
+        let (path, identity_only) = if is_permitted(source, permissions) {
+            match locate(source, git_installation_config_path, system_config_path, source_env) {
+                Some(path) => (path, false),
+                None => continue,
+            }
+        } else if permissions.identity {
+            match locate_identity(source, system_config_path) {
+                Some(path) => (path, true),
+                None => continue,
+            }
+        } else {
+            continue;
+        };
+        match files
+            .iter_mut()
+            .find(|file| file.meta.path.as_deref() == Some(path.as_path()))
+        {
+            Some(file) => {
+                if file.identity_only && !identity_only {
+                    file.meta.source = source;
+                    file.identity_only = false;
+                }
+            }
+            None => files.push(GlobalFile {
+                meta: gix_config::file::Metadata::from(source)
+                    .at(path)
+                    .with(gix_sec::Trust::Full),
+                identity_only,
+            }),
+        }
+    }
+    files
+}
+
+/// The sections of the identity, which consists of their `name` and `email`.
+const IDENTITY_SECTIONS: &[&str] = &["user", "author", "committer"];
+
+/// Load the configuration files of `metas` only for the identity they configure, the `name` and `email` of their
+/// `user`, `author` and `committer` sections, following their includes with `options`.
+///
+/// The `remote` sections of `others`, the configuration loaded in full, take part in including, as Git matches
+/// `hasconfig:remote.*.url` conditions with the remotes of all configuration.
+fn load_identity<'a>(
+    mut metas: impl Iterator<Item = gix_config::file::Metadata>,
+    others: impl Iterator<Item = &'a gix_config::File>,
+    buf: &mut Vec<u8>,
+    options: gix_config::file::init::Options<'_>,
+) -> Result<Option<gix_config::File>> {
+    let err_on_nonexisting_paths = false;
+    let Some(mut identity) = gix_config::File::from_paths_metadata_buf(
+        &mut metas,
+        buf,
+        err_on_nonexisting_paths,
+        gix_config::file::init::Options {
+            includes: gix_config::file::includes::Options::no_follow(),
+            ..options
+        },
+    )?
+    else {
+        return Ok(None);
+    };
+    for config in others {
+        for remote in config.sections_by_name("remote").into_iter().flatten() {
+            identity.push_section(remote.to_owned())?;
+        }
+    }
+    identity.resolve_includes(options)?;
+
+    let (identity_sections, other_sections): (Vec<_>, Vec<_>) = identity
+        .sections_and_ids()
+        .map(|(section, id)| {
+            let header = section.header();
+            let is_identity = header.subsection_name().is_none()
+                && IDENTITY_SECTIONS
+                    .iter()
+                    .any(|name| header.name().eq_ignore_ascii_case(name.as_bytes()));
+            (id, is_identity)
+        })
+        .partition(|(_, is_identity)| *is_identity);
+    for (id, _) in other_sections {
+        identity.remove_section_by_id(id);
+    }
+    for (id, _) in identity_sections {
+        let mut section = identity
+            .section_mut_by_id(id)
+            .expect("the section was listed and not removed");
+        let other_names: Vec<_> = section
+            .value_names()
+            .filter(|name| !["name", "email"].iter().any(|key| name.eq_ignore_ascii_case(key)))
+            .collect();
+        for name in other_names {
+            while section.remove(&name).is_some() {}
+        }
+    }
+    Ok(Some(identity))
 }
 
 /// Load global configuration and optional repository-local configuration using the same ordering and overrides as
@@ -290,39 +467,79 @@ pub(crate) fn load(
     };
     let git_prefix = &git_prefix;
     let mut source_env = Cache::make_source_env(environment);
-    let mut metas = [
-        gix_config::source::Kind::GitInstallation,
-        gix_config::source::Kind::System,
-        gix_config::source::Kind::Global,
-    ]
-    .iter()
-    .flat_map(|kind| kind.sources())
-    .filter_map(|&source| {
-        source_path(
-            source,
-            git_installation_config_path,
-            system_config_path,
-            config_permissions,
-            &mut source_env,
-        )
-        .map(|path| {
-            gix_config::file::Metadata::from(source)
-                .at(path)
-                .with(gix_sec::Trust::Full)
-        })
-    });
+    let files = global_files(
+        git_installation_config_path,
+        system_config_path,
+        config_permissions,
+        &mut source_env,
+    );
 
     let err_on_nonexisting_paths = false;
-    let mut globals = gix_config::File::from_paths_metadata_buf(
-        &mut metas,
-        buf,
-        err_on_nonexisting_paths,
-        gix_config::file::init::Options {
-            includes: gix_config::file::includes::Options::no_follow(),
-            ..options
-        },
-    )?
-    .unwrap_or_default();
+    let mut configs = Vec::with_capacity(files.len());
+    for file in &files {
+        configs.push(if file.identity_only {
+            None
+        } else {
+            gix_config::File::from_paths_metadata_buf(
+                &mut std::iter::once(file.meta.clone()),
+                buf,
+                err_on_nonexisting_paths,
+                gix_config::file::init::Options {
+                    includes: gix_config::file::includes::Options::no_follow(),
+                    ..options
+                },
+            )?
+        });
+    }
+    let identity_config = if files.iter().any(|file| file.identity_only) {
+        // Like the files themselves, the home directory of their includes is found whatever the permissions.
+        let home = gix_path::env::home_dir();
+        load_identity(
+            files
+                .iter()
+                .filter(|file| file.identity_only)
+                .map(|file| file.meta.clone()),
+            configs.iter().flatten().chain(git_dir_config.as_ref()),
+            buf,
+            gix_config::file::init::Options {
+                includes: gix_config::file::includes::Options::follow(
+                    interpolate_context(git_install_dir, home.as_deref()),
+                    gix_config::file::includes::conditional::Context { git_dir, branch_name },
+                ),
+                ..options
+            },
+        )?
+    } else {
+        None
+    };
+
+    let mut globals = None::<gix_config::File>;
+    for (file, config) in files.iter().zip(configs) {
+        let config = match (config, identity_config.as_ref()) {
+            (Some(config), _) => config,
+            (None, Some(identity_config)) if file.identity_only => {
+                let mut config = gix_config::File::new(file.meta.clone());
+                for section in identity_config
+                    .sections()
+                    .filter(|section| section.meta().source == file.meta.source)
+                {
+                    config.push_section(section.to_owned())?;
+                }
+                if config.sections().next().is_none() {
+                    continue;
+                }
+                config
+            }
+            _ => continue,
+        };
+        match globals.as_mut() {
+            Some(globals) => {
+                globals.append(config)?;
+            }
+            None => globals = Some(config),
+        }
+    }
+    let mut globals = globals.unwrap_or_default();
 
     let local_meta = git_dir_config.as_ref().map(gix_config::File::meta_owned);
     if let Some(git_dir_config) = git_dir_config {
