@@ -11,12 +11,14 @@ fn main_errors_include_caller_locations() {
     use gix::error::{ErrorExt, message};
 
     let error = message("command failed").raise();
+    // Locations print with `/` on every platform.
+    let file = file!().replace('\\', "/");
     assert!(
-        format!("{error:?}").contains(file!()),
+        format!("{error:?}").contains(&file),
         "standalone binary diagnostics include captured caller locations"
     );
     assert!(
-        !format!("{error:#?}").contains(file!()),
+        !format!("{error:#?}").contains(&file),
         "alternate formatting still omits caller locations"
     );
 }
