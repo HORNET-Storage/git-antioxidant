@@ -46,7 +46,10 @@ pub(crate) fn replacing_editor(old: &str, new: &str) -> String {
     #[cfg(windows)]
     {
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/replace-editor.ps1");
-        format!("pwsh -NoProfile -File \"{}\" \"{old}\" \"{new}\"", script.display())
+        format!(
+            "powershell -NoProfile -ExecutionPolicy Bypass -File \"{}\" \"{old}\" \"{new}\"",
+            script.display()
+        )
     }
     #[cfg(not(windows))]
     {

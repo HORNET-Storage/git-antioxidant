@@ -179,10 +179,10 @@ mod tests {
             let output_dir = gix_testtools::tempfile::tempdir()?;
             let thread = std::thread::current();
             let test_name = thread.name().expect("libtest names its test threads");
-            let mut command = Command::new("pwsh");
+            let mut command = Command::new("powershell");
             let output = gix_testtools::configure_git_environment(&mut command, output_dir.path())
                 .env("GIX_TIX_TEST_CONSOLE", "1")
-                .args(["-NoProfile", "-NonInteractive", "-File"])
+                .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
                 .arg(fixtures.join("with-console.ps1"))
                 .arg(std::env::current_exe()?)
                 .arg(test_name)
@@ -200,7 +200,7 @@ mod tests {
 
         let fixture = gix_testtools::scripted_fixture_writable("create_commit.sh")?;
         let editor = format!(
-            "pwsh -NoProfile -NonInteractive -File \"{}\" {}",
+            "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{}\" {}",
             fixtures.join("console-editor.ps1").display(),
             std::process::id()
         );
