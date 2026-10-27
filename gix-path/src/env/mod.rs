@@ -47,13 +47,31 @@ pub fn installation_config_prefix() -> Option<&'static Path> {
 
 /// Return the unoverridden location of the system-wide Git configuration file.
 ///
-/// On Windows this shares the discovery and caching of [`installation_config()`].
+/// On Windows this shares the discovery and caching of [`installation_config()`], which may start Git. Use
+/// [`system_config_without_starting_git()`] where Git must not be started.
 /// The caller is responsible for applying `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM`.
 pub fn system_config() -> Option<&'static Path> {
     if cfg!(windows) {
         git::system_config_path().and_then(|p| crate::from_byte_slice(p).ok())
     } else {
         Some(Path::new("/etc/gitconfig"))
+    }
+}
+
+/// Return the unoverridden location of the system-wide Git configuration file like [`system_config()`], but only if
+/// it's known without starting Git.
+///
+/// On Windows, it's known if `EXEPATH` or the location of `git.exe` identifies a Git for Windows installation, as
+/// described for [`system_prefix()`] and [`core_dir()`]. On other platforms, it's always known.
+/// The caller is responsible for applying `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM`.
+pub fn system_config_without_starting_git() -> Option<&'static Path> {
+    #[cfg(windows)]
+    {
+        git::known_system_config_path().and_then(|p| crate::from_byte_slice(p).ok())
+    }
+    #[cfg(not(windows))]
+    {
+        system_config()
     }
 }
 

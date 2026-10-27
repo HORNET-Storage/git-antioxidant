@@ -156,6 +156,19 @@ fn system_prefix() {
     );
 }
 
+#[test]
+fn system_config_without_starting_git() {
+    let config = gix_path::env::system_config_without_starting_git();
+    if cfg!(windows) {
+        assert!(
+            config.is_none() || config == gix_path::env::system_config(),
+            "if it's known, it's the system configuration that Git uses"
+        );
+    } else {
+        assert_eq!(config, Some(Path::new("/etc/gitconfig")));
+    }
+}
+
 #[cfg(windows)]
 mod windows_prefix {
     use std::path::Path;
@@ -189,6 +202,11 @@ mod windows_prefix {
             gix_path::env::system_config(),
             Some(config.as_path()),
             "the EXEPATH shortcut must report that same file as the system config"
+        );
+        assert_eq!(
+            gix_path::env::system_config_without_starting_git(),
+            Some(config.as_path()),
+            "the shortcut is known without starting Git"
         );
         assert!(
             gix_path::env::installation_config_is_system(),
@@ -235,6 +253,11 @@ mod windows_prefix {
             "Git for Windows reports its system configuration as the installation's"
         );
         assert_eq!(
+            gix_path::env::system_config_without_starting_git().and_then(Path::to_str),
+            Some(config.as_str()),
+            "the installation is known without starting Git"
+        );
+        assert_eq!(
             gix_path::env::system_prefix().and_then(Path::to_str),
             Some(format!("{root}/mingw64").as_str())
         );
@@ -255,6 +278,26 @@ mod windows_prefix {
             Path::new(gix_path::env::shell()).to_str(),
             Some(format!("{root}/usr/bin/sh.exe").as_str()),
             "the shell is that of the same installation"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn system_config_is_only_known_without_starting_git_for_git_for_windows() -> gix_testtools::TestResult {
+        if gix_testtools::run_in_isolated_process()? {
+            return Ok(());
+        }
+        let shims = tempfile::tempdir()?;
+        // Like the launchers that package managers put in `PATH`, this `git.exe` isn't part of a Git for Windows
+        // installation. It's an empty file, so Git can't be started either.
+        std::fs::write(shims.path().join("git.exe"), [])?;
+        let _env = gix_testtools::Env::new()
+            .set("PATH", shims.path().to_str().expect("UTF-8 temporary path"))
+            .unset("EXEPATH");
+        assert_eq!(
+            gix_path::env::system_config_without_starting_git(),
+            None,
+            "only Git could tell where its system configuration is"
         );
         Ok(())
     }

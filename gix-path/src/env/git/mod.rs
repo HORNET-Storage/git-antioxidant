@@ -190,37 +190,46 @@ impl GitForWindows {
     }
 }
 
-#[derive(Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct ConfigPaths {
     installation: Option<BString>,
     installation_is_system: bool,
     system: Option<BString>,
 }
 
-/// Obtain and cache the installation and system configuration paths.
+/// The installation and system configuration paths of Git for Windows, if they are known without starting Git.
 ///
 /// An unambiguous `EXEPATH`, or a Git for Windows installation recognized by the location of its
-/// `git.exe`, identifies Git for Windows' conventional configuration location. Otherwise, query
-/// the Git executable found in `PATH` or an alternative location.
-static GIT_CONFIG_PATHS: LazyLock<ConfigPaths> = LazyLock::new(|| {
-    #[cfg(windows)]
+/// `git.exe`, identifies Git for Windows' conventional configuration location.
+#[cfg(windows)]
+static KNOWN_CONFIG_PATHS: LazyLock<Option<ConfigPaths>> = LazyLock::new(|| {
     if let Some(system_prefix) = super::system_prefix_from_exepath_var(|key| std::env::var_os(key)) {
         let system_config =
             crate::os_string_into_bstring(super::config_path_from_system_prefix(&system_prefix).into()).ok();
-        return ConfigPaths {
+        return Some(ConfigPaths {
             installation: system_config.clone(),
             installation_is_system: true,
             system: system_config,
-        };
+        });
     }
-    #[cfg(windows)]
-    if let Some(installation) = GIT_FOR_WINDOWS.as_ref() {
+    GIT_FOR_WINDOWS.as_ref().map(|installation| {
         let config = BString::from(installation.config_path());
-        return ConfigPaths {
+        ConfigPaths {
             installation: Some(config.clone()),
             installation_is_system: true,
             system: Some(config),
-        };
+        }
+    })
+});
+
+/// Obtain and cache the installation and system configuration paths.
+///
+/// On Windows, these are the paths of Git for Windows if they are known without starting Git. Otherwise, query the
+/// Git executable found in `PATH` or an alternative location.
+static GIT_CONFIG_PATHS: LazyLock<ConfigPaths> = LazyLock::new(|| {
+    #[cfg(windows)]
+    if let Some(paths) = KNOWN_CONFIG_PATHS.as_ref() {
+        return paths.clone();
     }
     config_paths_from_executable()
 });
@@ -384,6 +393,12 @@ pub(super) fn system_config_path() -> Option<&'static BStr> {
         .as_ref()
         .or_else(|| FALLBACK.as_ref())
         .map(AsRef::as_ref)
+}
+
+/// Return the path of Git for Windows' system configuration if it's known without starting Git.
+#[cfg(windows)]
+pub(super) fn known_system_config_path() -> Option<&'static BStr> {
+    KNOWN_CONFIG_PATHS.as_ref()?.system.as_ref().map(AsRef::as_ref)
 }
 
 /// Given `config_path` as obtained from `install_config_path()`, return the path of the git installation base.
