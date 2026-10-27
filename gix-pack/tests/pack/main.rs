@@ -85,5 +85,7 @@ mod bundle;
 mod data;
 mod index;
 mod iter;
+#[cfg(all(not(feature = "wasm"), feature = "streaming-input"))]
+mod large_blobs;
 mod malformed;
 mod multi_index;

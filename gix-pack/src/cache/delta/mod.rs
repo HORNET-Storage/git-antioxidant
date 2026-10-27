@@ -21,6 +21,9 @@ pub struct Tree<T> {
     future_child_offsets: Vec<(crate::data::Offset, usize)>,
     /// Child indices waiting for an in-pack object with the given id to be resolved.
     ref_child_indices: tree::RefDeltaChildren,
+    /// The roots whose object id is known already, as their index in `root_items` along with that id, in the order they
+    /// were added.
+    resolved_roots: Vec<(u32, gix_hash::ObjectId)>,
 }
 
 ///

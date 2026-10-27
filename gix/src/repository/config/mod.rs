@@ -206,7 +206,8 @@ impl crate::Repository {
         &self.options
     }
 
-    /// Return the big-file threshold above which Git will not perform a diff anymore or try to delta-diff packs,
+    /// Return the big-file threshold above which Git will not perform a diff anymore or try to delta-diff packs, and
+    /// above which a fetch hashes the blobs of the received pack while inflating them instead of holding them in memory,
     /// as configured by `core.bigFileThreshold`, or the default value.
     pub fn big_file_threshold(&self) -> Result<u64> {
         self.config.big_file_threshold()

@@ -12,7 +12,8 @@ pub struct Entry {
     /// The bytes consumed while producing `decompressed`
     /// These do not contain the header, which makes it possible to easily replace a RefDelta with offset deltas
     /// when resolving thin packs.
-    /// Depends on `CompressionMode` when the iterator is initialized.
+    /// Depends on `CompressionMode` when the iterator is initialized, and is `None` for a blob that was
+    /// [written while it was read](BytesToEntriesIter::with_large_blobs_written_to()).
     pub compressed: Option<Vec<u8>>,
     /// The amount of bytes the compressed portion of the entry takes, i.e. the portion behind the header.
     pub compressed_size: u64,
@@ -24,6 +25,9 @@ pub struct Entry {
     /// Set for the last object in the iteration, providing the hash over all bytes of the iteration
     /// for use as trailer in a pack or to verify it matches the trailer.
     pub trailer: Option<gix_hash::ObjectId>,
+    /// The id of the object, if it was computed while the entry was read, as it is for blobs above the
+    /// [big-file threshold](BytesToEntriesIter::with_big_file_threshold()) so that they needn't be inflated again.
+    pub id: Option<gix_hash::ObjectId>,
 }
 
 mod entry;

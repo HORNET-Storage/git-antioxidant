@@ -177,6 +177,7 @@ mod version {
                     &AtomicBool::new(false),
                     gix_hash::Kind::Sha1,
                     None,
+                    512 * 1024 * 1024,
                     pack_version,
                 )?;
 
@@ -270,6 +271,7 @@ mod version {
                 &AtomicBool::new(false),
                 gix_hash::Kind::Sha1,
                 prevent_allocation,
+                512 * 1024 * 1024,
                 pack_version,
             )
             .expect_err("a zero allocation limit rejects non-empty delta-tree storage");

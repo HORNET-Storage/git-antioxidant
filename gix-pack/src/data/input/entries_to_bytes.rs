@@ -2,7 +2,7 @@ use gix_error::{Error, Result};
 
 use std::iter::Peekable;
 
-use gix_error::{ErrorExt, message};
+use gix_error::{ErrorExt, bail, message};
 
 use crate::data::input;
 
@@ -11,6 +11,10 @@ use crate::data::input;
 ///
 /// It is able to deal with an unknown amount of objects as it will rewrite the pack header once the entries iterator
 /// is depleted and compute the hash in one go by re-reading the whole file.
+///
+/// An entry without compressed bytes must have been written into the output while it was read, as
+/// [`BytesToEntriesIter::with_large_blobs_written_to()`](input::BytesToEntriesIter::with_large_blobs_written_to())
+/// writes blobs, so the pack header is written before the first entry is received.
 pub struct EntriesToBytesIter<I: Iterator, W> {
     /// An iterator for input [`input::Entry`] instances
     pub input: Peekable<I>,
@@ -57,25 +61,26 @@ where
     }
 
     fn next_inner(&mut self, entry: input::Entry) -> Result<input::Entry> {
-        if self.num_entries == 0 {
-            let header_bytes = crate::data::header::encode(self.data_version, 0);
-            self.output
-                .write_all(&header_bytes[..])
-                .map_err(gix_hash::io::from_std_io)?;
-        }
         self.num_entries += 1;
-        entry
-            .header
-            .write_to(entry.decompressed_size, &mut self.output)
-            .map_err(gix_hash::io::from_std_io)?;
-        self.output
-            .write_all(
+        match entry.compressed.as_deref() {
+            Some(compressed) => {
                 entry
-                    .compressed
-                    .as_deref()
-                    .expect("caller must configure generator to keep compressed bytes"),
-            )
-            .map_err(gix_hash::io::from_std_io)?;
+                    .header
+                    .write_to(entry.decompressed_size, &mut self.output)
+                    .map_err(gix_hash::io::from_std_io)?;
+                self.output.write_all(compressed).map_err(gix_hash::io::from_std_io)?;
+            }
+            None => {
+                let pack_offset = entry.pack_offset;
+                let entry_end = pack_offset + entry.bytes_in_pack();
+                let end = self.output.stream_position().map_err(gix_hash::io::from_std_io)?;
+                if end != entry_end {
+                    bail!(
+                        "The entry at pack offset {pack_offset} has no compressed bytes, so it should have been written up to {entry_end}, but the output ends at {end}"
+                    );
+                }
+            }
+        }
         Ok(entry)
     }
 
@@ -127,6 +132,13 @@ where
         if self.is_done {
             return None;
         }
+        if self.num_entries == 0 {
+            let header_bytes = crate::data::header::encode(self.data_version, 0);
+            if let Err(err) = self.output.write_all(&header_bytes[..]) {
+                self.is_done = true;
+                return Some(Err(hash_io_error(gix_hash::io::from_std_io(err))));
+            }
+        }
 
         match self.input.next() {
             Some(res) => Some(match res {
@@ -147,7 +159,10 @@ where
             }),
             None => match self.write_header_and_digest(None) {
                 Ok(_) => None,
-                Err(err) => Some(Err(hash_io_error(err))),
+                Err(err) => {
+                    self.is_done = true;
+                    Some(Err(hash_io_error(err)))
+                }
             },
         }
     }

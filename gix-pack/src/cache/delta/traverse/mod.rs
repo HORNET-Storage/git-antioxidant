@@ -75,6 +75,8 @@ where
     /// Forward references with known base offsets are attached before traversal. Children recorded by base object ID
     /// during streaming indexing are attached when their bases are fully decoded and hashed, including bases that are
     /// themselves deltas. All bases must be represented in this tree; external thin-pack bases must be inserted beforehand.
+    /// A root whose object id is known already is resolved and passed to `inspect_object` only if deltas refer to it, and
+    /// it is returned with the other roots either way.
     ///
     /// * `should_run_in_parallel() -> bool` returns true if the underlying pack is big enough to warrant parallel traversal at all.
     /// * `resolve(EntrySlice, &mut Vec<u8>) -> Option<()>` resolves the bytes in the pack for the given `EntrySlice` and stores them in the
@@ -125,7 +127,8 @@ where
         let resolver_progress = object_progress.add_child("delta resolver".into());
 
         let start = std::time::Instant::now();
-        let (mut root_items, mut child_items_vec, ref_delta_children) = self.take_root_child_and_refs();
+        let (mut root_items, mut child_items_vec, ref_delta_children, resolved_roots) = self.take_root_child_and_refs();
+        object_counter.fetch_add(resolved_roots.len(), Ordering::Relaxed);
         let ref_delta_children =
             (!ref_delta_children.is_empty()).then(|| OwnShared::new(Mutable::new(ref_delta_children)));
         let child_items = ItemSliceSync::new(&mut child_items_vec);
@@ -163,6 +166,7 @@ where
         object_progress.show_throughput(start);
         size_progress.show_throughput(start);
 
+        root_items.extend(resolved_roots);
         Ok(Outcome {
             roots: root_items,
             children: child_items_vec,

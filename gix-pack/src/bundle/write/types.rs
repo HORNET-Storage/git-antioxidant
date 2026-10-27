@@ -23,10 +23,18 @@ pub struct Options {
     pub iteration_mode: crate::data::input::Mode,
     /// The version of pack index to write, should be [`crate::index::Version::default()`]
     pub index_version: crate::index::Version,
-    /// If `Some`, rejects individual allocations above the given number of bytes while building the delta tree or resolving
-    /// streamed pack entries into decoded object and delta result buffers to write the index.
+    /// If `Some`, rejects individual allocations above the given number of bytes while building the delta tree, resolving
+    /// streamed pack entries into decoded object and delta result buffers to write the index, or keeping the compressed
+    /// bytes of entries to complete a thin pack.
     /// `Some(0)` rejects all non-empty allocations.
     pub alloc_limit_bytes: Option<usize>,
+    /// Blobs larger than this many bytes are treated like `git index-pack` treats blobs above `core.bigFileThreshold`:
+    /// they are hashed while they are inflated in chunks, and only decompressed as a whole if a delta needs one as its
+    /// base. Their compressed bytes aren't kept in memory either, see
+    /// [`write_to_directory()`](crate::Bundle::write_to_directory()).
+    ///
+    /// Defaults to 512 MiB, the default of `core.bigFileThreshold`.
+    pub big_file_threshold: u64,
     /// The compression level to use when deflating base objects that are added to the pack to complete a thin pack.
     ///
     /// Defaults to [`Compression::BEST_SPEED`](gix_zlib::Compression::BEST_SPEED) - `git` compresses
@@ -43,6 +51,7 @@ impl Default for Options {
             iteration_mode: crate::data::input::Mode::Verify,
             index_version: Default::default(),
             alloc_limit_bytes: None,
+            big_file_threshold: 512 * 1024 * 1024,
             compression: gix_zlib::Compression::BEST_SPEED,
         }
     }

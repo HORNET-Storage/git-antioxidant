@@ -86,8 +86,21 @@ pub(super) mod function {
     /// * `object_hash` defines what kind of object hash we write into the index file.
     /// * `alloc_limit_bytes` limits the maximum size of individual allocations for the delta tree and while resolving pack
     ///   entries to compute object ids. `None` means no limit is applied.
+    /// * `big_file_threshold` is the size in bytes above which a blob is treated like `git index-pack` treats a blob above
+    ///   `core.bigFileThreshold`, whose default is 512 MiB: it isn't decompressed into a buffer of its size, see
+    ///   *Large blobs*.
     /// * `pack_version` is the version of the underlying pack for which `entries` are read. It's used in case none of these objects are provided
     ///   to compute a pack-hash.
+    ///
+    /// # Large blobs
+    ///
+    /// A blob above `big_file_threshold` is hashed while it is inflated in chunks, as `git index-pack` does, unless a delta
+    /// needs it as its base: then it is decompressed as a whole to resolve the delta, as Git does as well. If its entry
+    /// has an [`id`](crate::data::input::Entry::id), as
+    /// [`BytesToEntriesIter::with_big_file_threshold()`](crate::data::input::BytesToEntriesIter::with_big_file_threshold())
+    /// computes while the entry is read, it isn't inflated here at all, and otherwise it is inflated 8 KiB at a time from
+    /// the bytes that the resolver provides. Deltas, the bases of deltas and objects other than blobs are decompressed
+    /// as a whole, as in Git.
     ///
     /// # Remarks
     ///
@@ -106,6 +119,7 @@ pub(super) mod function {
         should_interrupt: &AtomicBool,
         object_hash: gix_hash::Kind,
         alloc_limit_bytes: Option<usize>,
+        big_file_threshold: u64,
         pack_version: crate::data::Version,
     ) -> Result<Outcome>
     where
@@ -134,6 +148,9 @@ pub(super) mod function {
             root_progress.add_child_with_id("decompressing".into(), ProgressId::DecompressedBytes.into());
         decompressed_progress.init(None, progress::bytes());
         let mut pack_entries_end: u64 = 0;
+        // The blobs above `big_file_threshold` whose entries come without id, by pack offset, entry size, header size and
+        // object size.
+        let mut unhashed_large_blobs = Vec::new();
 
         for entry in entries {
             let crate::data::input::Entry {
@@ -145,6 +162,7 @@ pub(super) mod function {
                 compressed_size,
                 decompressed_size,
                 trailer,
+                id,
             } = entry?;
 
             decompressed_progress.inc_by(decompressed_size as usize);
@@ -156,15 +174,21 @@ pub(super) mod function {
 
             use crate::data::entry::Header::*;
             match header {
-                Tree | Blob | Commit | Tag => {
-                    tree.add_root(
+                Tree | Blob | Commit | Tag => match id {
+                    Some(id) => tree.add_resolved_root(pack_offset, TreeEntry { id, crc32 }, id)?,
+                    None if matches!(header, Blob) && decompressed_size > big_file_threshold => {
+                        let id = object_hash.null();
+                        tree.add_resolved_root(pack_offset, TreeEntry { id, crc32 }, id)?;
+                        unhashed_large_blobs.push((pack_offset, entry_len, header_size, decompressed_size));
+                    }
+                    None => tree.add_root(
                         pack_offset,
                         TreeEntry {
                             id: object_hash.null(),
                             crc32,
                         },
-                    )?;
-                }
+                    )?,
+                },
                 RefDelta { base_id } => {
                     tree.add_child_by_id(
                         base_id,
@@ -208,6 +232,19 @@ pub(super) mod function {
         root_progress.inc();
 
         let (resolver, pack) = make_resolver().map_err(gix_hash::io::from_std_io)?;
+        for (pack_offset, entry_len, header_size, decompressed_size) in unhashed_large_blobs {
+            let compressed = resolver(pack_offset..pack_offset + entry_len, &pack)
+                .and_then(|entry| entry.get(usize::from(header_size)..))
+                .ok_or_raise(|| {
+                    message!("The resolver failed to obtain the pack entry bytes for the entry at {pack_offset}")
+                })?;
+            let id = hash_blob_in_chunks(compressed, decompressed_size, object_hash)?;
+            let (data, resolved_id) = tree
+                .resolved_root_mut(pack_offset)
+                .expect("each large blob was added as resolved root");
+            data.id = id;
+            *resolved_id = id;
+        }
         let sorted_pack_offsets_by_oid = {
             let traverse::Outcome { roots, children } = tree.traverse(
                 resolver,
@@ -219,7 +256,14 @@ pub(super) mod function {
                      entry,
                      decompressed: bytes,
                      ..
-                 }| modify_base(data, entry, bytes, object_hash),
+                 }| {
+                    // A root whose id is known already is only resolved as the base of its deltas.
+                    if data.id.is_null() {
+                        modify_base(data, entry, bytes, object_hash)
+                    } else {
+                        Ok(())
+                    }
+                },
                 traverse::Options {
                     object_progress: Box::new(
                         root_progress.add_child_with_id("Resolving".into(), ProgressId::ResolveObjects.into()),
@@ -279,6 +323,40 @@ pub(super) mod function {
             data_hash: pack_hash,
             num_objects,
         })
+    }
+
+    /// Compute the id of the blob of `size` bytes whose compressed bytes are `compressed`, inflating it 8 KiB at a time
+    /// so that it is never held in memory as a whole.
+    fn hash_blob_in_chunks(
+        mut compressed: &[u8],
+        size: u64,
+        object_hash: gix_hash::Kind,
+    ) -> Result<gix_hash::ObjectId> {
+        let mut hasher = gix_hash::hasher(object_hash);
+        hasher.update(&gix_object::encode::loose_header(gix_object::Kind::Blob, size));
+        let mut inflate = gix_zlib::Decompress::new();
+        let mut buf = [0u8; 8192];
+        let mut inflated = 0u64;
+        loop {
+            let len = gix_zlib::stream::inflate::read(&mut compressed, &mut inflate, &mut buf)
+                .or_raise(|| message("Failed to decompress entry"))?;
+            if len == 0 {
+                break;
+            }
+            inflated += len as u64;
+            if inflated > size {
+                bail!(gix_error::corruption(
+                    "Pack entry decompressed to more bytes than declared in the entry header"
+                ));
+            }
+            hasher.update(&buf[..len]);
+        }
+        if inflated != size {
+            bail!(gix_error::corruption(
+                "Pack entry is truncated: pack entry decompressed to fewer bytes than declared in the entry header"
+            ));
+        }
+        hasher.try_finalize()
     }
 }
 

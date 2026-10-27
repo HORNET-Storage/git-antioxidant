@@ -1,7 +1,7 @@
 use gix_error::{Error, Result};
 use std::{fs, io};
 
-use gix_error::{ErrorExt, ResultExt, bail, message};
+use gix_error::{ErrorExt, ResourceExhaustionKind, ResultExt, bail, message};
 use gix_hash::{Hasher, ObjectId};
 use gix_zlib::Decompress;
 
@@ -10,6 +10,10 @@ use crate::data::input;
 /// An iterator over [`Entries`][input::Entry] in a byte stream.
 ///
 /// The iterator used as part of [`Bundle::write_to_directory(…)`][crate::Bundle::write_to_directory()].
+///
+/// Each entry is inflated to learn where it ends. Its bytes update the hash of the pack and the CRC32 of the entry as the
+/// decompressor consumes them, as `git index-pack` updates them, so that compressed bytes are held in memory only if they
+/// are kept. Blobs above a [big-file threshold](Self::with_big_file_threshold()) are hashed while they are inflated, too.
 pub struct BytesToEntriesIter<BR> {
     read: BR,
     decompressor: Decompress,
@@ -20,9 +24,14 @@ pub struct BytesToEntriesIter<BR> {
     hash: Option<Hasher>,
     mode: input::Mode,
     compressed: input::EntryDataMode,
-    compressed_buf: Option<Vec<u8>>,
     hash_len: usize,
     object_hash: gix_hash::Kind,
+    /// Blobs larger than this many bytes are hashed while they are inflated.
+    big_file_threshold: Option<u64>,
+    /// The most compressed bytes of an entry that are kept.
+    alloc_limit_bytes: Option<usize>,
+    /// Receives the entries of the blobs above `big_file_threshold` as they are read, whose compressed bytes aren't kept.
+    large_blob_out: Option<Box<dyn io::Write + Send>>,
 }
 
 /// Access
@@ -35,6 +44,32 @@ impl<BR> BytesToEntriesIter<BR> {
     /// The kind of iteration
     pub fn mode(&self) -> input::Mode {
         self.mode
+    }
+}
+
+/// Configuration
+impl<BR> BytesToEntriesIter<BR> {
+    /// Treat blobs larger than `big_file_threshold` bytes as `git index-pack` treats blobs above `core.bigFileThreshold`:
+    /// hash each one while it is inflated, so that its entry carries its [`id`](input::Entry::id) and an index writer
+    /// needn't inflate it again unless a delta needs it as its base.
+    pub fn with_big_file_threshold(mut self, big_file_threshold: u64) -> Self {
+        self.big_file_threshold = Some(big_file_threshold);
+        self
+    }
+
+    /// Write each blob above the [big-file threshold](Self::with_big_file_threshold()) to `out` as it is read instead of
+    /// keeping its compressed bytes, whatever the [`EntryDataMode`](input::EntryDataMode): first its header, as
+    /// [`Header::write_to()`](crate::data::entry::Header::write_to()) writes it, then its compressed bytes.
+    /// [`EntriesToBytesIter`](input::EntriesToBytesIter) writing into `out` finds such an entry written when it receives it.
+    pub fn with_large_blobs_written_to(mut self, out: Box<dyn io::Write + Send>) -> Self {
+        self.large_blob_out = Some(out);
+        self
+    }
+
+    /// Refuse to keep more than `alloc_limit_bytes` compressed bytes of an entry, which fails the entry instead.
+    pub fn with_alloc_limit_bytes(mut self, alloc_limit_bytes: Option<usize>) -> Self {
+        self.alloc_limit_bytes = alloc_limit_bytes;
+        self
     }
 }
 
@@ -73,7 +108,9 @@ where
                 hash
             }),
             mode,
-            compressed_buf: None,
+            big_file_threshold: None,
+            alloc_limit_bytes: None,
+            large_blob_out: None,
             hash_len: object_hash.len_in_bytes(),
             object_hash,
         };
@@ -102,25 +139,71 @@ where
         }
         .map_err(io_error)?;
 
-        // Decompress object to learn its compressed bytes
-        let compressed_buf = self.compressed_buf.take().unwrap_or_else(|| Vec::with_capacity(4096));
-        self.decompressor.reset();
-        let mut decompressed_reader = DecompressRead {
-            inner: read_and_pass_to(
-                &mut self.read,
-                if self.compressed.keep() {
-                    // This buffer stores compressed bytes. The decompressed size is unrelated to the compressed byte
-                    // count and is declared by pack data, so using it as capacity could cause excessive allocation.
-                    // It's notable that `decompressed_size` is also untrusted.
-                    Vec::new()
-                } else {
-                    compressed_buf
-                },
-            ),
-            decompressor: &mut self.decompressor,
+        let mut header_buf = [0u8; 12 + gix_hash::Kind::longest().len_in_bytes()];
+        let header_len = entry
+            .header
+            .write_to(entry.decompressed_size, &mut header_buf.as_mut())
+            .map_err(io_error)?;
+        let header = &header_buf[..header_len];
+        let is_large_blob = entry.header == crate::data::entry::Header::Blob
+            && self
+                .big_file_threshold
+                .is_some_and(|threshold| entry.decompressed_size > threshold);
+        let out = match self.large_blob_out.as_deref_mut() {
+            Some(out) if is_large_blob => {
+                out.write_all(header).map_err(io_error)?;
+                Some(out)
+            }
+            _ => None,
         };
+        let mut crc32 = self.compressed.crc32().then(|| {
+            let mut crc32 = crc32fast::Hasher::new();
+            crc32.update(header);
+            crc32
+        });
+        // A large blob is never held in memory as a whole, so it is hashed while it is inflated.
+        let mut object = is_large_blob.then(|| {
+            let mut hash = gix_hash::hasher(self.object_hash);
+            hash.update(&gix_object::encode::loose_header(
+                gix_object::Kind::Blob,
+                entry.decompressed_size,
+            ));
+            hash
+        });
 
-        let bytes_copied = io::copy(&mut decompressed_reader, &mut io::sink()).map_err(io_error)?;
+        // Decompress the object to learn its compressed bytes, which are passed on as they are consumed.
+        self.decompressor.reset();
+        let (inflated, kept, consumed, stop) = {
+            let mut compressed = EntryRead {
+                kept: (self.compressed.keep() && out.is_none()).then(Vec::new),
+                read: &mut self.read,
+                pack_hash: self.hash.as_mut(),
+                crc32: crc32.as_mut(),
+                alloc_limit_bytes: self.alloc_limit_bytes,
+                out,
+                consumed: 0,
+                stop: None,
+            };
+            let inflated = io::copy(
+                &mut DecompressRead {
+                    inner: &mut compressed,
+                    decompressor: &mut self.decompressor,
+                },
+                &mut Inflated(object.as_mut()),
+            );
+            (inflated, compressed.kept, compressed.consumed, compressed.stop)
+        };
+        match stop {
+            Some(Stop::Alloc(kind)) => {
+                bail!(gix_error::resource_exhaustion(
+                    kind,
+                    "Compressed entry too large to keep in memory"
+                ));
+            }
+            Some(Stop::Write(err)) => return Err(io_error(err)),
+            None => {}
+        }
+        let bytes_copied = inflated.map_err(io_error)?;
         if bytes_copied != entry.decompressed_size {
             bail!(gix_error::corruption(format!(
                 "pack is incomplete: it was decompressed into {bytes_copied} bytes but {} bytes where expected.",
@@ -129,52 +212,27 @@ where
         }
 
         let pack_offset = self.offset;
-        let compressed_size = decompressed_reader.decompressor.total_in();
-        self.offset += entry.header_size() as u64 + compressed_size;
-
-        let mut compressed = decompressed_reader.inner.write;
+        let compressed_size = self.decompressor.total_in();
         debug_assert_eq!(
-            compressed_size,
-            compressed.len() as u64,
+            compressed_size, consumed,
             "we must track exactly the same amount of bytes as read by the decompressor"
         );
-        if let Some(hash) = self.hash.as_mut() {
-            hash.update(&compressed);
-        }
-
-        let crc32 = if self.compressed.crc32() {
-            let mut header_buf = [0u8; 12 + gix_hash::Kind::longest().len_in_bytes()];
-            let header_len = entry
-                .header
-                .write_to(bytes_copied, &mut header_buf.as_mut())
-                .map_err(io_error)?;
-            let mut crc32 = crc32fast::Hasher::new();
-            crc32.update(&header_buf[..header_len]);
-            crc32.update(&compressed);
-            Some(crc32.finalize())
-        } else {
-            None
-        };
-
-        let compressed = if self.compressed.keep() {
-            Some(compressed)
-        } else {
-            compressed.clear();
-            self.compressed_buf = Some(compressed);
-            None
-        };
+        self.offset += entry.header_size() as u64 + compressed_size;
+        let crc32 = crc32.map(crc32fast::Hasher::finalize);
+        let id = object.map(Hasher::try_finalize).transpose()?;
 
         // Last objects gets trailer (which is potentially verified)
         let trailer = self.try_read_trailer()?;
         Ok(input::Entry {
             header: entry.header,
             header_size: entry.header_size() as u16,
-            compressed,
+            compressed: kept,
             compressed_size,
             crc32,
             pack_offset,
             decompressed_size: bytes_copied,
             trailer,
+            id,
         })
     }
 
@@ -245,25 +303,115 @@ struct PassThrough<R, W> {
     write: W,
 }
 
-impl<R, W> io::BufRead for PassThrough<R, W>
-where
-    Self: io::Read,
-    R: io::BufRead,
-    W: io::Write,
-{
+/// Reads the compressed bytes of an entry from `read` and passes each byte that the decompressor consumes on: to the hash
+/// of the pack, to the CRC32 of the entry, to the compressed bytes that are kept and to the output of large blobs.
+struct EntryRead<'a, R> {
+    read: &'a mut R,
+    pack_hash: Option<&'a mut Hasher>,
+    crc32: Option<&'a mut crc32fast::Hasher>,
+    kept: Option<Vec<u8>>,
+    alloc_limit_bytes: Option<usize>,
+    out: Option<&'a mut (dyn io::Write + Send + 'static)>,
+    /// The amount of bytes that were consumed.
+    consumed: u64,
+    /// Why consumed bytes couldn't be passed on. As [`consume()`](io::BufRead::consume()) can't fail, the next read fails.
+    stop: Option<Stop>,
+}
+
+/// Why the consumed bytes of an entry couldn't be passed on.
+enum Stop {
+    /// Keeping them would allocate beyond the limit, or the allocation failed.
+    Alloc(ResourceExhaustionKind),
+    /// Writing them to the output of large blobs failed.
+    Write(io::Error),
+}
+
+impl<R: io::BufRead> io::BufRead for EntryRead<'_, R> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        if self.stop.is_some() {
+            return Err(io::Error::other(
+                "the compressed bytes of the entry couldn't be passed on",
+            ));
+        }
         self.read.fill_buf()
     }
 
     fn consume(&mut self, amt: usize) {
-        let buf = self
+        let bytes = &self
             .read
             .fill_buf()
-            .expect("never fail as we called fill-buf before and this does nothing");
-        self.write
-            .write_all(&buf[..amt])
-            .expect("a write to never fail - should be a memory buffer");
+            .expect("never fail as we called fill-buf before and this does nothing")[..amt];
+        if let Some(hash) = self.pack_hash.as_mut() {
+            hash.update(bytes);
+        }
+        if let Some(crc32) = self.crc32.as_mut() {
+            crc32.update(bytes);
+        }
+        if self.stop.is_none()
+            && let Some(kept) = self.kept.as_mut()
+        {
+            match reserve_within(kept, amt, self.alloc_limit_bytes) {
+                Ok(()) => kept.extend_from_slice(bytes),
+                Err(kind) => self.stop = Some(Stop::Alloc(kind)),
+            }
+        }
+        if self.stop.is_none()
+            && let Some(out) = self.out.as_mut()
+            && let Err(err) = out.write_all(bytes)
+        {
+            self.stop = Some(Stop::Write(err));
+        }
+        self.consumed += amt as u64;
         self.read.consume(amt);
+    }
+}
+
+impl<R: io::BufRead> io::Read for EntryRead<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let available = io::BufRead::fill_buf(self)?;
+        let amt = available.len().min(buf.len());
+        buf[..amt].copy_from_slice(&available[..amt]);
+        io::BufRead::consume(self, amt);
+        Ok(amt)
+    }
+}
+
+/// Make room in `kept` for `additional` bytes, growing it as a `Vec` grows, but never beyond `alloc_limit_bytes`.
+fn reserve_within(
+    kept: &mut Vec<u8>,
+    additional: usize,
+    alloc_limit_bytes: Option<usize>,
+) -> std::result::Result<(), ResourceExhaustionKind> {
+    let Some(limit) = alloc_limit_bytes else {
+        return kept
+            .try_reserve(additional)
+            .map_err(|_| ResourceExhaustionKind::AllocationFailure);
+    };
+    let len = kept.len().saturating_add(additional);
+    if len > limit {
+        return Err(ResourceExhaustionKind::AllocationLimit);
+    }
+    if len > kept.capacity() {
+        let capacity = kept.capacity().saturating_mul(2).clamp(len, limit);
+        kept.try_reserve_exact(capacity - kept.len())
+            .map_err(|_| ResourceExhaustionKind::AllocationFailure)?;
+    }
+    Ok(())
+}
+
+/// Discards the inflated bytes of an entry, but hashes them first if the id of its object is computed.
+struct Inflated<'a>(Option<&'a mut Hasher>);
+
+impl io::Write for Inflated<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if let Some(hash) = self.0.as_mut() {
+            hash.update(buf);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 

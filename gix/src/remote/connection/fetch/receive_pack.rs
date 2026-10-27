@@ -180,6 +180,7 @@ where
             index_version: config::pack_index_version(repo)?,
             iteration_mode: gix_pack::data::input::Mode::Verify,
             alloc_limit_bytes: repo.config.alloc_limit_bytes,
+            big_file_threshold: repo.big_file_threshold()?,
             compression: repo.config.loose_compression,
         };
         let mut write_pack_bundle = None;

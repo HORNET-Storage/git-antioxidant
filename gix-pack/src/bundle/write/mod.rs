@@ -60,6 +60,22 @@ impl crate::Bundle {
     /// Only the pack is read from `pack`: bytes after its trailer remain unread, so a caller can detect and refuse them,
     /// as `git index-pack` does for a file that continues after its pack.
     ///
+    /// # Large blobs
+    ///
+    /// As `git index-pack` does with a blob above `core.bigFileThreshold`, a blob above [`Options::big_file_threshold`] is
+    /// hashed while it is inflated in chunks as it is read, and its compressed bytes go to the pack file as they are read,
+    /// also when a thin pack is completed, so that it is never held in memory as a whole unless a delta needs it as its
+    /// base. Deltas, bases of deltas and objects other than blobs are decompressed as a whole, as in Git.
+    ///
+    /// These deviations from Git remain:
+    ///
+    /// * Git compares a received object with an object of the same id that exists already, streaming both if they are
+    ///   large blobs, which isn't done here.
+    /// * A base that completes a thin pack is held in memory as a whole, as in Git, but it is also compressed into memory
+    ///   as a whole, while Git compresses it into a small buffer as it writes it.
+    /// * With [`Restore`](data::input::Mode::Restore) as [`Options::iteration_mode`], completing a thin pack keeps the
+    ///   compressed bytes of large blobs in memory, as the pack ends with its last complete entry then.
+    ///
     /// # Note
     ///
     /// * the resulting pack may be empty, that is, contains zero objects in some situations. This is a valid reply by a server and should
@@ -93,12 +109,7 @@ impl crate::Bundle {
                 Some(thin_pack_lookup) => {
                     let pack = PackRead::new(pack, read_progress, should_interrupt, None);
                     let pack_entries_iter = data::input::LookupRefDeltaObjectsIter::new(
-                        data::input::BytesToEntriesIter::new_from_header(
-                            pack,
-                            options.iteration_mode,
-                            data::input::EntryDataMode::KeepAndCrc32,
-                            object_hash,
-                        )?,
+                        pack_entries(pack, Some(&data_file), object_hash, &options)?,
                         thin_pack_lookup,
                         options.compression,
                     );
@@ -115,12 +126,7 @@ impl crate::Bundle {
                 }
                 None => {
                     let pack = PackRead::new(pack, read_progress, should_interrupt, Some(data_file.clone()));
-                    let pack_entries_iter = data::input::BytesToEntriesIter::new_from_header(
-                        pack,
-                        options.iteration_mode,
-                        data::input::EntryDataMode::Crc32,
-                        object_hash,
-                    )?;
+                    let pack_entries_iter = pack_entries(pack, None, object_hash, &options)?;
                     let pack_version = pack_entries_iter.version();
                     (Box::new(pack_entries_iter), pack_version)
                 }
@@ -161,6 +167,8 @@ impl crate::Bundle {
     ///
     /// As `pack` is read through a buffer, bytes after the pack's trailer may be read from it as well. They are discarded
     /// and never written into the pack.
+    ///
+    /// Large blobs are imported as [`write_to_directory()`](crate::Bundle::write_to_directory()) describes.
     #[expect(clippy::too_many_arguments)]
     pub fn write_to_directory_eagerly(
         pack: Box<dyn io::Read + Send + 'static>,
@@ -192,12 +200,7 @@ impl crate::Bundle {
             Some(thin_pack_lookup) => {
                 let pack = PackRead::new(buffered_pack, read_progress, should_interrupt, None);
                 let pack_entries_iter = data::input::LookupRefDeltaObjectsIter::new(
-                    data::input::BytesToEntriesIter::new_from_header(
-                        pack,
-                        options.iteration_mode,
-                        data::input::EntryDataMode::KeepAndCrc32,
-                        object_hash,
-                    )?,
+                    pack_entries(pack, Some(&data_file), object_hash, &options)?,
                     thin_pack_lookup,
                     options.compression,
                 );
@@ -214,12 +217,7 @@ impl crate::Bundle {
             }
             None => {
                 let pack = PackRead::new(buffered_pack, read_progress, should_interrupt, Some(data_file.clone()));
-                let pack_entries_iter = data::input::BytesToEntriesIter::new_from_header(
-                    pack,
-                    options.iteration_mode,
-                    data::input::EntryDataMode::Crc32,
-                    object_hash,
-                )?;
+                let pack_entries_iter = pack_entries(pack, None, object_hash, &options)?;
                 let pack_kind = pack_entries_iter.version();
                 (Box::new(pack_entries_iter), pack_kind)
             }
@@ -264,6 +262,7 @@ impl crate::Bundle {
             iteration_mode: _,
             index_version: index_kind,
             alloc_limit_bytes,
+            big_file_threshold,
             compression: _,
         }: Options,
         data_file: SharedTempFile,
@@ -294,6 +293,7 @@ impl crate::Bundle {
                     should_interrupt,
                     object_hash,
                     alloc_limit_bytes,
+                    big_file_threshold,
                     pack_version,
                 )?;
                 drop(pack_entries_iter);
@@ -352,6 +352,7 @@ impl crate::Bundle {
                     should_interrupt,
                     object_hash,
                     alloc_limit_bytes,
+                    big_file_threshold,
                     pack_version,
                 )?,
                 data_path: None,
@@ -360,6 +361,36 @@ impl crate::Bundle {
             },
         })
     }
+}
+
+/// Iterate the entries of `pack`, keeping their compressed bytes if `data_file` is set to complete a thin pack in it.
+///
+/// As `git index-pack` does, a blob above `options.big_file_threshold` is hashed while it is inflated, and when its
+/// compressed bytes would be kept, they are written to `data_file` as they are read instead.
+fn pack_entries<R: io::BufRead>(
+    pack: R,
+    data_file: Option<&SharedTempFile>,
+    object_hash: gix_hash::Kind,
+    options: &Options,
+) -> Result<data::input::BytesToEntriesIter<R>> {
+    let compressed = if data_file.is_some() {
+        data::input::EntryDataMode::KeepAndCrc32
+    } else {
+        data::input::EntryDataMode::Crc32
+    };
+    let entries =
+        data::input::BytesToEntriesIter::new_from_header(pack, options.iteration_mode, compressed, object_hash)?
+            .with_big_file_threshold(options.big_file_threshold)
+            .with_alloc_limit_bytes(options.alloc_limit_bytes);
+    Ok(match data_file {
+        // A restored pack ends with its last complete entry, which a blob written as it is read could follow.
+        Some(data_file) if options.iteration_mode != data::input::Mode::Restore => {
+            entries.with_large_blobs_written_to(Box::new(LockWriter {
+                writer: data_file.clone(),
+            }))
+        }
+        _ => entries,
+    })
 }
 
 fn resolve_entry(range: data::EntryRange, mapped_file: &memmap2::Mmap) -> Option<&[u8]> {

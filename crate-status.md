@@ -295,6 +295,9 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
                 * _read as is, verify hash, and restore partial packs_
         * [x] create index from pack alone (_much faster than git_)
             * [x] resolve 'thin' packs
+            * [x] stream blobs above `core.bigFileThreshold` as `git index-pack` does: hash them while they are inflated and
+              write their compressed bytes into the pack as they are read, unless a delta needs one as its base
+            * [ ] compare a received object with an existing object of the same id, as `git index-pack` does
     * **encode**
         * [x] Add support for zlib-ng for 2.5x _compression_ performance
         * [x] objects to entries iterator

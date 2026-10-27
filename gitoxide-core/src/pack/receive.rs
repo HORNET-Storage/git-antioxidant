@@ -303,6 +303,8 @@ fn receive_pack_blocking(
         iteration_mode: pack::data::input::Mode::Verify,
         alloc_limit_bytes: None,
         compression: gix::zlib::Compression::BEST_SPEED,
+        // Git's default of `core.bigFileThreshold`, as no repository configuration is read.
+        ..Default::default()
     };
     let outcome = pack::Bundle::write_to_directory(
         &mut input,

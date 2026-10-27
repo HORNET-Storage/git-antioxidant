@@ -27,6 +27,7 @@ impl input::Entry {
             crc32: None,
             decompressed_size: obj.data.len() as u64,
             trailer: None,
+            id: None,
         };
         entry.crc32 = Some(entry.compute_crc32());
         Ok(entry)

@@ -86,6 +86,8 @@ pub fn from_pack(
         index_version: pack::index::Version::default(),
         alloc_limit_bytes: None,
         compression: gix::zlib::Compression::BEST_SPEED,
+        // Git's default of `core.bigFileThreshold`, as no repository configuration is read.
+        ..Default::default()
     };
     let out = ctx.out;
     let format = ctx.format;

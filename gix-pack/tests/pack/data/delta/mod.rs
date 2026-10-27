@@ -94,6 +94,7 @@ fn assert_pack_holds(objects: &[Packed<'_>]) -> TestResult {
             index_version: gix_pack::index::Version::default(),
             alloc_limit_bytes: None,
             compression: gix_zlib::Compression::DEFAULT,
+            ..Default::default()
         },
     )?;
     let index_path = outcome.index_path.expect("the pack was written into a directory");

@@ -7,6 +7,10 @@ use super::Tree;
 /// Maps each referenced base object ID to indices in `Tree::child_items` of ref-deltas waiting for it.
 pub(super) type RefDeltaChildren = BTreeMap<gix_hash::ObjectId, Vec<u32>>;
 
+/// The root items of a [`Tree`] to resolve, its child items, the ref-deltas waiting for their bases, and the root items
+/// that needn't be resolved, as [`Tree::take_root_child_and_refs()`] returns them.
+pub(super) type TreeParts<T> = (Vec<Item<T>>, Vec<Item<T>>, RefDeltaChildren, Vec<Item<T>>);
+
 /// An item stored within the [`Tree`] whose data is stored in a pack file, identified by
 /// the offset of its first (`offset`) and last (`next_offset`) bytes.
 ///
@@ -76,6 +80,7 @@ impl<T> Tree<T> {
             last_seen: None,
             future_child_offsets: Vec::new(),
             ref_child_indices: BTreeMap::new(),
+            resolved_roots: Vec::new(),
         })
     }
 
@@ -83,11 +88,32 @@ impl<T> Tree<T> {
         self.root_items.len() + self.child_items.len()
     }
 
-    /// Returns self's root and child items.
+    /// Returns self's root and child items, the ref-deltas waiting for their bases, and the roots whose object id is known
+    /// and that no delta refers to, so that they needn't be resolved.
     ///
-    /// You can rely on them following the same `children` invariants as they did in the tree
-    pub(super) fn take_root_child_and_refs(self) -> (Vec<Item<T>>, Vec<Item<T>>, RefDeltaChildren) {
-        (self.root_items, self.child_items, self.ref_child_indices)
+    /// The ref-deltas waiting for the id of a root that is known already become its children first.
+    /// You can rely on the items following the same `children` invariants as they did in the tree.
+    pub(super) fn take_root_child_and_refs(self) -> TreeParts<T> {
+        let Tree {
+            mut root_items,
+            child_items,
+            mut ref_child_indices,
+            resolved_roots,
+            ..
+        } = self;
+        let mut done = Vec::new();
+        // Removing a root moves the last root into its place, which is why they are visited from the back.
+        for (index, id) in resolved_roots.into_iter().rev() {
+            let index = index as usize;
+            // SAFETY INVARIANT upheld: the child indices move from `ref_child_indices` to `children`.
+            if let Some(children) = ref_child_indices.remove(&id) {
+                root_items[index].children.extend(children);
+            }
+            if root_items[index].children.is_empty() {
+                done.push(root_items.swap_remove(index));
+            }
+        }
+        (root_items, child_items, ref_child_indices, done)
     }
 
     pub(super) fn assert_is_incrementing_and_update_next_offset(&mut self, offset: crate::data::Offset) -> Result {
@@ -147,6 +173,35 @@ impl<T> Tree<T> {
             children: Default::default(),
         });
         Ok(())
+    }
+
+    /// Add a new root node like [`add_root()`](Self::add_root()), whose object `id` is known already, like that of a blob
+    /// that was hashed while it was read. [`traverse()`](Self::traverse()) only resolves it if deltas refer to it, and
+    /// returns it with the other roots either way.
+    #[cfg(feature = "streaming-input")]
+    pub(crate) fn add_resolved_root(&mut self, offset: crate::data::Offset, data: T, id: gix_hash::ObjectId) -> Result {
+        let index = self.root_items.len() as u32;
+        self.add_root(offset, data)?;
+        self.resolved_roots.push((index, id));
+        Ok(())
+    }
+
+    /// Return the data and the object id of the root at pack `offset` that was added with
+    /// [`add_resolved_root()`](Self::add_resolved_root()), or `None` if there is no such root.
+    #[cfg(feature = "streaming-input")]
+    pub(crate) fn resolved_root_mut(
+        &mut self,
+        offset: crate::data::Offset,
+    ) -> Option<(&mut T, &mut gix_hash::ObjectId)> {
+        let index = self.root_items.binary_search_by_key(&offset, |item| item.offset).ok()? as u32;
+        let resolved = self
+            .resolved_roots
+            .binary_search_by_key(&index, |(index, _id)| *index)
+            .ok()?;
+        Some((
+            &mut self.root_items[index as usize].data,
+            &mut self.resolved_roots[resolved].1,
+        ))
     }
 
     /// Add a child of the item at `base_offset` which itself resides at pack `offset` and associate custom `data` with it.

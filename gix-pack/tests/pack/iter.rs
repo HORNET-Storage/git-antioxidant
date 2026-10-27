@@ -6,7 +6,9 @@ fn size_of_entry() {
     let actual = std::mem::size_of::<pack::data::input::Entry>();
     let sha1 = 104;
     let sha256_extra = 32;
-    let expected = sha1 + sha256_extra;
+    // The id of a blob that is hashed while its entry is read.
+    let id = 32;
+    let expected = sha1 + sha256_extra + id;
     assert!(
         size_ok(actual, expected),
         "let's keep the size in check as we have many of them: {actual} <~ {expected}"

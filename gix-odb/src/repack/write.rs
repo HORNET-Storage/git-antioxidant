@@ -70,6 +70,7 @@ pub(crate) fn write(
                 iteration_mode: gix_pack::data::input::Mode::Verify,
                 index_version: gix_pack::index::Version::default(),
                 alloc_limit_bytes: None,
+                big_file_threshold: options.big_file_threshold,
                 compression: options.compression,
             },
         );
