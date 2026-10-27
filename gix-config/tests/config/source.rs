@@ -4,48 +4,40 @@ use gix_config::Source;
 
 #[test]
 fn git_config_no_system() {
+    for source in [Source::GitInstallation, Source::System] {
+        assert_eq!(
+            source.storage_location(&mut |name| {
+                assert_eq!(
+                    name, "GIT_CONFIG_NOSYSTEM",
+                    "it only checks this var, and if set, nothing else"
+                );
+                Some("1".into())
+            }),
+            None,
+            "{source:?} configuration is disabled"
+        );
+        let without_variable = source.storage_location(&mut |name| match name {
+            "GIT_CONFIG_NOSYSTEM" | "GIT_CONFIG_SYSTEM" => None,
+            unexpected => unreachable!("unexpected env var: {unexpected}"),
+        });
+        assert_eq!(
+            source.storage_location(&mut |name| match name {
+                "GIT_CONFIG_NOSYSTEM" => Some("false".into()),
+                "GIT_CONFIG_SYSTEM" => None,
+                unexpected => unreachable!("unexpected env var: {unexpected}"),
+            }),
+            without_variable,
+            "{source:?}: the variable is a boolean, and false leaves the configuration where it would be without it"
+        );
+    }
     assert_eq!(
-        Source::GitInstallation.storage_location(&mut |name| {
-            assert_eq!(
-                name, "GIT_CONFIG_NOSYSTEM",
-                "it only checks this var, and if set, nothing else"
-            );
-            Some("1".into())
+        Source::System.storage_location(&mut |name| match name {
+            "GIT_CONFIG_NOSYSTEM" => Some("false".into()),
+            "GIT_CONFIG_SYSTEM" => Some("alternative".into()),
+            unexpected => unreachable!("unexpected env var: {unexpected}"),
         }),
-        None
-    );
-    assert!(
-        Source::GitInstallation
-            .storage_location(&mut |name| {
-                match name {
-                    "GIT_CONFIG_NOSYSTEM" => Some("false".into()),
-                    "GIT_CONFIG_SYSTEM" => None,
-                    _ => unreachable!("known set"),
-                }
-            })
-            .is_some(),
-        "it treats the variable as boolean"
-    );
-    assert_eq!(
-        Source::System.storage_location(&mut |name| {
-            assert_eq!(
-                name, "GIT_CONFIG_NOSYSTEM",
-                "it only checks this var, and if set, nothing else"
-            );
-            Some("1".into())
-        }),
-        None
-    );
-    assert!(
-        Source::System
-            .storage_location(&mut |name| {
-                match name {
-                    "GIT_CONFIG_NOSYSTEM" => Some("false".into()),
-                    "GIT_CONFIG_SYSTEM" => None,
-                    _ => unreachable!("known set"),
-                }
-            })
-            .is_some()
+        Some("alternative".into()),
+        "false keeps the system configuration, here at a location that doesn't depend on the Git installation"
     );
 }
 
