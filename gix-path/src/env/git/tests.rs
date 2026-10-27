@@ -948,12 +948,21 @@ mod exe_info {
         Env::new().unset("windir").unset("SystemRoot")
     }
 
+    /// Check that `exe_info()` finds the configuration file that comes with the Git in the test environment.
+    ///
+    /// Git for Windows always comes with configuration for Git to report, while other installations, like a Git
+    /// built from source without a system configuration file, may have none to find.
     fn check_exe_info() {
-        let path = exe_info()
+        let Some(path) = exe_info()
             .map(crate::from_bstring)
             .transpose()
             .expect("Git reports a representable configuration path")
-            .expect("It is present in the test environment (nonempty config)");
+        else {
+            if cfg!(windows) {
+                panic!("Git for Windows always reports its configuration");
+            }
+            return;
+        };
 
         assert!(path.is_absolute(), "Git reports an absolute installation path");
         assert!(

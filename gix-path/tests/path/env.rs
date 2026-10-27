@@ -38,11 +38,16 @@ fn shell_unix_path() {
 
 #[test]
 fn installation_config() {
-    assert_ne!(
-        gix_path::env::installation_config().map(|p| p.components().count()),
-        gix_path::env::installation_config_prefix().map(|p| p.components().count()),
-        "the prefix is a bit shorter than the installation config path itself"
-    );
+    let config = gix_path::env::installation_config();
+    match (config, gix_path::env::installation_config_prefix()) {
+        (Some(config), Some(prefix)) => assert!(
+            config.starts_with(prefix) && config != prefix,
+            "the prefix is the directory that contains the installation config file"
+        ),
+        // A Git built from source may have no installation configuration, but Git for Windows always has one.
+        (None, None) if !cfg!(windows) => {}
+        (config, prefix) => panic!("config and prefix exist together, always on Windows: {config:?}, {prefix:?}"),
+    }
 }
 
 #[test]
