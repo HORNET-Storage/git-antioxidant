@@ -1361,6 +1361,8 @@ mod tests {
 
     #[test]
     fn creation_reuses_paths_and_claimed_branches_and_inventory_order_is_stable() -> gix_testtools::Result {
+        // `temp` owns the fixture's directory; only the Unix part at the end reads it.
+        #[cfg_attr(not(unix), allow(unused_variables))]
         let (temp, repository) = fixture()?;
         for branch in ["zeta", "topic", "alpha", "gone"] {
             create_branch(&repository, branch)?;
