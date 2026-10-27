@@ -219,6 +219,8 @@ fn a_path_resolved_selected_git_does_not_override_path() {
 }
 
 #[test]
+// It resolves a relative path against the current directory, which serial tests change.
+#[serial_test::serial]
 fn configure_command_overrides_xdg_config_home() -> TestResult {
     let current_dir = env::current_dir()?;
     let temp = tempfile::tempdir_in(&current_dir)?;
