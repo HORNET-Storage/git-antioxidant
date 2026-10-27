@@ -1,6 +1,9 @@
 //! Verifies that the published `gix-imara-diff` package has explicit provenance metadata for every
 //! packaged file, and that files tracked as upstream or modified still match the
 //! `UPSTREAM-PROVENANCE.tsv` manifest.
+// The checks hash files as they are checked out, and checkouts on Windows commonly convert line endings
+// (`core.autocrlf`), which would make unchanged files look modified.
+#![cfg(unix)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -33,7 +36,6 @@ struct Entry {
 ///   they were changed, along with the upstream retrieval command
 /// - generated and local-only files do not claim an upstream blob or retrieval command
 #[test]
-#[cfg(unix)]
 fn packaged_files_have_matching_provenance_and_modified_files_have_notices() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir

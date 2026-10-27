@@ -282,12 +282,13 @@ fn renames_by_identity() -> TestResult {
                 .collect();
 
             assert_eq!(actual, expected, "{assert_msg}");
-            #[cfg(not(windows))]
-            assert_eq!(
-                out.expect("present as rewrites are configured").num_similarity_checks,
-                0,
-                "there are no fuzzy checks in if everything was resolved by identity only"
-            );
+            if cfg!(not(windows)) {
+                assert_eq!(
+                    out.expect("present as rewrites are configured").num_similarity_checks,
+                    0,
+                    "there are no fuzzy checks in if everything was resolved by identity only"
+                );
+            }
         }
     }
     Ok(())
@@ -917,8 +918,7 @@ fn realistic_renames_by_identity() -> TestResult {
     ]
     "#);
 
-    #[cfg(not(windows))]
-    {
+    if cfg!(not(windows)) {
         let actual = std::fs::read_to_string(repo_workdir()?.join("baseline.with-renames"))?;
         let expected = r#"commit 0231f5093bd3d760e7ee82984e0453da80e05c87
 Author: author <author@example.com>
@@ -995,8 +995,7 @@ fn realistic_renames_disabled() -> TestResult {
     ]
     "#);
 
-    #[cfg(not(windows))]
-    {
+    if cfg!(not(windows)) {
         let actual = std::fs::read_to_string(repo_workdir()?.join("baseline.no-renames"))?;
         let expected = r#"commit 0231f5093bd3d760e7ee82984e0453da80e05c87
 Author: author <author@example.com>
@@ -1227,8 +1226,7 @@ fn realistic_renames_disabled_2() -> TestResult {
     ]
     "#);
 
-    #[cfg(not(windows))]
-    {
+    if cfg!(not(windows)) {
         let expected = r#"commit d78c63c5ea3149040767e4387e7fc743cda118fd
 Author: author <author@example.com>
 Date:   Sat Jan 1 00:00:00 2000 +0000
@@ -1334,8 +1332,7 @@ fn realistic_renames_disabled_3() -> TestResult {
     ]
     "#);
 
-    #[cfg(not(windows))]
-    {
+    if cfg!(not(windows)) {
         let expected = r#"commit 0cf7a4fe3ad6c49ae7beb394a1c1df7cc5173ce4
 Author: author <author@example.com>
 Date:   Sat Jan 1 00:00:00 2000 +0000
@@ -1411,8 +1408,7 @@ fn realistic_renames_by_identity_3() -> TestResult {
     ]
     "#);
 
-    #[cfg(not(windows))]
-    {
+    if cfg!(not(windows)) {
         let expected = r#"commit 0cf7a4fe3ad6c49ae7beb394a1c1df7cc5173ce4
 Author: author <author@example.com>
 Date:   Sat Jan 1 00:00:00 2000 +0000
@@ -1650,8 +1646,7 @@ fn realistic_renames_2() -> TestResult {
     ]
     "#);
 
-    #[cfg(not(windows))]
-    {
+    if cfg!(not(windows)) {
         let expected = r#"commit d78c63c5ea3149040767e4387e7fc743cda118fd
 Author: author <author@example.com>
 Date:   Sat Jan 1 00:00:00 2000 +0000

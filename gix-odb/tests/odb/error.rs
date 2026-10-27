@@ -1,6 +1,6 @@
 use std::io;
 
-use gix_error::{Class, ClassificationMarker, Error, Message, MetadataValue, classify};
+use gix_error::{Class, ClassificationMarker, Message, MetadataValue, classify};
 use gix_object::{Kind, Write};
 
 #[test]
@@ -973,6 +973,7 @@ fn multi_index_ref_delta_preserves_corrupt_base_lookup() -> gix_testtools::TestR
 #[cfg(unix)]
 fn disappearing_loose_objects_keep_retryable_diagnostics() -> gix_testtools::TestResult {
     let mut diagnostics = Vec::new();
+    use gix_error::Error;
     use std::{os::unix::fs::symlink, sync::atomic::AtomicBool};
 
     let dir = gix_testtools::tempfile::tempdir()?;

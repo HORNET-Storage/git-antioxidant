@@ -184,12 +184,13 @@ fn renames_by_identity() -> TestResult {
                 .collect();
 
             assert_eq!(actual, expected, "{assert_msg}");
-            #[cfg(not(windows))]
-            assert_eq!(
-                out.expect("present as rewrites are configured").num_similarity_checks,
-                0,
-                "there are no fuzzy checks in if everything was resolved by identity only"
-            );
+            if cfg!(not(windows)) {
+                assert_eq!(
+                    out.expect("present as rewrites are configured").num_similarity_checks,
+                    0,
+                    "there are no fuzzy checks in if everything was resolved by identity only"
+                );
+            }
         }
     }
     Ok(())
