@@ -62,7 +62,7 @@ impl Stat {
     /// [`gix_index::entry::stat::Stat::from_fs`] does on Unix, so both code
     /// paths compare the same quantities. `dev`/`ino`/`uid`/`gid` are zeroed
     /// here to match what `from_fs` produces on Windows.
-    pub(crate) fn to_stat(&self) -> gix_index::entry::Stat {
+    pub(crate) fn to_stat(self) -> gix_index::entry::Stat {
         gix_index::entry::Stat {
             mtime: gix_index::entry::stat::Time {
                 secs: self.mtime_secs,
@@ -205,7 +205,7 @@ impl FsCache {
             return entries.as_ref().and_then(|entries| entries.get(filename)).copied();
         }
 
-        let entries = windows::directory_entries(&self.worktree, dir.into());
+        let entries = windows::directory_entries(&self.worktree, dir);
         let stat = entries.as_ref().and_then(|entries| entries.get(filename)).copied();
         self.directories.insert(dir.into(), entries);
         stat

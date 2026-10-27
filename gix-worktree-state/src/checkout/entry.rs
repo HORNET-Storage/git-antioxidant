@@ -286,6 +286,7 @@ pub(crate) fn open_file(
 ) -> std::io::Result<(std::fs::File, ExecutableBitChange)> {
     #[cfg_attr(windows, allow(unused_mut))]
     let mut options = open_options(destination_is_initially_empty, overwrite_existing);
+    #[cfg_attr(windows, allow(unused_variables))]
     let needs_executable_bit = fs_supports_executable_bit && entry_mode == gix_index::entry::Mode::FILE_EXECUTABLE;
     #[cfg(unix)]
     let executable_bit_change = if needs_executable_bit && destination_is_initially_empty {
@@ -385,7 +386,9 @@ fn adjust_mode_executable_bits(mut mode: u32, executable: bool) -> u32 {
     mode
 }
 
+/// How to change the executable bit of a checked-out file. Windows has no executable bit, so it only uses `NoChange`.
 #[derive(Clone, Copy)]
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) enum ExecutableBitChange {
     NoChange,
     Set,

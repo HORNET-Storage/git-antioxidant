@@ -85,6 +85,8 @@ pub(crate) mod function {
             self.physical_parent_steps.is_some()
         }
 
+        // Only Unix checks that discovery stays on one filesystem, which needs the metadata.
+        #[cfg_attr(not(unix), allow(dead_code))]
         pub fn metadata(&mut self) -> Result<&std::fs::Metadata> {
             if self.current_metadata.is_none() {
                 let path = if self.current.as_os_str().is_empty() {
