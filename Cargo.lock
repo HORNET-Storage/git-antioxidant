@@ -2590,6 +2590,7 @@ dependencies = [
  "document-features",
  "fastrand",
  "fs_extra",
+ "gix-command",
  "gix-config",
  "gix-discover",
  "gix-error",

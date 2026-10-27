@@ -37,7 +37,7 @@ fn openpgp() -> gix_testtools::TestResult {
         return Ok(());
     }
     let home = signature::openpgp_home()?;
-    let command_home = signature::path_for_command(home.path()).into_os_string();
+    let command_home = signature::path_for_command("gpg", home.path()).into_os_string();
     let signed = tag(gix_hash::Kind::Sha1).sign(Options {
         format: Format::OpenPgp,
         program: "gpg".into(),
@@ -71,7 +71,7 @@ fn x509() -> gix_testtools::TestResult {
         return Ok(());
     }
     let home = signature::x509_home()?;
-    let command_home = signature::path_for_command(home.path()).into_os_string();
+    let command_home = signature::path_for_command("gpgsm", home.path()).into_os_string();
     let signed = tag(gix_hash::Kind::Sha1).sign(Options {
         format: Format::X509,
         program: "gpgsm".into(),

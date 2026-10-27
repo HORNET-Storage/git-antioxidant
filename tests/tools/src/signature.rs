@@ -25,25 +25,31 @@ pub fn fixture(name: impl AsRef<Path>) -> PathBuf {
         .join(name)
 }
 
-/// Return `path` in a form understood by Unix-derived programs on Windows.
+/// Return `path` in a form understood by `program` as gix runs it.
 ///
-/// Git for Windows commonly provides GnuPG and OpenSSH programs which expect MSYS paths like
-/// `/c/Users/name` instead of native paths like `C:\\Users\\name` or `C:/Users/name`.
-pub fn path_for_command(path: impl AsRef<Path>) -> PathBuf {
+/// GnuPG and OpenSSH programs built for MSYS2, which Git for Windows provides, expect MSYS paths like `/c/Users/name`
+/// instead of native paths like `C:\\Users\\name` or `C:/Users/name`, which other Windows programs expect.
+pub fn path_for_command(program: impl AsRef<OsStr>, path: impl AsRef<Path>) -> PathBuf {
     let path = path.as_ref();
-    #[cfg(windows)]
-    {
+    if is_msys_program(program.as_ref()) {
         PathBuf::from(msys_path(
             path.to_str().expect("signing test fixture paths must be valid UTF-8"),
         ))
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         path.to_owned()
     }
 }
 
-#[cfg(any(windows, test))]
+/// Return whether `program`, as gix finds it, is built for MSYS2, whose runtime library is installed beside it.
+fn is_msys_program(program: &OsStr) -> bool {
+    cfg!(windows)
+        && command(program).is_ok_and(|command| {
+            Path::new(command.get_program())
+                .parent()
+                .is_some_and(|dir| dir.join("msys-2.0.dll").is_file())
+        })
+}
+
 fn msys_path(path: &str) -> String {
     let path = path.replace('\\', "/");
     let bytes = path.as_bytes();
@@ -58,14 +64,21 @@ fn msys_path(path: &str) -> String {
     }
 }
 
-/// Return whether signing `program` can be launched.
+/// Return whether signing `program` can be launched as gix runs it.
 pub fn program_available(program: impl AsRef<OsStr>) -> bool {
-    Command::new(program)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok()
+    command(program).is_ok_and(|mut command| {
+        command
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok()
+    })
+}
+
+/// Prepare `program` to run as gix runs programs, which on Windows looks in Git's program directories before `PATH`.
+fn command(program: impl AsRef<OsStr>) -> Result<Command> {
+    Ok(Command::try_from(gix_command::prepare(program.as_ref()))?)
 }
 
 /// Create an isolated signer home with suitably restrictive permissions.
@@ -106,11 +119,11 @@ pub fn ssh_private_key() -> Result<(crate::tempfile::TempDir, PathBuf)> {
 /// and trust state separate from the user's GnuPG home and removes them with the directory.
 pub fn openpgp_home() -> Result<crate::tempfile::TempDir> {
     let home = isolated_home()?;
-    run(Command::new("gpg")
+    run(command("gpg")?
         .args(["--batch", "--homedir"])
-        .arg(path_for_command(home.path()))
+        .arg(path_for_command("gpg", home.path()))
         .args(["--import"])
-        .arg(path_for_command(fixture("openpgp-secret.asc"))))?;
+        .arg(path_for_command("gpg", fixture("openpgp-secret.asc"))))?;
     Ok(home)
 }
 
@@ -120,7 +133,7 @@ pub fn openpgp_home() -> Result<crate::tempfile::TempDir> {
 /// and trust list separate from the user's GnuPG home and removes them with the directory.
 pub fn x509_home() -> Result<crate::tempfile::TempDir> {
     let home = isolated_home()?;
-    run(Command::new("gpgsm")
+    run(command("gpgsm")?
         .args([
             "--batch",
             "--pinentry-mode",
@@ -129,12 +142,12 @@ pub fn x509_home() -> Result<crate::tempfile::TempDir> {
             "",
             "--homedir",
         ])
-        .arg(path_for_command(home.path()))
+        .arg(path_for_command("gpgsm", home.path()))
         .arg("--import")
-        .arg(path_for_command(fixture("x509-identity.p12"))))?;
-    let keys = Command::new("gpgsm")
+        .arg(path_for_command("gpgsm", fixture("x509-identity.p12"))))?;
+    let keys = command("gpgsm")?
         .args(["--batch", "--homedir"])
-        .arg(path_for_command(home.path()))
+        .arg(path_for_command("gpgsm", home.path()))
         .args(["-K", "--with-colons"])
         .output()?;
     assert!(keys.status.success(), "the imported X.509 key can be listed");
@@ -147,9 +160,9 @@ pub fn x509_home() -> Result<crate::tempfile::TempDir> {
         })
         .expect("gpgsm reports a fingerprint for the imported key");
     std::fs::write(home.path().join("trustlist.txt"), format!("{fingerprint} S relax\n"))?;
-    let _ = Command::new("gpgconf")
+    let _ = command("gpgconf")?
         .args(["--homedir"])
-        .arg(path_for_command(home.path()))
+        .arg(path_for_command("gpgconf", home.path()))
         .args(["--reload", "all"])
         .status();
     Ok(home)
