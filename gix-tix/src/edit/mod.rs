@@ -1,4 +1,4 @@
-use std::{io::Write, process::Command};
+use std::{io::Write, path::Path, process::Command};
 
 use gix::{
     Result,
@@ -117,12 +117,7 @@ pub(crate) fn edit_document_without_terminal(
     document: &[u8],
     filename: &str,
 ) -> Result<Option<Vec<u8>>> {
-    let mut tempfile = gix::tempfile::writable_at(
-        std::env::temp_dir().join(filename),
-        gix::tempfile::ContainingDirectory::Exists,
-        gix::tempfile::AutoRemove::Tempfile,
-    )
-    .or_raise(|| message("could not create commit message file"))?;
+    let mut tempfile = create_document_file(filename).or_raise(|| message("could not create commit message file"))?;
     tempfile
         .write_all(document)
         .or_raise(|| message("could not write commit message file"))?;
@@ -160,10 +155,38 @@ pub(crate) fn edit_document_without_terminal(
     Ok((edited != document).then_some(edited))
 }
 
+/// Create the file `filename` in the temporary directory for the editor to change. If another edit of this process has
+/// a file of that name, or a process with the same ID left one behind, use the first free name with a number after the
+/// stem instead, like `tix-reword-12-1.md`.
+fn create_document_file(filename: &str) -> std::io::Result<gix::tempfile::Handle<gix::tempfile::handle::Writable>> {
+    let directory = std::env::temp_dir();
+    let filename = Path::new(filename);
+    let mut number = 0;
+    loop {
+        let path = if number == 0 {
+            directory.join(filename)
+        } else {
+            let mut name = filename.file_stem().unwrap_or_default().to_owned();
+            name.push(format!("-{number}"));
+            if let Some(extension) = filename.extension() {
+                name.push(".");
+                name.push(extension);
+            }
+            directory.join(name)
+        };
+        match gix::tempfile::writable_at(
+            path,
+            gix::tempfile::ContainingDirectory::Exists,
+            gix::tempfile::AutoRemove::Tempfile,
+        ) {
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && number < 100 => number += 1,
+            result => return result,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     #[cfg(windows)]
@@ -294,6 +317,37 @@ mod tests {
             diagnostic.values["program"],
             editor_path.into(),
             "the missing editor path remains in metadata"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn documents_of_the_same_name_are_edited_in_files_of_their_own() -> gix_testtools::Result {
+        let filename = format!("tix-same-name-{}.md", std::process::id());
+        let taken = std::env::temp_dir().join(&filename);
+        std::fs::write(&taken, "left by a process that ended without removing it\n")?;
+        let edited = edit_document_without_terminal(
+            gix::command::prepare("printf 'edited\\n' >").with_shell(),
+            b"original\n",
+            &filename,
+        );
+        let left = std::fs::read(&taken);
+        std::fs::remove_file(&taken)?;
+
+        assert_eq!(
+            edited?,
+            Some(b"edited\n".to_vec()),
+            "the editor changes a file of its own"
+        );
+        assert_eq!(
+            left?, b"left by a process that ended without removing it\n",
+            "the file that has the name is left alone"
+        );
+        assert!(
+            !std::env::temp_dir()
+                .join(format!("tix-same-name-{}-1.md", std::process::id()))
+                .exists(),
+            "the numbered file is removed after the edit"
         );
         Ok(())
     }
