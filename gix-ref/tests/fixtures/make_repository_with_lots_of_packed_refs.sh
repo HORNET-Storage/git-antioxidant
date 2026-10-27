@@ -8,12 +8,13 @@ git commit -q --allow-empty -m c1
 
 current_commit="$(git rev-parse HEAD)"
 
-for level in $(seq -w 1000); do
-  mkdir -p .git/refs/heads/"$level"
-  for refname in $(seq 150); do
-    echo "$current_commit" > .git/refs/heads/"$level"/$refname
-  done
-done
+# Write the references unsorted in one go, as creating 150,000 loose references takes many minutes on Windows.
+# Git sorts them when reading, and `git pack-refs` below writes them sorted along with the others.
+awk -v commit="$current_commit" 'BEGIN {
+  for (level = 1; level <= 1000; level++)
+    for (refname = 1; refname <= 150; refname++)
+      printf "%s refs/heads/%04d/%d\n", commit, level, refname
+}' > .git/packed-refs
 
 git tag t1
 git tag dt1
