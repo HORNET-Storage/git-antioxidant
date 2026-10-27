@@ -1,5 +1,4 @@
 use gix_testtools::TestResult;
-use std::sync::LazyLock;
 
 #[test]
 #[cfg(any(unix, windows))]
@@ -78,12 +77,6 @@ fn unrepresentable_namespace_is_reported_before_spawning() -> TestResult {
         "the encoding failure remains the I/O error's source"
     );
     Ok(())
-}
-
-fn default_shell() -> &'static str {
-    static SH: LazyLock<std::ffi::OsString> = LazyLock::new(|| gix_path::env::shell_command().get_program().to_owned());
-    SH.to_str()
-        .expect("`prepare` tests must be run where 'sh' path is valid Unicode")
 }
 
 // The basename of the default shell, used as the `command_name` operand
@@ -288,7 +281,11 @@ fn only_unambiguous_shell_assignments_are_applied() -> TestResult {
             "{input:?} is not an assignment prefix"
         );
         assert_eq!(cmd.get_args().collect::<Vec<_>>(), args, "arguments are retained");
-        assert_eq!(cmd.get_envs().count(), 0, "the environment is unchanged");
+        assert_eq!(
+            cmd.get_envs().filter(|(name, _)| *name != "PATH").count(),
+            0,
+            "the environment is unchanged, but for Git's program directories in front of `PATH` on Windows"
+        );
     }
     Ok(())
 }
@@ -369,11 +366,7 @@ fn single_and_multiple_arguments_as_part_of_command_with_shell() -> TestResult {
         std::process::Command::try_from(gix_command::prepare("ls first second third").command_may_be_shell_script())?;
     assert_eq!(
         format!("{cmd:?}"),
-        if cfg!(windows) {
-            quoted(&["ls", "first", "second", "third"])
-        } else {
-            quoted(&[default_shell(), "-c", "ls first second third", SH_BASENAME])
-        },
+        quoted_default_shell(&["-c", "ls first second third", SH_BASENAME]),
         "with shell, this works as it performs word splitting"
     );
     Ok(())
@@ -388,12 +381,8 @@ fn single_and_multiple_arguments_as_part_of_command_with_given_shell() -> TestRe
     )?;
     assert_eq!(
         format!("{cmd:?}"),
-        if cfg!(windows) {
-            quoted(&["ls", "first", "second", "third"])
-        } else {
-            quoted(&["/somepath/to/bash", "-c", "ls first second third", "bash"])
-        },
-        "with shell, this works as it performs word splitting on Windows, but on linux (or without splitting) it uses the given shell"
+        quoted(&["/somepath/to/bash", "-c", "ls first second third", "bash"]),
+        "the given shell performs word splitting"
     );
     Ok(())
 }
@@ -407,13 +396,8 @@ fn single_and_complex_arguments_as_part_of_command_with_shell() -> TestResult {
     )?;
     assert_eq!(
         format!("{cmd:?}"),
-        if cfg!(windows) {
-            quoted(&["ls", "--foo", "a b", "additional"])
-        } else {
-            let sh = default_shell();
-            format!(r#""{sh}" "-c" "ls --foo \"a b\" \"$@\"" "{SH_BASENAME}" "additional""#)
-        },
-        "with shell, this works as it performs word splitting, on windows we can avoid the shell"
+        quoted_default_shell(&["-c", r#"ls --foo \"a b\" \"$@\""#, SH_BASENAME, "additional"]),
+        "with shell, this works as it performs word splitting"
     );
     Ok(())
 }

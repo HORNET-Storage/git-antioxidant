@@ -486,12 +486,12 @@ pub(crate) mod apply {
         }
         "#);
         #[cfg(windows)]
-        insta::assert_debug_snapshot!(gix_testtools::redact_debug_snapshot(&(err), &[(env!("CARGO_BIN_EXE_gix-filter-test-arrow"), "<filter-driver>")]), "smudge and clean failure is translated to observable error for required drivers", @r#"
+        insta::assert_debug_snapshot!(gix_testtools::redact_debug_snapshot(&(err), &[(env!("CARGO_BIN_EXE_gix-filter-test-arrow"), "<filter-driver>"), (gix_path::env::shell().to_str().expect("the shell path is valid Unicode"), "<shell>")]), "smudge and clean failure is translated to observable error for required drivers", @r#"
         Custom {
             kind: Other,
             error: Message {
-                message: "Driver process \"<filter-driver>\" \"smudge\" \"do/fail\" failed",
-                values: {exit_code: I64(101), exit_status: String("exit code: 101"), program: Path("<filter-driver>")},
+                message: "Driver process \"<shell>\" \"--posix\" \"-c\" \"'<filter-driver>' smudge 'do/fail'\" \"sh.exe\" failed",
+                values: {exit_code: I64(101), exit_status: String("exit code: 101"), program: Path("<shell>")},
             },
         }
         "#);

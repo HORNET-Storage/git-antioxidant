@@ -90,18 +90,29 @@ pub struct Prepare {
     pub quote_command: bool,
     /// The name or path to the shell program to use instead of `sh`.
     pub shell_program: Option<OsString>,
-    /// If `true` (default `true` on Windows and `false` everywhere else) we will see if it's safe
-    /// to manually invoke `command` after splitting its arguments as a shell would do.
+    /// When to run `command` without a shell after splitting its arguments by hand, if that can be done safely.
     ///
-    /// Note that outside of Windows, it's generally not advisable as this removes support for
-    /// literal shell scripts with shell-builtins.
+    /// Only effective if `use_shell` is `true` as well. The shell is still used if the command-line contains
+    /// 'scripting' that can't be split by hand.
+    pub manual_argument_splitting: ManualArgumentSplitting,
+}
+
+/// When [`Prepare`] runs a command that may be a shell script without a shell, after splitting its arguments by hand.
+///
+/// A shell runs such commands as Git does, with shell builtins and expansions. Splitting by hand saves starting a
+/// shell, but runs the program directly, so neither builtins nor expansions other than quoting are available.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ManualArgumentSplitting {
+    /// Always use a shell.
+    Never,
+    /// Use the shell, and split arguments by hand only if the default shell can't be started, so commands without
+    /// shell syntax still run.
     ///
-    /// This mimics the behaviour we see with `git` on Windows, which also won't invoke the shell
-    /// there at all.
-    ///
-    /// Only effective if `use_shell` is `true` as well, as the shell will be used as a fallback if
-    /// it's not possible to split arguments as the command-line contains 'scripting'.
-    pub allow_manual_arg_splitting: bool,
+    /// The default shell can only be missing on Windows without Git for Windows, if `PATH` lacks `sh.exe` as well.
+    #[default]
+    IfNoShell,
+    /// Split arguments by hand whenever that can be done safely, even if a shell can be started.
+    Always,
 }
 
 /// Additional information that is relevant to spawned processes, which typically receive
@@ -208,7 +219,10 @@ pub fn extract_interpreter(executable: &Path) -> Option<shebang::Data> {
 /// - `stdout` is captured for consumption by the caller
 /// - `stderr` is inherited to allow the command to provide context to the user
 ///
-/// On Windows, terminal Windows will be suppressed automatically.
+/// On Windows, terminal Windows will be suppressed automatically. The command also receives the
+/// [directories of Git's programs](gix_path::env::git_program_dirs()) in front of its `PATH`, as programs started
+/// by Git do, and a program given by name is looked up there first. Neither applies if `PATH` is set with
+/// [`Prepare::env()`].
 ///
 /// ### Warning
 ///
@@ -227,7 +241,7 @@ pub fn prepare(cmd: impl Into<OsString>) -> Prepare {
         env: Vec::new(),
         use_shell: false,
         quote_command: false,
-        allow_manual_arg_splitting: cfg!(windows),
+        manual_argument_splitting: ManualArgumentSplitting::IfNoShell,
     }
 }
 

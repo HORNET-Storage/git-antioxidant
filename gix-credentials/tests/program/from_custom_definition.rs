@@ -1,17 +1,10 @@
 use gix_credentials::{Program, helper, program::Kind};
 use gix_testtools::TestResult;
-use std::sync::LazyLock;
 
 static GIT: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(|| {
     gix_path::env::exe_invocation()
         .to_str()
         .expect("some `from_custom_definition` tests must be run where 'git' path is valid Unicode")
-});
-
-static SH: LazyLock<&'static str> = LazyLock::new(|| {
-    gix_path::env::shell()
-        .to_str()
-        .expect("some `from_custom_definition` tests must be run where 'sh' path is valid Unicode")
 });
 
 // The basename of the default shell, used as the `command_name` operand after
@@ -122,14 +115,10 @@ fn path_with_args_that_definitely_need_shell() -> TestResult {
     let input = "/abs/name --arg --bar=\"a b\"";
     let prog = Program::from_custom_definition(input)?;
     assert!(matches!(&prog.kind, Kind::ExternalPath{path_and_args} if path_and_args == input));
-    let sh = *SH;
+    let sh = gix_path::env::shell_command();
     assert_eq!(
         format!("{:?}", prog.to_command(&helper::Action::Store("egal".into()))?),
-        if cfg!(windows) {
-            r#""/abs/name" "--arg" "--bar=a b" "store""#.to_owned()
-        } else {
-            format!(r#""{sh}" "-c" "/abs/name --arg --bar=\"a b\" \"$@\"" "{SH_BASENAME}" "store""#)
-        }
+        format!(r#"{sh:?} "-c" "/abs/name --arg --bar=\"a b\" \"$@\"" "{SH_BASENAME}" "store""#)
     );
     Ok(())
 }
@@ -152,15 +141,11 @@ fn path_with_simple_args() -> TestResult {
     let input = "/abs/name a b";
     let prog = Program::from_custom_definition(input)?;
     assert!(matches!(&prog.kind, Kind::ExternalPath{path_and_args} if path_and_args == input));
-    let sh = *SH;
+    let sh = gix_path::env::shell_command();
     assert_eq!(
         format!("{:?}", prog.to_command(&helper::Action::Store("egal".into()))?),
-        if cfg!(windows) {
-            r#""/abs/name" "a" "b" "store""#.to_owned()
-        } else {
-            format!(r#""{sh}" "-c" "/abs/name a b \"$@\"" "{SH_BASENAME}" "store""#)
-        },
-        "a shell is used as there are arguments, and it's generally more flexible, but on windows we split ourselves"
+        format!(r#"{sh:?} "-c" "/abs/name a b \"$@\"" "{SH_BASENAME}" "store""#),
+        "a shell is used as there are arguments, as Git does"
     );
     Ok(())
 }

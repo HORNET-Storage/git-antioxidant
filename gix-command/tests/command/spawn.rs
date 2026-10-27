@@ -74,8 +74,9 @@ mod with_shell {
     #[test]
     fn command_in_path_with_args() -> TestResult {
         // `ls` is occasionaly a builtin, as in busybox ash, but it is usually external.
+        // Git's shell on Windows turns arguments like `/d` into Windows paths, so `attrib` gets a path.
         assert!(
-            gix_command::prepare(if cfg!(unix) { "ls -l" } else { "attrib.exe /d" })
+            gix_command::prepare(if cfg!(unix) { "ls -l" } else { "attrib.exe ." })
                 .command_may_be_shell_script()
                 .spawn()?
                 .wait()?
@@ -84,7 +85,6 @@ mod with_shell {
         Ok(())
     }
 
-    #[cfg(unix)]
     #[test]
     fn shell_builtin_or_command_in_path() -> TestResult {
         let out = gix_command::prepare("echo")
@@ -96,7 +96,6 @@ mod with_shell {
         Ok(())
     }
 
-    #[cfg(unix)]
     #[test]
     fn shell_builtin_or_command_in_path_with_single_extra_arg() -> TestResult {
         let out = gix_command::prepare("printf")
@@ -109,7 +108,6 @@ mod with_shell {
         Ok(())
     }
 
-    #[cfg(unix)]
     #[test]
     fn shell_builtin_or_command_in_path_with_multiple_extra_args() -> TestResult {
         let out = gix_command::prepare("printf")

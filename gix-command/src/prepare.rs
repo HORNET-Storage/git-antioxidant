@@ -8,7 +8,9 @@ use std::{
 use bstr::ByteSlice;
 use gix_error::Result;
 
-use crate::{Context, Prepare, extract_interpreter, is_bare_command, split_paths, win_path_lookup};
+use crate::{
+    Context, ManualArgumentSplitting, Prepare, extract_interpreter, is_bare_command, split_paths, win_path_lookup,
+};
 
 /// Builder
 impl Prepare {
@@ -58,7 +60,7 @@ impl Prepare {
     /// to assure a shell is indeed used, no matter what.
     pub fn with_shell(mut self) -> Self {
         self.use_shell = true;
-        self.allow_manual_arg_splitting = false;
+        self.manual_argument_splitting = ManualArgumentSplitting::Never;
         self
     }
 
@@ -114,22 +116,22 @@ impl Prepare {
     /// split arguments by hand if this can be safely done without a shell.
     ///
     /// This is useful on platforms where spawning processes is slow, or where many processes
-    /// have to be spawned in a row which should be sped up. Manual argument splitting is
-    /// enabled by default on Windows only.
+    /// have to be spawned in a row which should be sped up. By default, arguments are split by
+    /// hand only if no shell can be started, see [`ManualArgumentSplitting::IfNoShell`].
     ///
     /// Note that this does *not* check for the use of possible shell builtins. Commands may
     /// fail or behave differently if they are available as shell builtins and no corresponding
     /// external command exists, or the external command behaves differently.
     /// Leading shell assignment words are applied to the environment when followed by a command.
     pub fn command_may_be_shell_script_allow_manual_argument_splitting(mut self) -> Self {
-        self.allow_manual_arg_splitting = true;
+        self.manual_argument_splitting = ManualArgumentSplitting::Always;
         self.command_may_be_shell_script()
     }
 
     /// Like [`command_may_be_shell_script()`](Self::command_may_be_shell_script()), but don't
     /// allow to bypass the shell even if manual argument splitting can be performed safely.
     pub fn command_may_be_shell_script_disallow_manual_argument_splitting(mut self) -> Self {
-        self.allow_manual_arg_splitting = false;
+        self.manual_argument_splitting = ManualArgumentSplitting::Never;
         self.command_may_be_shell_script()
     }
 
@@ -188,8 +190,7 @@ impl TryFrom<Prepare> for Command {
     fn try_from(mut prep: Prepare) -> Result<Self> {
         let mut inline_env = Vec::new();
         let mut cmd = if prep.use_shell {
-            let split_args = prep
-                .allow_manual_arg_splitting
+            let split_args = may_split_arguments(&prep)
                 .then(|| {
                     let command = gix_path::os_str_into_bstr(&prep.command).ok()?;
                     if command.find_byteset(b"\\|&;<>()$`\n*?[#~%").is_none() {
@@ -215,6 +216,11 @@ impl TryFrom<Prepare> for Command {
                         Some(shell) => Command::new(shell),
                         None => gix_path::env::shell_command(),
                     };
+                    if explicit_path(&prep.env, &[]).is_none()
+                        && let Some(path) = path_with_git_program_dirs()
+                    {
+                        cmd.env("PATH", path);
+                    }
                     // Passed as `command_name` after `-c <script>`; the shell uses it
                     // as `$0`, which prefixes its own diagnostic messages. If the
                     // shell path has no extractable basename — reachable only via
@@ -300,14 +306,82 @@ impl TryFrom<Prepare> for Command {
     }
 }
 
+/// Return whether `prep` may run its command without a shell, if its arguments can be split safely by hand.
+fn may_split_arguments(prep: &Prepare) -> bool {
+    match prep.manual_argument_splitting {
+        ManualArgumentSplitting::Never => false,
+        ManualArgumentSplitting::IfNoShell => prep.shell_program.is_none() && !default_shell_exists(&prep.env),
+        ManualArgumentSplitting::Always => true,
+    }
+}
+
+/// Return whether the [default shell](gix_path::env::shell()) can be found, using the `PATH` of `env` if it sets one.
+///
+/// The default shell is an absolute path unless no Git for Windows installation is found, and then `sh.exe` has to be
+/// in `PATH`.
+fn default_shell_exists(env: &[(OsString, OsString)]) -> bool {
+    let shell = Path::new(gix_path::env::shell());
+    shell.is_absolute()
+        || explicit_path(env, &[])
+            .map(Cow::Borrowed)
+            .or_else(|| std::env::var_os("PATH").map(Cow::Owned))
+            .is_some_and(|joined_paths| win_path_lookup(shell, &joined_paths).is_some())
+}
+
 /// Create a Windows command using Git-compatible `PATH` lookup and shebang dispatch.
 ///
-/// The last `PATH` in `inline_env` overrides the last one in `env`, which overrides the inherited value (of this process).
-/// The selected `PATH` is searched in order. A resolved shebang script is launched through its interpreter, ignoring shebang
-/// arguments. If `PATH` does not resolve a bare command, the missing program remains anchored in its first entry
-/// so Rust's broader Windows lookup cannot find it elsewhere.
+/// The last `PATH` in `inline_env` overrides the last one in `env`. Without either, the inherited `PATH` (of this
+/// process) is used with the [directories of Git's programs](gix_path::env::git_program_dirs()) in front, and the
+/// command receives this `PATH` as well, as programs started by Git do. The selected `PATH` is searched in order.
+/// A resolved shebang script is launched through its interpreter, ignoring shebang arguments. If `PATH` does not
+/// resolve a bare command, the missing program remains anchored in its first entry so Rust's broader Windows lookup
+/// cannot find it elsewhere.
 fn windows_command(command: OsString, env: &[(OsString, OsString)], inline_env: &[(String, OsString)]) -> Command {
-    let explicit_joined_paths = inline_env
+    let explicit_joined_paths = explicit_path(env, inline_env);
+    let git_joined_paths = match explicit_joined_paths {
+        Some(_) => None,
+        None => path_with_git_program_dirs(),
+    };
+    let joined_paths = explicit_joined_paths
+        .or(git_joined_paths.as_deref())
+        .map(Cow::Borrowed)
+        .or_else(|| std::env::var_os("PATH").map(Cow::Owned));
+    let looked_up = joined_paths
+        .as_deref()
+        .and_then(|joined_paths| win_path_lookup(command.as_ref(), joined_paths));
+    let mut cmd = match looked_up {
+        // Use the manually resolved path.
+        Some(program) => program_command(&program),
+        // A bare PATH miss must neither probe a worktree file nor use Rust's broader Windows search.
+        None if is_bare_command(Path::new(&command)) => Command::new(prevent_further_path_lookup(
+            command.as_ref(),
+            joined_paths.as_deref().unwrap_or_else(|| OsStr::new("")),
+        )),
+        None => program_command(command.as_ref()),
+    };
+    if let Some(joined_paths) = &git_joined_paths {
+        cmd.env("PATH", joined_paths);
+    }
+    cmd
+}
+
+/// Create a command to run `program`, through its interpreter if it's a script with a shebang.
+fn program_command(program: &Path) -> Command {
+    match extract_interpreter(program) {
+        Some(shebang) => {
+            let mut cmd = Command::new(shebang.interpreter);
+            // Git for Windows ignores shebang arguments and passes only the script path.
+            cmd.arg(program);
+            cmd
+        }
+        None => Command::new(program),
+    }
+}
+
+/// Return the `PATH` that the last assignment in `inline_env` sets, or else the last one in `env`, matching the name
+/// without regard to case as Windows does.
+fn explicit_path<'a>(env: &'a [(OsString, OsString)], inline_env: &'a [(String, OsString)]) -> Option<&'a OsStr> {
+    inline_env
         .iter()
         .rev()
         .find(|(name, _)| name.eq_ignore_ascii_case("PATH"))
@@ -315,35 +389,25 @@ fn windows_command(command: OsString, env: &[(OsString, OsString)], inline_env: 
         .or_else(|| {
             env.iter()
                 .rev()
-                .find(|(name, _)| name.to_str().is_some_and(|name| name.eq_ignore_ascii_case("PATH")))
+                .find(|(name, _)| name.eq_ignore_ascii_case("PATH"))
                 .map(|(_, value)| value.as_os_str())
-        });
-    let joined_paths = explicit_joined_paths
-        .map(Cow::Borrowed)
-        .or_else(|| std::env::var_os("PATH").map(Cow::Owned));
-    let looked_up = joined_paths
-        .as_deref()
-        .and_then(|joined_paths| win_path_lookup(command.as_ref(), joined_paths));
-    let program: Cow<'_, Path> = match looked_up {
-        // Use the manually resolved path.
-        Some(program) => Cow::Owned(program),
-        // A bare PATH miss must neither probe a worktree file nor use Rust's broader Windows search.
-        None if is_bare_command(Path::new(&command)) => {
-            return Command::new(prevent_further_path_lookup(
-                command.as_ref(),
-                joined_paths.as_deref().unwrap_or_else(|| OsStr::new("")),
-            ));
-        }
-        None => Cow::Borrowed(command.as_ref()),
-    };
-    if let Some(shebang) = extract_interpreter(program.as_ref()) {
-        let mut cmd = Command::new(shebang.interpreter);
-        // Git for Windows ignores shebang arguments and passes only the script path.
-        cmd.arg(program.as_ref());
-        cmd
-    } else {
-        Command::new(program.as_ref())
+        })
+}
+
+/// Return the inherited `PATH` with the [directories of Git's programs](gix_path::env::git_program_dirs()) in front, as
+/// Git sets it for the programs it starts, or `None` if there are no such directories.
+fn path_with_git_program_dirs() -> Option<OsString> {
+    let dirs = gix_path::env::git_program_dirs();
+    if dirs.is_empty() {
+        return None;
     }
+    let mut joined_paths = std::env::join_paths(dirs).ok()?;
+    if let Some(inherited) = std::env::var_os("PATH").filter(|inherited| !inherited.is_empty()) {
+        // Only Windows has these directories, and it separates `PATH` entries with `;`.
+        joined_paths.push(";");
+        joined_paths.push(inherited);
+    }
+    Some(joined_paths)
 }
 
 /// Represent the failed lookup of `command` in `PATH` without permitting another search.
@@ -372,11 +436,13 @@ mod tests {
         if gix_testtools::run_in_isolated_process()? {
             return Ok(());
         }
+        let git_dirs = gix_path::env::git_program_dirs();
         let root = gix_testtools::tempfile::tempdir()?;
         let bin = root.path().join("bin");
         std::fs::create_dir(&bin)?;
         let _cwd = gix_testtools::set_current_dir(root.path())?;
-        std::fs::write("ssh", b"#!/untrusted/interpreter\n")?;
+        let program = "gix-command-missing-program";
+        std::fs::write(program, b"#!/untrusted/interpreter\n")?;
 
         for path in [Some(bin.to_str().expect("temporary path is UTF-8")), Some(""), None] {
             let environment = gix_testtools::Env::new();
@@ -384,10 +450,11 @@ mod tests {
                 Some(path) => environment.set("PATH", path),
                 None => environment.unset("PATH"),
             };
-            let mut cmd = windows_command("ssh".into(), &[], &[]);
-            let expected = match path {
-                Some(path) if !path.is_empty() => bin.join("ssh"),
-                _ => Path::new("ssh").join(""),
+            let mut cmd = windows_command(program.into(), &[], &[]);
+            let expected = match (git_dirs.first(), path) {
+                (Some(git_dir), _) => git_dir.join(program),
+                (None, Some(path)) if !path.is_empty() => bin.join(program),
+                (None, _) => Path::new(program).join(""),
             };
             assert_eq!(
                 cmd.get_program(),
@@ -399,14 +466,15 @@ mod tests {
         }
 
         let _environment = gix_testtools::Env::new().set("PATH", bin.to_str().expect("temporary path is UTF-8"));
-        let executable = bin.join("ssh.exe");
+        let executable = bin.join(format!("{program}.exe"));
         std::fs::write(&executable, b"executable placeholder")?;
         assert_eq!(
-            windows_command("ssh".into(), &[], &[]).get_program(),
+            windows_command(program.into(), &[], &[]).get_program(),
             executable,
             "the executable selected from PATH is also the one passed to the process launcher"
         );
-        let explicit_script = windows_command("./ssh".into(), &[], &[]);
+        let script = format!("./{program}");
+        let explicit_script = windows_command(script.as_str().into(), &[], &[]);
         assert_eq!(
             explicit_script.get_program(),
             Path::new("/untrusted/interpreter"),
@@ -414,10 +482,61 @@ mod tests {
         );
         assert_eq!(
             explicit_script.get_args().collect::<Vec<_>>(),
-            [OsStr::new("./ssh")],
+            [OsStr::new(&script)],
             "the interpreter receives the explicitly requested script"
         );
         Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(not(windows), ignore = "only Git for Windows has program directories")]
+    fn programs_distributed_with_git_for_windows_come_first() -> gix_testtools::TestResult {
+        if gix_testtools::run_in_isolated_process()? {
+            return Ok(());
+        }
+        let git_dirs = gix_path::env::git_program_dirs();
+        let shell = gix_path::env::shell();
+        let git_sed = git_dirs
+            .iter()
+            .map(|dir| dir.join("sed.exe"))
+            .find(|sed| sed.is_file())
+            .expect("Git for Windows distributes `sed`");
+        let root = gix_testtools::tempfile::tempdir()?;
+        let other_sed = root.path().join("sed.exe");
+        std::fs::write(&other_sed, b"executable placeholder")?;
+        let _environment =
+            gix_testtools::Env::new().set("PATH", root.path().to_str().expect("temporary path is UTF-8"));
+        let mut git_path = std::env::join_paths(git_dirs)?;
+        git_path.push(";");
+        git_path.push(root.path());
+
+        let cmd = windows_command("sed".into(), &[], &[]);
+        assert_eq!(cmd.get_program(), git_sed, "Git's `sed` precedes the one in `PATH`");
+        assert_eq!(
+            path_variable(&cmd),
+            Some(git_path.as_os_str()),
+            "the program finds Git's programs first as well"
+        );
+
+        let cmd = Command::try_from(crate::prepare("sed -n p").command_may_be_shell_script())?;
+        assert_eq!(cmd.get_program(), shell, "a command with arguments runs in Git's shell");
+        assert_eq!(
+            path_variable(&cmd),
+            Some(git_path.as_os_str()),
+            "the shell finds Git's programs first"
+        );
+
+        let cmd = windows_command("sed".into(), &[("PATH".into(), root.path().into())], &[]);
+        assert_eq!(cmd.get_program(), other_sed, "an explicit `PATH` is searched as it is");
+        assert_eq!(path_variable(&cmd), None, "the explicit `PATH` isn't replaced");
+        Ok(())
+    }
+
+    /// Return the value that `cmd` sets for `PATH`.
+    fn path_variable(cmd: &Command) -> Option<&OsStr> {
+        cmd.get_envs()
+            .find(|(name, _)| name.eq_ignore_ascii_case("PATH"))
+            .and_then(|(_, value)| value)
     }
 
     #[test]
