@@ -106,7 +106,7 @@ impl Proxy<'_> {
         let base = self.base().ok();
         let options = self.parent.options.clone().without_repository_environment_overrides();
         let common_dir = self.parent.current_dir().join(self.parent.common_dir());
-        ThreadSafeRepository::open_from_paths(self.git_dir, base, options, Some(common_dir)).map(Into::into)
+        ThreadSafeRepository::open_from_paths(self.git_dir, base, options, Some(common_dir), None).map(Into::into)
     }
 
     /// Like `into_repo_with_possibly_inaccessible_worktree()` but will fail if the `base()` cannot be read or
@@ -120,6 +120,7 @@ impl Proxy<'_> {
         }
         let options = self.parent.options.clone().without_repository_environment_overrides();
         let common_dir = self.parent.current_dir().join(self.parent.common_dir());
-        ThreadSafeRepository::open_from_paths(self.git_dir, base.into(), options, Some(common_dir)).map(Into::into)
+        ThreadSafeRepository::open_from_paths(self.git_dir, base.into(), options, Some(common_dir), None)
+            .map(Into::into)
     }
 }

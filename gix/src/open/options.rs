@@ -20,6 +20,7 @@ impl Default for Options {
             system_config_path: None,
             use_repository_local_environment: true,
             current_dir: None,
+            safe_directory: None,
         }
     }
 }
@@ -130,7 +131,11 @@ impl Options {
     /// If true, default false, and if the repository's trust level is not `Full`
     /// (see [`with()`][Self::with()] for more), then the open operation will fail.
     ///
-    /// Use this to mimic `git`s way of handling untrusted repositories. Note that `gitoxide` solves
+    /// Use this to mimic `git`s way of handling untrusted repositories, which are repositories that aren't owned by
+    /// the current user and aren't allowed by `safe.directory` either. The error then contains a
+    /// [`DubiousOwnership`](crate::open::DubiousOwnership) that names the directory to add to `safe.directory`.
+    ///
+    /// Note that `gitoxide` solves
     /// this by not using configuration from untrusted sources and by generally being secured against
     /// doctored input files which at worst could cause out-of-memory at the time of writing.
     pub fn bail_if_untrusted(mut self, toggle: bool) -> Self {
@@ -207,6 +212,7 @@ impl gix_sec::trust::DefaultForLevel for Options {
                 system_config_path: None,
                 use_repository_local_environment: true,
                 current_dir: None,
+                safe_directory: None,
             },
             gix_sec::Trust::Reduced => Options {
                 object_store_slots: gix_odb::store::init::Slots::Given(32), // limit resource usage
@@ -223,6 +229,7 @@ impl gix_sec::trust::DefaultForLevel for Options {
                 system_config_path: None,
                 use_repository_local_environment: true,
                 current_dir: None,
+                safe_directory: None,
             },
         }
     }

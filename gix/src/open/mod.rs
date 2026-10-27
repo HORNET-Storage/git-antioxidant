@@ -48,11 +48,17 @@ pub struct Options {
     /// Internal to pass an already obtained CWD on to where it may also be used.
     /// This avoids the CWD being queried more than once per repo.
     pub(crate) current_dir: Option<PathBuf>,
+    /// The directory that was compared with `safe.directory` values when a repository was opened with these options,
+    /// so opening the same repository again with them, like [`Repository::reload()`](crate::Repository::reload())
+    /// does, compares the same directory. It's ignored when opening any other repository with these options.
+    pub(crate) safe_directory: Option<Box<safe_directory::Compared>>,
 }
 
 mod options;
 pub mod permissions;
 mod repository;
+pub(crate) mod safe_directory;
+pub use safe_directory::DubiousOwnership;
 
 #[cfg(test)]
 mod tests {
@@ -61,7 +67,7 @@ mod tests {
     #[test]
     fn size_of_options() {
         let actual = std::mem::size_of::<Options>();
-        let limit = 160;
+        let limit = 168;
         assert!(
             actual <= limit,
             "{actual} <= {limit}: size shouldn't change without us knowing (on windows, it's bigger)"

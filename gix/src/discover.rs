@@ -1,6 +1,6 @@
-use std::path::Path;
+use std::{borrow::Cow, path::Path};
 
-use gix_error::{ResultExt, message};
+use gix_error::{ErrorExt, ResultExt, message};
 
 pub use gix_discover::*;
 
@@ -21,20 +21,68 @@ impl ThreadSafeRepository {
     /// always override it with the determined trust value as per [gix_discover::upwards::Options::trust].
     /// This value, however, can be set to [assume a given trust level](gix_discover::upwards::TrustPolicy::Assume) to let
     /// callers control the trust level without re-determining it.
+    ///
+    /// Like in Git, `safe.directory` decides about repositories that aren't owned by the current user. It's compared with
+    /// the directory in which the `.git` directory or file was found, or with the git directory if discovery started
+    /// within it. Thus, [`Required(Full)`](gix_discover::upwards::TrustPolicy::Required) also finds repositories that
+    /// `safe.directory` allows. Other repositories fail with [`NoTrustedGitRepository`](upwards::Error::NoTrustedGitRepository),
+    /// raised over a [`DubiousOwnership`](crate::open::DubiousOwnership) which names the directory to allow.
     pub fn discover_opts(
         directory: impl AsRef<Path>,
-        options: upwards::Options<'_>,
+        mut options: upwards::Options<'_>,
         trust_map: gix_sec::trust::Mapping<crate::open::Options>,
     ) -> Result<Self> {
         let _span = gix_trace::coarse!("ThreadSafeRepository::discover()");
-        let (path, trust) = upwards_opts(directory.as_ref(), options)?;
+        let directory = directory.as_ref();
+        let policy = options.trust;
+        let requires_full_trust = policy == upwards::TrustPolicy::Required(gix_sec::Trust::Full);
+        if requires_full_trust {
+            // `safe.directory` may still make the repository trusted, which is only known once it's opened.
+            options.trust = upwards::TrustPolicy::Required(gix_sec::Trust::Reduced);
+        }
+        let (path, mut trust) = upwards_opts(directory, options)?;
         let (git_dir, worktree_dir) = path.into_repository_and_work_tree_directories();
-        let mut options = trust_map.into_value_by_level(trust);
-        options.git_dir_trust = trust.into();
         // Note that we will adjust the `current_dir` later so it matches the value of `core.precomposeUnicode`.
-        options.current_dir =
-            Some(gix_fs::current_dir(false).or_raise(|| message("Could not obtain the current working directory"))?);
-        Self::open_from_paths(git_dir, worktree_dir, options, None)
+        let current_dir =
+            gix_fs::current_dir(false).or_raise(|| message("Could not obtain the current working directory"))?;
+        // Like Git, consider nothing owned by the current user if `GIT_TEST_ASSUME_DIFFERENT_OWNER` is set.
+        if matches!(policy, upwards::TrustPolicy::Required(_))
+            && crate::open::safe_directory::assume_different_owner(&trust_map.by_level(trust).permissions.env)?
+        {
+            trust = gix_sec::Trust::Reduced;
+        }
+        let safe_directory_path = crate::open::safe_directory::discovered_directory(
+            directory,
+            &git_dir,
+            worktree_dir.as_deref(),
+            &current_dir,
+        );
+        let mut open_options = trust_map.into_value_by_level(if requires_full_trust {
+            gix_sec::Trust::Full
+        } else {
+            trust
+        });
+        let bail_if_untrusted = open_options.bail_if_untrusted;
+        open_options.bail_if_untrusted |= requires_full_trust;
+        open_options.git_dir_trust = trust.into();
+        open_options.current_dir = Some(current_dir.clone());
+        let candidate = git_dir.clone();
+        match Self::open_from_paths(git_dir, worktree_dir, open_options, None, Some(safe_directory_path)) {
+            Ok(mut repo) => {
+                repo.linked_worktree_options.bail_if_untrusted = bail_if_untrusted;
+                Ok(repo)
+            }
+            Err(err) if requires_full_trust && err.downcast_any_ref::<crate::open::DubiousOwnership>().is_some() => {
+                Err(err.and_raise(upwards::Error::NoTrustedGitRepository {
+                    path: gix_path::normalize(directory.into(), &current_dir)
+                        .map_or_else(|| directory.to_owned(), Cow::into_owned),
+                    candidate,
+                    required: gix_sec::Trust::Full,
+                    trust: gix_sec::Trust::Reduced,
+                }))
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Try to open a git repository directly from the environment.

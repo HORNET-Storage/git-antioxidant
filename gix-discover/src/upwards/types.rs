@@ -93,6 +93,10 @@ pub enum TrustPolicy {
     /// which does not retain the original gitfile. The given level is only an acceptance threshold, not the
     /// returned value: `Required(Reduced)` can return `Full` when all checked paths are owned by the current user.
     /// If the minimum falls below the threshold, discovery fails with [`Error::NoTrustedGitRepository`].
+    ///
+    /// As this crate reads no configuration, only ownership counts, and `safe.directory` is ignored. Git, however,
+    /// also trusts repositories that `safe.directory` allows. To get its behavior, discover with `Required(Reduced)` and
+    /// apply `safe.directory` when opening the repository, which is what `gix` does, also for `Required(Full)`.
     Required(gix_sec::Trust),
     /// Return the given trust level unchanged, without computing trust from ownership.
     ///
@@ -114,6 +118,7 @@ pub struct Options<'a> {
     ///
     /// This defaults to [`Required(Reduced)`][TrustPolicy::Required] as our default settings are geared towards avoiding abuse.
     /// Set it to `Required(Full)` to only see repositories that [are owned by the current user][gix_sec::Trust::from_path_ownership()],
+    /// without considering `safe.directory` (see [`TrustPolicy::Required`]),
     /// or [`TrustPolicy::Assume`] to skip trust computation and return the given trust level.
     pub trust: TrustPolicy,
     /// When discovering a repository, ignore any repositories that are located in these directories or any of their parents.

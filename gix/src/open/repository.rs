@@ -4,23 +4,15 @@ use gix_object::bstr::ByteSlice;
 use gix_parallel::OwnShared;
 use gix_path::RelativePath;
 use std::path::Path;
-use std::{
-    borrow::Cow,
-    collections::{BTreeMap, btree_map::Entry},
-    ffi::OsStr,
-    path::PathBuf,
-};
+use std::{borrow::Cow, collections::BTreeMap, ffi::OsStr, path::PathBuf};
 
 use super::Options;
 use crate::{
     Error, Result, ThreadSafeRepository,
     bstr::BString,
     config,
-    config::{
-        cache::interpolate_context,
-        tree::{Core, Key, Safe, gitoxide},
-    },
-    open::Permissions,
+    config::tree::{Core, Key, Safe, gitoxide},
+    open::{Permissions, safe_directory},
 };
 
 fn not_a_repository(source: Error, path: PathBuf) -> Error {
@@ -67,6 +59,10 @@ impl ThreadSafeRepository {
     /// candidate path (`path` or `path/.git`) before resolving a possible gitfile. Ownership checks of the resolved
     /// git directory, common directory, and existing worktree can then only lower this level.
     /// Use [`crate::discover()`] if options such as permissions should also be selected according to ownership.
+    /// If not everything is owned by the current user, `safe.directory` decides like in Git, which compares it with
+    /// `path` if it's opened as git directory, or with the directory containing the `.git` directory or file otherwise.
+    /// If `options` are the [options of a repository](crate::Repository::open_options()) and `path` leads to the same
+    /// git directory, the directory that was compared when it was opened is compared again.
     ///
     /// Opening an absolute Git directory keeps repository paths absolute. The selected index path is always absolute,
     /// even when the Git directory is relative; see [`crate::Repository::index_path()`] for override resolution.
@@ -80,7 +76,7 @@ impl ThreadSafeRepository {
     /// [`open_with_environment_overrides()`][Self::open_with_environment_overrides()].
     pub fn open_opts(path: impl Into<PathBuf>, mut options: Options) -> Result<Self> {
         let _span = gix_trace::coarse!("ThreadSafeRepository::open()");
-        let (path, kind) = {
+        let (path, kind, appended_dot_git) = {
             let path = path.into();
             let looks_like_dot_git_dir = path.ends_with(gix_discover::DOT_GIT_DIR);
             let maybe_git_repo_path = if !options.open_path_as_is && !looks_like_dot_git_dir {
@@ -90,14 +86,14 @@ impl ThreadSafeRepository {
             };
             match maybe_git_repo_path {
                 Some(candidate) => match gix_discover::is_git(&candidate) {
-                    Ok(kind) => (candidate, kind),
+                    Ok(kind) => (candidate, kind, true),
                     Err(_) => match gix_discover::is_git(&path) {
-                        Ok(kind) => (path, kind),
+                        Ok(kind) => (path, kind, false),
                         Err(err) => return Err(not_a_repository(err, path)),
                     },
                 },
                 None => match gix_discover::is_git(&path) {
-                    Ok(kind) => (path, kind),
+                    Ok(kind) => (path, kind, false),
                     Err(err) => {
                         return Err(not_a_repository(err, path));
                     }
@@ -116,16 +112,37 @@ impl ThreadSafeRepository {
         let (git_dir, worktree_dir) = gix_discover::repository::Path::from_dot_git_dir(path.clone(), kind, &cwd)
             .expect("we have sanitized path with is_git()")
             .into_repository_and_work_tree_directories();
+        // Like Git, use the directory in which the `.git` directory or file is located, or the git directory itself,
+        // unless the same repository was opened with these options, which compared the directory it was opened with.
+        let safe_directory_path = match options.safe_directory.take() {
+            Some(compared) if compared.git_dir == cwd.join(&git_dir) => compared.directory,
+            _ => {
+                let directory = if appended_dot_git || path.is_file() {
+                    path.parent()
+                        .filter(|parent| !parent.as_os_str().is_empty())
+                        .unwrap_or(Path::new("."))
+                } else {
+                    &path
+                };
+                cwd.join(directory)
+            }
+        };
         if let Some(candidate_trust) = candidate_trust {
-            options.git_dir_trust = Some(gix_discover::repository::trust(
+            let trust = gix_discover::repository::trust(
                 &git_dir,
                 worktree_dir.as_deref(),
                 &cwd,
                 (&path, Some(candidate_trust)),
-            )?);
+            )?;
+            // Like Git, consider nothing owned by the current user if `GIT_TEST_ASSUME_DIFFERENT_OWNER` is set.
+            options.git_dir_trust = Some(if safe_directory::assume_different_owner(&options.permissions.env)? {
+                gix_sec::Trust::Reduced
+            } else {
+                trust
+            });
         }
         options.current_dir = Some(cwd);
-        ThreadSafeRepository::open_from_paths(git_dir, worktree_dir, options, None)
+        ThreadSafeRepository::open_from_paths(git_dir, worktree_dir, options, None, Some(safe_directory_path))
     }
 
     /// Try to open a git repository in `fallback_directory` (can be worktree or `.git` directory) only if there is no override
@@ -172,10 +189,18 @@ impl ThreadSafeRepository {
 
         let git_dir_trust =
             gix_discover::repository::trust(&git_dir, worktree_dir.as_deref(), &cwd, (&path, Some(candidate_trust)))?;
+        // Like Git, consider nothing owned by the current user if `GIT_TEST_ASSUME_DIFFERENT_OWNER` is set.
+        let git_dir_trust =
+            if safe_directory::assume_different_owner(&trust_map.by_level(git_dir_trust).permissions.env)? {
+                gix_sec::Trust::Reduced
+            } else {
+                git_dir_trust
+            };
         let mut options = trust_map.into_value_by_level(git_dir_trust);
         options.git_dir_trust = git_dir_trust.into();
         options.current_dir = Some(cwd);
-        ThreadSafeRepository::open_from_paths(git_dir, worktree_dir, options, None)
+        // Git doesn't check `GIT_DIR` at all, while we compare the worktree or the git directory with `safe.directory`.
+        ThreadSafeRepository::open_from_paths(git_dir, worktree_dir, options, None, None)
     }
 
     /// Initialize a repository from already resolved repository paths, loading configuration and creating its stores.
@@ -197,11 +222,17 @@ impl ThreadSafeRepository {
     ///
     /// An absolute `git_dir` keeps the resulting repository paths absolute. The selected index path is always made
     /// absolute using `options.current_dir` where needed, even if `git_dir` is relative.
+    ///
+    /// `safe_directory_path` is the directory Git compares with the values of `safe.directory` if the repository isn't
+    /// owned by the current user, which only the caller knows as it depends on how the repository was found. With
+    /// `None`, it's the inferred `worktree_dir`, or `git_dir` without one. It's retained in the options of the
+    /// repository so [`Self::open_opts()`] compares it again when these options are used to open it again.
     pub(crate) fn open_from_paths(
         mut git_dir: PathBuf,
         mut worktree_dir: Option<PathBuf>,
         mut options: Options,
         known_common_dir: Option<PathBuf>,
+        safe_directory_path: Option<PathBuf>,
     ) -> Result<Self> {
         let _span = gix_trace::detail!("open_from_paths()");
         options.open_path_as_is = false;
@@ -216,7 +247,7 @@ impl ThreadSafeRepository {
             permissions:
                 Permissions {
                     ref env,
-                    config,
+                    config: config_permissions,
                     attributes,
                 },
             ref api_config_overrides,
@@ -225,8 +256,11 @@ impl ThreadSafeRepository {
             ref system_config_path,
             use_repository_local_environment,
             ref mut current_dir,
+            safe_directory: ref mut compared_safe_directory,
         } = options;
         let git_dir_trust = git_dir_trust.as_mut().expect("trust must be determined by now");
+        let safe_directory_path =
+            safe_directory_path.unwrap_or_else(|| worktree_dir.clone().unwrap_or_else(|| git_dir.clone()));
 
         let mut common_dir = match known_common_dir {
             Some(common_dir) => Some(common_dir),
@@ -313,7 +347,7 @@ impl ThreadSafeRepository {
             system_config_path.as_deref(),
             *env,
             attributes,
-            config,
+            config_permissions,
             lenient_config,
             api_config_overrides,
             cli_config_overrides,
@@ -391,77 +425,129 @@ impl ThreadSafeRepository {
             worktree_dir = None;
         }
 
-        // TODO: Testing - it's hard to get non-ownership reliably and without root.
-        //       For now tested manually with https://github.com/GitoxideLabs/gitoxide/issues/1912
-        if *git_dir_trust != gix_sec::Trust::Full
-            || worktree_dir
-                .as_deref()
-                .is_some_and(|wd| !gix_sec::identity::is_path_owned_by_current_user(wd).unwrap_or(false))
-        {
-            let safe_dirs: Vec<BString> = config
-                .resolved
-                .strings_filter(Safe::DIRECTORY, &mut Safe::directory_filter)
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
-            let test_dir = worktree_dir.as_deref().unwrap_or(git_dir.as_path());
-            let res = check_safe_directories(
-                test_dir,
+        let safe_directory_path = current_dir.join(&safe_directory_path);
+        // Like Git, let `safe.directory` decide if a repository path isn't owned by the current user. Our callers checked
+        // the paths they found, which leaves a worktree configured with `core.worktree`. A missing worktree can't be used
+        // against us. Git considers nothing owned by the current user if `GIT_TEST_ASSUME_DIFFERENT_OWNER` is set.
+        let assume_different_owner = safe_directory::assume_different_owner(env)?;
+        let worktree_is_owned = worktree_dir.as_deref().is_none_or(|worktree| {
+            !assume_different_owner
+                && gix_sec::identity::path_ownership(&current_dir.join(worktree)).map_or_else(
+                    |err| err.kind() == std::io::ErrorKind::NotFound,
+                    |ownership| ownership.is_current_user(),
+                )
+        });
+        if *git_dir_trust != gix_sec::Trust::Full || !worktree_is_owned {
+            // Git reads `safe.directory` before it knows the repository, so only protected configuration is used,
+            // without conditional includes.
+            let protected_config = config::cache::load(
+                None,
+                &mut Vec::new(),
+                None,
+                None,
                 git_install_dir.as_deref(),
-                current_dir,
                 home.as_deref(),
-                &safe_dirs,
-            );
-            if res.is_ok() {
+                git_installation_config_path.as_deref(),
+                system_config_path.as_deref(),
+                *env,
+                config_permissions,
+                lossy_config,
+                lenient_config,
+                api_config_overrides,
+                cli_config_overrides,
+                use_repository_local_environment,
+            )
+            .or_raise(|| message("Protected configuration could not be loaded to read 'safe.directory'"))?;
+            let safe_dirs = protected_config
+                .strings_filter(Safe::DIRECTORY, &mut Safe::directory_filter)
+                .unwrap_or_default();
+            // Like Git, consider a repository unsafe if its directory can't be resolved.
+            let resolved_directory = gix_path::into_bstr(safe_directory_path.as_path())
+                .ok()
+                .and_then(|path| safe_directory::git_realpath(path.as_ref(), current_dir));
+            let is_safe = resolved_directory.as_ref().map_or(Ok(false), |resolved| {
+                safe_directory::is_safe(resolved.as_ref(), &safe_dirs, current_dir, home.as_deref())
+            });
+            if matches!(is_safe, Ok(true)) {
                 *git_dir_trust = gix_sec::Trust::Full;
             } else if bail_if_untrusted {
-                res?;
+                let gitfile = safe_directory_path.join(gix_discover::DOT_GIT_DIR);
+                let dubious_ownership = safe_directory::DubiousOwnership {
+                    directory: resolved_directory.unwrap_or_else(|| {
+                        gix_path::into_bstr(safe_directory_path.as_path())
+                            .map(Cow::into_owned)
+                            .unwrap_or_default()
+                    }),
+                    // Report paths in the order Git checks them, followed by those only we check.
+                    not_owned: (!assume_different_owner)
+                        .then(|| {
+                            safe_directory::first_not_owned(
+                                [
+                                    gitfile.is_file().then_some(gitfile),
+                                    Some(safe_directory_path.clone()),
+                                    Some(current_dir.join(&git_dir)),
+                                    common_dir.as_deref().map(|dir| current_dir.join(dir)),
+                                    worktree_dir.as_deref().map(|dir| current_dir.join(dir)),
+                                ]
+                                .into_iter()
+                                .flatten(),
+                            )
+                        })
+                        .flatten(),
+                };
+                return Err(match is_safe {
+                    Err(err) => err.and_raise(dubious_ownership),
+                    Ok(_) => dubious_ownership.raise(),
+                });
             } else {
+                #[allow(unused_variables, reason = "Used when tracing is enabled at compile time.")]
+                if let Err(err) = &is_safe {
+                    gix_trace::warn!(
+                        "Considering the repository untrusted as 'safe.directory' could not be read: {err:#}"
+                    );
+                }
                 // This is how the worktree-trust can reduce the git-dir trust.
                 *git_dir_trust = gix_sec::Trust::Reduced;
             }
 
+            // Repository configuration within a trusted repository is trusted. Configuration files elsewhere, or within
+            // an untrusted repository, are only trusted if `safe.directory` allows them.
+            let is_trusted = *git_dir_trust == gix_sec::Trust::Full;
+            let repository_dirs = [
+                Some(safe_directory_path.clone()),
+                Some(current_dir.join(&git_dir)),
+                common_dir.as_deref().map(|dir| current_dir.join(dir)),
+            ];
             let Ok(mut resolved) = gix_parallel::OwnShared::try_unwrap(config.resolved) else {
                 unreachable!("Shared ownership was just established, with one reference")
             };
             let section_ids: Vec<_> = resolved.section_ids().collect();
-            let mut is_valid_by_path = BTreeMap::new();
+            let mut is_safe_by_path = BTreeMap::new();
             for id in section_ids {
                 let Some(mut section) = resolved.section_mut_by_id(id) else {
                     continue;
                 };
-                let section_trusted_by_default = Safe::directory_filter(section.meta());
-                if section_trusted_by_default || section.meta().trust == gix_sec::Trust::Full {
+                if Safe::directory_filter(section.meta()) {
                     continue;
                 }
                 let Some(meta_path) = section.meta().path.as_deref() else {
                     continue;
                 };
-                match is_valid_by_path.entry(meta_path.to_owned()) {
-                    Entry::Occupied(entry) => {
-                        if *entry.get() {
-                            section.set_trust(gix_sec::Trust::Full);
-                        } else {
-                            continue;
-                        }
-                    }
-                    Entry::Vacant(entry) => {
-                        let config_file_is_safe = (meta_path.strip_prefix(test_dir).is_ok()
-                            && *git_dir_trust == gix_sec::Trust::Full)
-                            || check_safe_directories(
-                                meta_path,
-                                git_install_dir.as_deref(),
-                                current_dir,
-                                home.as_deref(),
-                                &safe_dirs,
-                            )
-                            .is_ok();
-
-                        entry.insert(config_file_is_safe);
-                        if config_file_is_safe {
-                            section.set_trust(gix_sec::Trust::Full);
-                        }
-                    }
+                let config_file_is_safe = *is_safe_by_path.entry(meta_path.to_owned()).or_insert_with(|| {
+                    let meta_path = current_dir.join(meta_path);
+                    (is_trusted && repository_dirs.iter().flatten().any(|dir| meta_path.starts_with(dir)))
+                        || gix_path::into_bstr(meta_path.as_path())
+                            .ok()
+                            .and_then(|path| safe_directory::git_realpath(path.as_ref(), current_dir))
+                            .is_some_and(|resolved| {
+                                safe_directory::is_safe(resolved.as_ref(), &safe_dirs, current_dir, home.as_deref())
+                                    .unwrap_or(false)
+                            })
+                });
+                if config_file_is_safe {
+                    section.set_trust(gix_sec::Trust::Full);
+                } else if !is_trusted {
+                    section.set_trust(gix_sec::Trust::Reduced);
                 }
             }
             config.resolved = resolved.into();
@@ -540,6 +626,10 @@ impl ThreadSafeRepository {
         };
         let replacements = replacements.unwrap_or_default();
 
+        *compared_safe_directory = Some(Box::new(safe_directory::Compared {
+            git_dir: current_dir.join(&git_dir),
+            directory: safe_directory_path,
+        }));
         Ok(ThreadSafeRepository {
             objects: OwnShared::new(
                 gix_odb::Store::at_opts(
@@ -672,62 +762,4 @@ fn replacement_objects_refs_prefix(
             .unwrap_or_else(|| gitoxide::Objects::REPLACE_REF_BASE.default_value_or_panic().into())
     };
     Ok(Some(ref_base))
-}
-
-fn check_safe_directories(
-    path_to_test: &std::path::Path,
-    git_install_dir: Option<&std::path::Path>,
-    current_dir: &std::path::Path,
-    home: Option<&std::path::Path>,
-    safe_dirs: &[BString],
-) -> Result<()> {
-    let mut is_safe = false;
-    let realpath_or_original = |path: &std::path::Path| {
-        std::fs::canonicalize(path)
-            .or_else(|_| gix_path::realpath_opts(path, current_dir, gix_path::realpath::MAX_SYMLINKS))
-            .unwrap_or_else(|_| path.to_owned())
-    };
-    let path_to_test = realpath_or_original(path_to_test);
-    for safe_dir in safe_dirs {
-        let safe_dir = safe_dir.as_bstr();
-        if safe_dir == "*" {
-            is_safe = true;
-            continue;
-        }
-        if safe_dir.is_empty() {
-            is_safe = false;
-            continue;
-        }
-        if !is_safe {
-            let safe_dir =
-                match gix_config::Path::from(safe_dir).interpolate(interpolate_context(git_install_dir, home)) {
-                    Ok(path) => path,
-                    Err(_) => gix_path::from_bstr(safe_dir)?.into_owned(),
-                };
-            if !safe_dir.is_absolute() {
-                gix_trace::warn!(
-                    "safe.directory \"{safe_dir}\" not absolute",
-                    safe_dir = safe_dir.display()
-                );
-                continue;
-            }
-            if safe_dir.ends_with("*") {
-                let safe_dir = safe_dir.parent().expect("* is last component");
-                if path_to_test.strip_prefix(realpath_or_original(safe_dir)).is_ok() {
-                    is_safe = true;
-                }
-            } else if realpath_or_original(&safe_dir) == path_to_test {
-                is_safe = true;
-            }
-        }
-    }
-    if is_safe {
-        Ok(())
-    } else {
-        Err(message!(
-            "The git directory at \"{}\" is considered unsafe as it's not owned by the current user.",
-            path_to_test.display()
-        )
-        .permission_denied_error())
-    }
 }

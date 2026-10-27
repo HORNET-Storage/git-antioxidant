@@ -110,3 +110,6 @@
 /make_add_host_sha256.tar
 /make_add_symlinks.tar
 /make_add_symlinks_sha256.tar
+# The `safe.directory` values of these cases are absolute paths of the host, and Git's results are recorded on each host.
+/make_safe_directory_baseline.tar
+/make_safe_directory_baseline_sha256.tar

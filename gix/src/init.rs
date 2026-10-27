@@ -56,7 +56,7 @@ impl ThreadSafeRepository {
         open_options.current_dir = gix_fs::current_dir(false)
             .or_raise(|| message("Could not obtain the current directory"))?
             .into();
-        let repo = ThreadSafeRepository::open_from_paths(git_dir, worktree_dir, open_options, None)?;
+        let repo = ThreadSafeRepository::open_from_paths(git_dir, worktree_dir, open_options, None, None)?;
 
         let branch_name = repo
             .config
