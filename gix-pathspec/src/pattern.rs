@@ -117,7 +117,7 @@ impl Pattern {
             self.nil = true;
             BString::from(".")
         } else {
-            let cleaned = PathBuf::from_iter(path.components().filter(|c| !matches!(c, Component::CurDir)));
+            let cleaned: PathBuf = path.components().filter(|c| *c != Component::CurDir).collect();
             let mut out = gix_path::to_unix_separators_on_windows(gix_path::into_bstr(cleaned)?).into_owned();
             self.prefix_len = {
                 if self.signature.contains(MagicSignature::MUST_BE_DIR) {

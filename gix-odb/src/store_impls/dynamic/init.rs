@@ -138,7 +138,7 @@ impl Store {
             write: Default::default(),
             replacements,
             path: objects_dir,
-            files: Vec::from_iter(std::iter::repeat_with(MutableIndexAndPack::default).take(slot_count)),
+            files: (0..slot_count).map(|_| MutableIndexAndPack::default()).collect(),
             index: ArcSwap::new(Arc::new(SlotMapIndex::default())),
             use_multi_pack_index,
             object_hash,

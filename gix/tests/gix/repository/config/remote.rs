@@ -20,7 +20,7 @@ fn remote_and_branch_names() {
 
     let repo = remote::repo("clone");
     assert_eq!(
-        Vec::from_iter(repo.remote_names().into_iter()),
+        repo.remote_names().into_iter().collect::<Vec<_>>(),
         remote_names(["myself", "origin"])
     );
     assert_eq!(

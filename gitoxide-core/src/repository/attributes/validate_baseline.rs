@@ -208,8 +208,8 @@ pub(crate) mod function {
                         .zip(expected.iter().map(ThreadSafeAssignment::as_ref))
                         .any(|(a, b)| a != b);
                     if fast_path_mismatch {
-                        let actual_set = BTreeSet::from_iter(matches.iter().map(|m| m.assignment));
-                        let expected_set = BTreeSet::from_iter(expected.iter().map(ThreadSafeAssignment::as_ref));
+                        let actual_set: BTreeSet<_> = matches.iter().map(|m| m.assignment).collect();
+                        let expected_set: BTreeSet<_> = expected.iter().map(ThreadSafeAssignment::as_ref).collect();
                         let too_few_or_too_many =
                             !(expected_set.sub(&actual_set).is_empty() && actual_set.sub(&expected_set).is_empty());
                         if too_few_or_too_many {

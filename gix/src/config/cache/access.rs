@@ -539,7 +539,7 @@ pub(crate) fn config_lock_timeout(
     Core::CONFIG_LOCK_TIMEOUT
         .try_into_lock_timeout(config.integer_filter(Core::CONFIG_LOCK_TIMEOUT, &mut filter_config_section))
         .with_leniency(lenient)
-        .map(|value| value.unwrap_or_else(|| Fail::from(Duration::from_millis(1000))))
+        .map(|value| value.unwrap_or_else(|| Fail::from(Duration::from_secs(1))))
 }
 
 fn compression(
