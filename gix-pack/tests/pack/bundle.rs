@@ -404,6 +404,36 @@ mod write_to_directory {
         Ok(())
     }
 
+    /// Completing a thin pack writes its entries into the new pack again, also when the pack is read in a thread of its
+    /// own.
+    #[test]
+    fn eagerly_completing_a_thin_pack_writes_the_pack() -> gix_testtools::TestResult {
+        static SHOULD_INTERRUPT: AtomicBool = AtomicBool::new(false);
+        let pack_data = fs::read(fixture_path(SMALL_PACK))?;
+        let dir = TempDir::new()?;
+        let outcome = pack::Bundle::write_to_directory_eagerly(
+            Box::new(Cursor::new(pack_data.clone())),
+            Some(pack_data.len() as u64),
+            Some(&dir),
+            &mut progress::Discard,
+            &SHOULD_INTERRUPT,
+            Some(gix_object::find::Never),
+            gix_hash::Kind::Sha1,
+            Default::default(),
+        )?;
+        assert_eq!(
+            fs::read(outcome.data_path.expect("objects were written"))?,
+            pack_data,
+            "no base is missing, so the pack holds the entries of the input"
+        );
+        assert_eq!(
+            fs::read(outcome.index_path.expect("an index was written"))?,
+            fs::read(fixture_path(SMALL_PACK_INDEX))?,
+            "the index is Git's"
+        );
+        Ok(())
+    }
+
     #[test]
     fn respects_alloc_limit_bytes() -> gix_testtools::TestResult {
         let pack_file = fs::File::open(fixture_path(SMALL_PACK))?;

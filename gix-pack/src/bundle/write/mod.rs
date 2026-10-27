@@ -202,6 +202,14 @@ impl crate::Bundle {
                     options.compression,
                 );
                 let pack_kind = pack_entries_iter.inner.version();
+                let pack_entries_iter = data::input::EntriesToBytesIter::new(
+                    pack_entries_iter,
+                    LockWriter {
+                        writer: data_file.clone(),
+                    },
+                    pack_kind,
+                    object_hash,
+                );
                 (Box::new(pack_entries_iter), pack_kind)
             }
             None => {
