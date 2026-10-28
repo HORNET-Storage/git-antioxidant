@@ -1,4 +1,6 @@
 mod checkout;
+#[cfg(feature = "reset")]
+mod reset;
 #[cfg(feature = "switch")]
 mod switch;
 

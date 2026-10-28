@@ -82,6 +82,7 @@ cargo check -p gix-status --all-features
 cargo check -p gix-hook --features sha1
 cargo check -p gix-hook --features sha1,run
 cargo check -p gix-worktree-state --features sha1,switch
+cargo check -p gix-worktree-state --features sha1,reset
 cargo check -p gix-parallel --no-default-features
 cargo check -p gix-parallel --all-features
 cargo check -p gix-parallel --features parallel

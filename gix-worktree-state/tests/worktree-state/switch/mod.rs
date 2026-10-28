@@ -22,7 +22,7 @@ use gix_testtools::{TestResult, tempfile::TempDir};
 use gix_worktree::stack::state::attributes::Source;
 use gix_worktree_state::{
     switch,
-    switch::{Context, Options, Outcome, Refusals, Switched},
+    switch::{Changes, Context, Options, Outcome, Refusals},
 };
 use pretty_assertions::assert_eq;
 
@@ -38,7 +38,7 @@ const SYMLINKS_FIXTURE: &str = "make_switch_symlinks.sh";
 
 /// How the stat information of entries is compared with that of their files: by the seconds of their modification
 /// times and by their sizes, as the other information changes when the fixtures are extracted from their archives.
-const STAT: entry::stat::Options = entry::stat::Options {
+pub(crate) const STAT: entry::stat::Options = entry::stat::Options {
     trust_ctime: false,
     check_stat: false,
     use_nsec: false,
@@ -52,14 +52,14 @@ type Record = (BString, entry::Stage, entry::Mode, ObjectId, entry::Flags);
 /// What an index holds: its entries with their stat information, its timestamp and its cache tree.
 type Contents = (Vec<(Record, entry::Stat)>, FileTime, Option<Tree>);
 
-/// A case of a fixture: a repository, and a second one like it that git switched to the branch `new`.
-struct Case {
+/// A case of a fixture: a repository, and a second one like it that git switched or reset to the branch `new`.
+pub(crate) struct Case {
     /// The name of the case, which is also the name of its directory.
-    name: &'static str,
+    pub(crate) name: &'static str,
     /// The worktree of the case's repository, as an absolute path.
-    dir: PathBuf,
-    /// The worktree of the repository that git switched, as an absolute path.
-    git: PathBuf,
+    pub(crate) dir: PathBuf,
+    /// The worktree of the repository that git switched or reset, as an absolute path.
+    pub(crate) git: PathBuf,
 }
 
 impl Case {
@@ -86,7 +86,7 @@ impl Case {
 
     /// A copy of the case, which the test may switch, along with the directory that contains it and has to be kept while
     /// the copy is used. The repository that git switched stays where it is.
-    fn writable_copy(&self) -> TestResult<(Self, TempDir)> {
+    pub(crate) fn writable_copy(&self) -> TestResult<(Self, TempDir)> {
         let tmp = gix_testtools::tempfile::tempdir()?;
         let dir = tmp.path().join(self.name);
         copy_dir(&self.dir, &dir)?;
@@ -99,23 +99,23 @@ impl Case {
     }
 
     /// The `.git` directory of the case's repository.
-    fn git_dir(&self) -> PathBuf {
+    pub(crate) fn git_dir(&self) -> PathBuf {
         self.dir.join(".git")
     }
 
     /// The index of the case's repository.
-    fn index(&self) -> TestResult<State> {
+    pub(crate) fn index(&self) -> TestResult<State> {
         read_index(&self.git_dir().join("index"))
     }
 
     /// The object database of the case's repository, in a handle that the switch can send to other threads.
-    fn objects(&self) -> TestResult<gix_odb::HandleArc> {
+    pub(crate) fn objects(&self) -> TestResult<gix_odb::HandleArc> {
         Ok(gix_odb::at(self.git_dir().join("objects"), gix_testtools::object_hash())?.into_arc()?)
     }
 
     /// The trees that git switched between: the tree of `HEAD`, which is `None` on a branch without commits, and the tree
     /// of `new`.
-    fn trees(&self) -> TestResult<(Option<ObjectId>, ObjectId)> {
+    pub(crate) fn trees(&self) -> TestResult<(Option<ObjectId>, ObjectId)> {
         let tree = |name: &str| -> TestResult<Option<ObjectId>> {
             let path = self.git_dir().join(name);
             if !path.exists() {
@@ -130,7 +130,7 @@ impl Case {
     }
 
     /// The directory in which git ran, as an absolute path.
-    fn current_dir(&self) -> TestResult<PathBuf> {
+    pub(crate) fn current_dir(&self) -> TestResult<PathBuf> {
         let path = self.git_dir().join("cwd");
         Ok(if path.exists() {
             self.dir.join(std::fs::read_to_string(path)?.trim_end())
@@ -140,12 +140,12 @@ impl Case {
     }
 
     /// The index that git left.
-    fn git_index(&self) -> TestResult<State> {
+    pub(crate) fn git_index(&self) -> TestResult<State> {
         read_index(&self.git.join(".git").join("index"))
     }
 
-    /// What git printed if it refused to switch.
-    fn git_error(&self) -> TestResult<Option<String>> {
+    /// What git printed if it refused to switch or reset.
+    pub(crate) fn git_error(&self) -> TestResult<Option<String>> {
         let path = self.git.join(".git").join("error");
         Ok(if path.exists() {
             Some(std::fs::read_to_string(path)?)
@@ -165,7 +165,7 @@ impl Case {
     /// The options of a switch in the case's repository: the capabilities of its file system as its configuration
     /// records them, with Git's defaults for those it doesn't set, and the stat options of the tests. The checkout reads
     /// the attributes of the new index before those of the worktree, as git does.
-    fn options(&self) -> TestResult<Options> {
+    pub(crate) fn options(&self) -> TestResult<Options> {
         let config = self.config()?;
         let flag = |key: &str, default: bool| -> TestResult<bool> { Ok(config.boolean(key)?.unwrap_or(default)) };
         let mut checkout = gix_worktree_state::checkout::Options::new(filter());
@@ -199,7 +199,7 @@ impl Case {
     /// The stack for `index` with which git reads attributes and exclude patterns while it compares the worktree with the
     /// index: those of the `.gitattributes` and `.gitignore` files, which it reads from the worktree first, and those of
     /// `.git/info/attributes` and `.git/info/exclude`.
-    fn stack(&self, index: &State, ignore_case: bool) -> TestResult<gix_worktree::Stack> {
+    pub(crate) fn stack(&self, index: &State, ignore_case: bool) -> TestResult<gix_worktree::Stack> {
         let mut buf = Vec::new();
         let parse = gix_ignore::search::Ignore::default();
         let ignore = gix_worktree::stack::state::Ignore::new(
@@ -290,7 +290,7 @@ fn read_index(path: &Path) -> TestResult<State> {
 }
 
 /// The records of the entries of `index`, in their order.
-fn records(index: &State) -> Vec<Record> {
+pub(crate) fn records(index: &State) -> Vec<Record> {
     let flags = entry::Flags::INTENT_TO_ADD | entry::Flags::SKIP_WORKTREE | entry::Flags::ASSUME_VALID;
     index
         .entries()
@@ -319,7 +319,7 @@ fn contents(index: &State) -> Contents {
 
 /// The number of paths that were added, modified and removed on the way from `before` to `after`, as the records of their
 /// entries tell.
-fn changes(before: &State, after: &State) -> (usize, usize, usize) {
+pub(crate) fn changes(before: &State, after: &State) -> (usize, usize, usize) {
     let by_path = |index: &State| {
         let mut paths = BTreeMap::<BString, Vec<Record>>::new();
         for record in records(index) {
@@ -339,7 +339,7 @@ fn changes(before: &State, after: &State) -> (usize, usize, usize) {
 
 /// What a path of a worktree holds.
 #[derive(Debug, PartialEq, Eq)]
-enum Item {
+pub(crate) enum Item {
     /// A file, with its content and whether it is executable.
     File(BString, bool),
     /// A symbolic link, with its target.
@@ -353,7 +353,7 @@ enum Item {
 }
 
 /// What the worktree at `dir` holds outside of its own `.git` directory, by path.
-fn worktree(dir: &Path) -> TestResult<BTreeMap<BString, Item>> {
+pub(crate) fn worktree(dir: &Path) -> TestResult<BTreeMap<BString, Item>> {
     let mut items = BTreeMap::new();
     list_directory(dir, Path::new(""), &mut items)?;
     Ok(items)
@@ -390,14 +390,14 @@ fn list_directory(root: &Path, rela_dir: &Path, items: &mut BTreeMap<BString, It
 }
 
 /// What the index and the worktree of a case hold, to assert that a call that changes nothing leaves them as they were.
-struct Snapshot {
+pub(crate) struct Snapshot {
     index: Contents,
     worktree: BTreeMap<BString, Item>,
 }
 
 impl Snapshot {
     /// What `index` and the worktree of `case` hold.
-    fn take(case: &Case, index: &State) -> TestResult<Self> {
+    pub(crate) fn take(case: &Case, index: &State) -> TestResult<Self> {
         Ok(Snapshot {
             index: contents(index),
             worktree: worktree(&case.dir)?,
@@ -405,7 +405,7 @@ impl Snapshot {
     }
 
     /// Assert that `index` and the worktree of `case` hold what they held when the snapshot was taken.
-    fn assert_unchanged(&self, case: &Case, index: &State) -> TestResult {
+    pub(crate) fn assert_unchanged(&self, case: &Case, index: &State) -> TestResult {
         let name = case.name;
         assert_eq!(contents(index), self.index, "{name}: the index is left as it was");
         assert_eq!(
@@ -418,7 +418,7 @@ impl Snapshot {
 }
 
 /// What a switch did if it happened, or the test fails.
-fn switched(outcome: Outcome) -> TestResult<Switched> {
+fn switched(outcome: Outcome) -> TestResult<Changes> {
     match outcome {
         Outcome::Switched(switched) => Ok(switched),
         Outcome::Refused(refusals) => Err(format!("the switch is refused: {refusals:?}").into()),
@@ -570,7 +570,7 @@ impl Refused {
 }
 
 /// The path that `line` quotes between `before` and `after`, if it is that sentence.
-fn quoted<'a>(line: &'a str, before: &str, after: &str) -> Option<&'a str> {
+pub(crate) fn quoted<'a>(line: &'a str, before: &str, after: &str) -> Option<&'a str> {
     line.strip_prefix(before)?.strip_suffix(after)
 }
 
@@ -616,7 +616,7 @@ fn assert_matches_git(case: &Case, unremoved: &[&str]) -> TestResult<Outcome> {
 
 /// Assert that `index`, which the switch of `case` from `before` left with the outcome `switched`, and the worktree of
 /// `case` hold what git left, that the outcome counts the entries that changed and that all files were checked out.
-fn assert_switched_as_git(case: &Case, before: &State, index: &State, switched: &Switched) -> TestResult {
+fn assert_switched_as_git(case: &Case, before: &State, index: &State, switched: &Changes) -> TestResult {
     let name = case.name;
     let git = case.git_index()?;
     assert_eq!(
@@ -645,7 +645,7 @@ fn assert_switched_as_git(case: &Case, before: &State, index: &State, switched: 
 }
 
 /// Assert that wherever the cache tree of `index`, an index of `case`, is valid, it names the trees that its entries make.
-fn assert_cache_tree_is_valid(case: &Case, index: &State) -> TestResult {
+pub(crate) fn assert_cache_tree_is_valid(case: &Case, index: &State) -> TestResult {
     let trees = gix_odb::memory::Proxy::new(case.objects()?, gix_testtools::object_hash());
     let with_cache_tree = index.write_tree(index.tree(), &trees, Default::default())?;
     let from_entries = index.write_tree(None, &trees, Default::default())?;
@@ -660,7 +660,7 @@ fn assert_cache_tree_is_valid(case: &Case, index: &State) -> TestResult {
 
 /// Assert that the cache tree `ours` is valid wherever the cache tree `git` that git left is valid, with the same tree and
 /// the same number of entries.
-fn assert_cache_tree_covers_git(name: &str, ours: Option<&Tree>, git: Option<&Tree>) {
+pub(crate) fn assert_cache_tree_covers_git(name: &str, ours: Option<&Tree>, git: Option<&Tree>) {
     let Some(git) = git else {
         return;
     };

@@ -1,5 +1,5 @@
-//! Check the paths that the switch changes before anything changes, as Git's two-way merge does, and collect those whose
-//! changes or untracked files the switch would lose.
+//! Check the paths that a switch or a reset changes before anything changes, as Git's two-way and one-way merges do, and
+//! collect those whose changes or untracked files would be lost.
 
 use std::{
     fs::Metadata,
@@ -24,7 +24,7 @@ use crate::switch::{
     Options, Refusals,
     function::check_interrupt,
     path::{self, LeadingPath, LeadingPaths},
-    plan::{Action, Plan},
+    plan::{Action, Change as PlannedChange, Plan, checked_out},
 };
 
 /// What the checks need.
@@ -42,6 +42,8 @@ pub(crate) struct Checker<'a, O> {
     /// The current working directory relative to the worktree, if it is in the worktree.
     pub(crate) cwd: Option<&'a BStr>,
     pub(crate) should_interrupt: &'a AtomicBool,
+    /// The name of the operation, which an interruption names.
+    pub(crate) operation: &'static str,
     pub(crate) options: &'a Options,
 }
 
@@ -54,7 +56,7 @@ where
         let mut leading = LeadingPaths::new(self.worktree);
         let mut compared = Comparison::new(self.index);
         for (position, (change, action)) in plan.changes.iter().zip(&plan.actions).enumerate() {
-            check_interrupt(self.should_interrupt)?;
+            check_interrupt(self.should_interrupt, self.operation)?;
             let rela_path = change.path.as_bstr();
             match *action {
                 Action::Keep => {}
@@ -77,9 +79,51 @@ where
                 }
                 Action::Add(new) => self.check_absent(&mut leading, plan, rela_path, new.mode, true, refusals)?,
                 Action::Absent(old) => self.check_absent(&mut leading, plan, rela_path, old.mode, false, refusals)?,
+                Action::Resolve(..) => self.check_resolved(&mut leading, change, refusals)?,
+                // Only a hard reset checks out the files of entries that stay, and it doesn't check them.
+                Action::Restore(_) => {}
             }
         }
         self.compare(compared, plan, refusals)
+    }
+
+    /// Return the positions in the index of the entries that `plan` keeps, other than submodules, whose files changed, are
+    /// gone or have something else in their place, as Git's `oneway_merge()` finds them for a hard reset, which checks
+    /// out their files again.
+    #[cfg_attr(not(feature = "reset"), allow(dead_code))]
+    pub(crate) fn changed_files(&mut self, plan: &Plan) -> Result<Vec<usize>> {
+        let index = self.index;
+        let mut compared = Comparison::new(index);
+        for (entry_index, entry) in index.entries().iter().enumerate() {
+            if plan.is_kept(entry_index) && !entry.mode.is_submodule() {
+                compared.push(entry, entry.path(index), entry_index);
+            }
+        }
+        if compared.positions.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .compare_files(&compared)?
+            .into_iter()
+            .map(|(entry_index, _)| compared.positions[entry_index])
+            .collect())
+    }
+
+    /// Refuse the paths of `plan` at which a hard reset would remove the current working directory. Git refuses the path
+    /// of an entry that is added or removed if it is the current working directory, which is protected anywhere in a
+    /// directory that a checked out file replaces here.
+    #[cfg_attr(not(feature = "reset"), allow(dead_code))]
+    pub(crate) fn check_current_dir(&self, plan: &Plan, refusals: &mut Refusals) {
+        for (change, action) in plan.changes.iter().zip(&plan.actions) {
+            let rela_path = change.path.as_bstr();
+            let refused = match checked_out(change, *action) {
+                Some(new) => !new.mode.is_submodule() && self.is_cwd_in(rela_path),
+                None => matches!(action, Action::Delete(_) | Action::Resolve(..)) && self.is_cwd(rela_path),
+            };
+            if refused {
+                refusals.current_dir.push(rela_path.to_owned());
+            }
+        }
     }
 
     /// Compare the files of the entries in `compared` with them, and refuse the paths whose files changed, as Git's
@@ -88,34 +132,7 @@ where
         if compared.positions.is_empty() {
             return Ok(());
         }
-        let checkout = &self.options.checkout;
-        let mut changed = Changed::default();
-        gix_status::index_as_worktree(
-            &compared.index,
-            self.worktree,
-            &mut changed,
-            FastEq,
-            NoSubmodules,
-            O::clone(self.objects),
-            &mut gix_utils::progress::Discard,
-            index_as_worktree::Context {
-                pathspec: self.pathspec.clone(),
-                stack: self.stack.clone(),
-                filter: checkout.filters.clone(),
-                should_interrupt: self.should_interrupt,
-            },
-            index_as_worktree::Options {
-                fs: checkout.fs,
-                thread_limit: checkout.thread_limit,
-                stat: checkout.stat_options,
-                fscache: self.options.fscache,
-            },
-        )
-        .or_raise(|| message("Could not compare the worktree with the index"))?;
-        check_interrupt(self.should_interrupt)?;
-
-        changed.entries.sort_unstable();
-        for (entry_index, removed) in changed.entries {
+        for (entry_index, removed) in self.compare_files(&compared)? {
             let position = compared.positions[entry_index];
             let rela_path = plan.changes[position].path.as_bstr();
             if !removed {
@@ -144,6 +161,39 @@ where
             refused.push(rela_path.to_owned());
         }
         Ok(())
+    }
+
+    /// Compare the files of the entries in `compared` with them, and return the positions in `compared` of those whose
+    /// files changed, sorted, along with whether they are gone or became directories. Files whose stat information is all
+    /// that changed don't count.
+    fn compare_files(&mut self, compared: &Comparison) -> Result<Vec<(usize, bool)>> {
+        let checkout = &self.options.checkout;
+        let mut changed = Changed::default();
+        gix_status::index_as_worktree(
+            &compared.index,
+            self.worktree,
+            &mut changed,
+            FastEq,
+            NoSubmodules,
+            O::clone(self.objects),
+            &mut gix_utils::progress::Discard,
+            index_as_worktree::Context {
+                pathspec: self.pathspec.clone(),
+                stack: self.stack.clone(),
+                filter: checkout.filters.clone(),
+                should_interrupt: self.should_interrupt,
+            },
+            index_as_worktree::Options {
+                fs: checkout.fs,
+                thread_limit: checkout.thread_limit,
+                stat: checkout.stat_options,
+                fscache: self.options.fscache,
+            },
+        )
+        .or_raise(|| message("Could not compare the worktree with the index"))?;
+        check_interrupt(self.should_interrupt, self.operation)?;
+        changed.entries.sort_unstable();
+        Ok(changed.entries)
     }
 
     /// Check the worktree of the submodule at `rela_path`, whose entry becomes one of `new_mode`. Git leaves the worktree
@@ -197,20 +247,50 @@ where
             }
         } else if !mode.is_submodule() {
             // A directory may be the worktree of a submodule, which Git leaves alone.
-            if added {
-                // The directory is replaced, along with everything in it.
-                if self.has_untracked(rela_path, true)? {
-                    refusals.directories_with_untracked_files.push(rela_path.to_owned());
-                } else if self.is_cwd_in(rela_path) {
-                    refusals.current_dir.push(rela_path.to_owned());
-                }
-            } else if !self.is_excluded(rela_path, mode)? {
-                // The directory stays, but Git refuses it if it has untracked files or is the current working directory.
-                if self.has_untracked(rela_path, false)? {
-                    refusals.directories_with_untracked_files.push(rela_path.to_owned());
-                } else if self.is_cwd(rela_path) {
-                    refusals.current_dir.push(rela_path.to_owned());
-                }
+            self.check_directory(rela_path, mode, added, refusals)?;
+        }
+        Ok(())
+    }
+
+    /// Check the path of a conflict that a reset resolves, whose file is overwritten or removed, as Git's
+    /// `verify_absent_if_directory()` checks it: only a directory at it is refused, if it has untracked files or the
+    /// current working directory. The directory is replaced if the tree has an entry at the path, and stays otherwise.
+    fn check_resolved(
+        &mut self,
+        leading: &mut LeadingPaths<'_>,
+        change: &PlannedChange,
+        refusals: &mut Refusals,
+    ) -> Result<()> {
+        let rela_path = change.path.as_bstr();
+        if leading.check(rela_path)? != LeadingPath::Directories {
+            return Ok(());
+        }
+        let Some(mode) = change.new.or(change.old).map(|side| side.mode) else {
+            return Ok(());
+        };
+        match self.metadata(rela_path)? {
+            Some(metadata) if metadata.is_dir() && !mode.is_submodule() => {
+                self.check_directory(rela_path, mode, change.new.is_some(), refusals)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Check the directory at `rela_path`, at which an item of `mode` is, and which is removed along with everything in it
+    /// if it is `replaced`, or stays otherwise. Git refuses it if it has untracked files or the current working directory,
+    /// and a directory that stays only if the exclude patterns don't ignore it.
+    fn check_directory(&mut self, rela_path: &BStr, mode: Mode, replaced: bool, refusals: &mut Refusals) -> Result<()> {
+        if replaced {
+            if self.has_untracked(rela_path, true)? {
+                refusals.directories_with_untracked_files.push(rela_path.to_owned());
+            } else if self.is_cwd_in(rela_path) {
+                refusals.current_dir.push(rela_path.to_owned());
+            }
+        } else if !self.is_excluded(rela_path, mode)? {
+            if self.has_untracked(rela_path, false)? {
+                refusals.directories_with_untracked_files.push(rela_path.to_owned());
+            } else if self.is_cwd(rela_path) {
+                refusals.current_dir.push(rela_path.to_owned());
             }
         }
         Ok(())
@@ -266,7 +346,7 @@ where
             walk_options(self.options.checkout.fs, for_deletion),
             &mut delegate,
         );
-        check_interrupt(self.should_interrupt)?;
+        check_interrupt(self.should_interrupt, self.operation)?;
         walk.or_raise(|| message!("Could not look for untracked files in '{rela_path}'"))?;
         Ok(delegate.found)
     }
@@ -339,7 +419,8 @@ fn untracked(refusals: &mut Refusals, added: bool) -> &mut Vec<BString> {
 /// The entries whose files are compared with them, in an index of their own.
 struct Comparison {
     index: State,
-    /// The position of the change of each entry of `index`.
+    /// The position that each entry of `index` stands for: that of its change in the plan, or that of the entry in the
+    /// index of the switch or reset.
     positions: Vec<usize>,
 }
 
@@ -353,7 +434,7 @@ impl Comparison {
         }
     }
 
-    /// Compare the file of `entry` at `rela_path`, whose change is at `position`. Entries are pushed in the order of their
+    /// Compare the file of `entry` at `rela_path`, which stands for `position`. Entries are pushed in the order of their
     /// paths.
     fn push(&mut self, entry: &Entry, rela_path: &BStr, position: usize) {
         // Entries that are known to be up to date or assumed to be unchanged are compared nonetheless, as Git compares them

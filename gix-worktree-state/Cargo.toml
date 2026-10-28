@@ -22,6 +22,9 @@ sha256 = ["gix-index/sha256"]
 ## Switch an index and its worktree from one tree to another, as `git read-tree -m -u` does when `git switch` and
 ## `git checkout` change branches. This compares the worktree with the index and looks for untracked files.
 switch = ["dep:gix-diff", "dep:gix-dir", "dep:gix-hash", "dep:gix-pathspec", "dep:gix-status", "dep:filetime"]
+## Reset an index and its worktree to a tree as `git reset` does with `--mixed`, `--hard`, `--merge` and `--keep`, and the
+## entries of the paths of a pathspec as `git reset <tree-ish> -- <pathspec>` does, beside `switch`.
+reset = ["switch"]
 
 [dependencies]
 gix-trace = { version = "^0.3.1", path = "../gix-trace" }
@@ -47,7 +50,7 @@ filetime = { version = "0.2.29", optional = true }
 
 [dev-dependencies]
 insta = "1.46.3"
-gix-worktree-state = { path = ".", features = ["sha1", "sha256", "switch"] }
+gix-worktree-state = { path = ".", features = ["sha1", "sha256", "switch", "reset"] }
 gix-object = { path = "../gix-object" }
 gix-filter = { path = "../gix-filter" }
 gix-index = { path = "../gix-index", features = ["sha1", "sha256"] }
@@ -62,4 +65,4 @@ walkdir = "2.3.2"
 pretty_assertions = "1.4.0"
 
 [package.metadata.docs.rs]
-features = ["sha1", "switch"]
+features = ["sha1", "switch", "reset"]

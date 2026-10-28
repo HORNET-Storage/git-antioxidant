@@ -856,7 +856,14 @@ Make it the best-performing implementation and the most convenient one.
         * [ ] `--merge`
         * [ ] `--recurse-submodules`
         * [ ] sparse checkouts and sparse indices
-    * [ ] reset, restore and stash
+    * [ ] reset an index and its worktree to a tree as `git reset` does, with `reset()` and `reset::mixed()` behind the
+      `reset` feature
+        * [x] `--hard`, `--merge` and `--keep` with git's one-way and two-way merge rules, refusing the paths that git
+          refuses with the sentences of its plumbing messages
+        * [x] `--mixed` and `git reset <tree-ish> -- <pathspec>` for the paths that a pathspec selects
+        * [ ] record the stages of the conflicts that a mixed reset resolves as resolve-undo information
+        * [ ] sparse checkouts and sparse indices
+    * [ ] restore and stash
 * access to per-path information, like `.gitignore` and `.gitattributes` in a manner well suited for efficient lookups
     * [x] _exclude_ information
     * [x] attributes

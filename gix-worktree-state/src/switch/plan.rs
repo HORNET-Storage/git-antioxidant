@@ -1,11 +1,13 @@
 //! Compare the old tree with the new one, and decide what happens to each path that they change, as Git's two-way merge
-//! decides it.
+//! decides it, or compare the index with the tree that a reset makes it hold, as Git's one-way merge decides it.
+
+use std::cmp::Ordering;
 
 use bstr::{BStr, BString, ByteSlice};
 use gix_diff::tree::recorder::Change as Record;
 use gix_error::{Result, ResultExt, bail, message};
 use gix_hash::{ObjectId, oid};
-use gix_index::{State, entry::Mode};
+use gix_index::{Entry, State, entry::Mode};
 use gix_object::{FindExt, tree::EntryMode};
 use gix_worktree::validate::path::component;
 
@@ -39,6 +41,14 @@ pub(crate) enum Action {
     Add(Side),
     /// The path has no entry and keeps having none, as only the old tree has this entry at it.
     Absent(Side),
+    /// The entries at the positions `start..end` of the index are the stages of a conflict, which are removed. The entry
+    /// of the tree that a reset makes the index hold replaces them if there is one, and its file is checked out.
+    /// Otherwise, their file is removed.
+    #[cfg_attr(not(feature = "reset"), allow(dead_code))]
+    Resolve(usize, usize),
+    /// The entry at this position of the index stays, but its file doesn't match it and is checked out again.
+    #[cfg_attr(not(feature = "reset"), allow(dead_code))]
+    Restore(usize),
 }
 
 /// What happens to an entry of the index.
@@ -155,7 +165,114 @@ impl Plan {
     pub(crate) fn checks_out(&self, path: &BStr) -> bool {
         self.changes
             .binary_search_by(|change| change.path.as_bstr().cmp(path))
-            .is_ok_and(|position| matches!(self.actions[position], Action::Add(_) | Action::Update(..)))
+            .is_ok_and(|position| checked_out(&self.changes[position], self.actions[position]).is_some())
+    }
+
+    /// Return `true` if the entry at this position of the index stays as it is.
+    #[cfg_attr(not(feature = "reset"), allow(dead_code))]
+    pub(crate) fn is_kept(&self, entry_index: usize) -> bool {
+        self.marks[entry_index] == Mark::Kept
+    }
+
+    /// Decide what happens to each path at which `index` differs from `target`, which holds the entries of the tree that
+    /// a reset makes the index hold, as Git's `oneway_merge()` decides it: an entry that differs from that of the tree
+    /// becomes it, one that the tree doesn't have is removed, and one that only the tree has is added. The stages of a
+    /// conflict are resolved to the entry of the tree, or removed if the tree has none. Both indices are sorted.
+    #[cfg_attr(not(feature = "reset"), allow(dead_code))]
+    pub(crate) fn one_way(index: &State, target: &State) -> Self {
+        let (entries, targets) = (index.entries(), target.entries());
+        let side = |entry: &Entry| Side {
+            mode: entry.mode,
+            id: entry.id,
+        };
+        let mut plan = Plan {
+            changes: Vec::new(),
+            actions: Vec::new(),
+            marks: vec![Mark::Kept; entries.len()],
+        };
+        let (mut position, mut target_position) = (0, 0);
+        loop {
+            let ordering = match (entries.get(position), targets.get(target_position)) {
+                (Some(entry), Some(new)) => Entry::cmp_filepaths(entry.path(index), new.path(target)),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => break,
+            };
+            if ordering == Ordering::Greater {
+                let new = &targets[target_position];
+                plan.push(new.path(target), None, Some(side(new)), Action::Add(side(new)));
+                target_position += 1;
+                continue;
+            }
+            let entry = &entries[position];
+            let path = entry.path(index);
+            let end = position
+                + entries[position..]
+                    .iter()
+                    .take_while(|other| other.path(index) == path)
+                    .count();
+            let new = (ordering == Ordering::Equal).then(|| side(&targets[target_position]));
+            if new.is_some() {
+                target_position += 1;
+            }
+            if end - position > 1 || entry.stage_raw() != 0 {
+                plan.marks[position..end].fill(Mark::Deleted);
+                plan.push(path, Some(side(entry)), new, Action::Resolve(position, end));
+            } else if let Some(new) = new {
+                if new != side(entry) {
+                    plan.marks[position] = Mark::Updated;
+                    plan.push(path, Some(side(entry)), Some(new), Action::Update(position, new));
+                }
+            } else {
+                plan.marks[position] = Mark::Deleted;
+                plan.push(path, Some(side(entry)), None, Action::Delete(position));
+            }
+            position = end;
+        }
+        plan
+    }
+
+    /// Check out the files of the entries at `positions` of `index` again, which stay but whose files don't match them, as
+    /// Git's `oneway_merge()` does for a hard reset.
+    #[cfg_attr(not(feature = "reset"), allow(dead_code))]
+    pub(crate) fn restore(&mut self, index: &State, positions: Vec<usize>) {
+        if positions.is_empty() {
+            return;
+        }
+        for position in positions {
+            let entry = &index.entries()[position];
+            let side = Side {
+                mode: entry.mode,
+                id: entry.id,
+            };
+            self.push(entry.path(index), Some(side), Some(side), Action::Restore(position));
+        }
+        let mut changes: Vec<_> = std::mem::take(&mut self.changes)
+            .into_iter()
+            .zip(std::mem::take(&mut self.actions))
+            .collect();
+        changes.sort_by(|(a, _), (b, _)| a.path.cmp(&b.path));
+        (self.changes, self.actions) = changes.into_iter().unzip();
+    }
+
+    /// Add the change of `path` from `old` to `new`, and what happens to it.
+    #[cfg_attr(not(feature = "reset"), allow(dead_code))]
+    fn push(&mut self, path: &BStr, old: Option<Side>, new: Option<Side>, action: Action) {
+        self.changes.push(Change {
+            path: path.to_owned(),
+            old,
+            new,
+        });
+        self.actions.push(action);
+    }
+}
+
+/// Return the entry whose file is checked out for `change`, if its `action` checks out one.
+pub(crate) fn checked_out(change: &Change, action: Action) -> Option<Side> {
+    match action {
+        Action::Add(new) | Action::Update(_, new) => Some(new),
+        Action::Resolve(..) | Action::Restore(_) => change.new,
+        Action::Keep | Action::Delete(_) | Action::Absent(_) => None,
     }
 }
 
@@ -260,7 +377,7 @@ fn validate_path(path: &BStr, is_symlink: bool, options: component::Options) -> 
 
 /// Finds objects in the object database it wraps, and the empty tree even if the object database doesn't have it, as Git
 /// finds it.
-struct WithEmptyTree<'a, O>(&'a O);
+pub(crate) struct WithEmptyTree<'a, O>(pub(crate) &'a O);
 
 impl<O> gix_object::Find for WithEmptyTree<'_, O>
 where

@@ -9,3 +9,8 @@ pub use checkout::function::checkout;
 pub mod switch;
 #[cfg(feature = "switch")]
 pub use switch::function::switch;
+
+#[cfg(feature = "reset")]
+pub mod reset;
+#[cfg(feature = "reset")]
+pub use reset::function::reset;

@@ -51,7 +51,8 @@ use std::{path::Path, sync::atomic::AtomicBool};
 
 use bstr::BString;
 
-/// What [`switch()`](crate::switch()) needs to compare the worktree with the index.
+/// What [`switch()`](crate::switch()) needs to compare the worktree with the index, and so does a reset of the index and
+/// the worktree.
 pub struct Context<'a> {
     /// A stack in the [`AttributesAndIgnoreStack`](gix_worktree::stack::State::AttributesAndIgnoreStack) state, as
     /// [`State::for_add()`](gix_worktree::stack::State::for_add()) creates it for the index, for the attributes that the
@@ -67,7 +68,7 @@ pub struct Context<'a> {
     pub should_interrupt: &'a AtomicBool,
 }
 
-/// Options for [`switch()`](crate::switch()).
+/// Options for [`switch()`](crate::switch()), which a reset of the index and the worktree takes as well.
 #[derive(Clone)]
 pub struct Options {
     /// How the files of added and changed entries are checked out. Git reads the attributes of a checkout from the
@@ -89,14 +90,14 @@ pub struct Options {
 #[derive(Debug)]
 pub enum Outcome {
     /// The index and its worktree were switched to the new tree.
-    Switched(Switched),
+    Switched(Changes),
     /// Nothing changed, as the switch would have lost the changes or untracked files of these paths.
     Refused(Refusals),
 }
 
-/// What a switch changed.
+/// What a switch or a reset changed in the index and its worktree.
 #[derive(Debug, Default)]
-pub struct Switched {
+pub struct Changes {
     /// The number of entries that were added.
     pub added: usize,
     /// The number of entries whose object or mode changed.
@@ -122,8 +123,8 @@ pub struct Unremoved {
     pub error: gix_error::Error,
 }
 
-/// The paths that kept [`switch()`](crate::switch()) from changing anything, each list sorted, in the groups of Git's
-/// messages.
+/// The paths that kept [`switch()`](crate::switch()) or a reset from changing anything, each list sorted, in the groups of
+/// Git's messages.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Refusals {
     /// Paths with conflicts, for which Git says that the current index has to be resolved first, and that each of them
@@ -172,7 +173,7 @@ impl Refusals {
     }
 
     /// Sort each list and remove its duplicates.
-    fn finish(mut self) -> Self {
+    pub(crate) fn finish(mut self) -> Self {
         let Refusals {
             unmerged,
             staged_changes,
@@ -198,8 +199,8 @@ impl Refusals {
     }
 }
 
-mod apply;
-mod check;
+pub(crate) mod apply;
+pub(crate) mod check;
 pub(crate) mod function;
-mod path;
-mod plan;
+pub(crate) mod path;
+pub(crate) mod plan;

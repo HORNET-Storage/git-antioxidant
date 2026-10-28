@@ -27,7 +27,7 @@ use crate::switch::{Context, Options, Outcome, Refusals, apply, check, path, pla
 /// Nothing changes if `index` is sparse or has entries that are excluded from a sparse checkout, if the stack of `ctx`
 /// doesn't provide both attributes and exclude patterns, if a tree doesn't use the hash of `index`, can't be read or has an
 /// entry that can't be checked out, or if the switch is interrupted before the worktree changes. Once the worktree changes,
-/// the errors of single files are reported in [`Switched`](super::Switched) instead.
+/// the errors of single files are reported in [`Changes`](super::Changes) instead.
 pub fn switch<O>(
     index: &mut State,
     worktree: &Path,
@@ -36,6 +36,25 @@ pub fn switch<O>(
     objects: O,
     ctx: Context<'_>,
     options: Options,
+) -> Result<Outcome>
+where
+    O: gix_object::Find + gix_object::Exists + Send + Clone,
+{
+    two_way(index, worktree, old_tree, new_tree, objects, ctx, options, OPERATION)
+}
+
+/// Switch `index` and the files of `worktree` from `old_tree` to `new_tree` as [`switch()`] does, as the `operation` that
+/// the error of an interruption names.
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn two_way<O>(
+    index: &mut State,
+    worktree: &Path,
+    old_tree: Option<&oid>,
+    new_tree: &oid,
+    objects: O,
+    ctx: Context<'_>,
+    options: Options,
+    operation: &'static str,
 ) -> Result<Outcome>
 where
     O: gix_object::Find + gix_object::Exists + Send + Clone,
@@ -75,7 +94,7 @@ where
         }));
     }
     let changes = plan::changes(old_tree, new_tree, &objects, options.checkout.validate)?;
-    check_interrupt(should_interrupt)?;
+    check_interrupt(should_interrupt, operation)?;
     let mut refusals = Refusals::default();
     let plan = plan::Plan::new(index, changes, &mut refusals.staged_changes);
     let ignore_case = options.checkout.fs.ignore_case;
@@ -94,17 +113,18 @@ where
             current_dir,
             cwd,
             should_interrupt,
+            operation,
             options: &options,
         }
         .check(&plan, &mut refusals)?;
     }
-    check_interrupt(should_interrupt)?;
+    check_interrupt(should_interrupt, operation)?;
     if !refusals.is_empty() {
         return Ok(Outcome::Refused(refusals.finish()));
     }
 
     let mut result = apply::result_index(index, &plan, &objects, options.checkout.stat_options)?;
-    check_interrupt(should_interrupt)?;
+    check_interrupt(should_interrupt, operation)?;
     let switched = apply::update_worktree(index, &mut result, &plan, worktree, objects, cwd, &options);
     result.set_timestamp(start);
     *index = result;
@@ -123,10 +143,13 @@ fn unmerged_paths(index: &State) -> Vec<BString> {
     paths
 }
 
-/// Fail if `should_interrupt` is set.
-pub(crate) fn check_interrupt(should_interrupt: &AtomicBool) -> Result<()> {
+/// The name of the operation in the error of an interruption.
+const OPERATION: &str = "switch";
+
+/// Fail if `should_interrupt` is set, saying that the `operation` was interrupted.
+pub(crate) fn check_interrupt(should_interrupt: &AtomicBool, operation: &str) -> Result<()> {
     if should_interrupt.load(Ordering::Relaxed) {
-        bail!("The switch was interrupted".cancelled());
+        bail!("The {operation} was interrupted".cancelled());
     }
     Ok(())
 }

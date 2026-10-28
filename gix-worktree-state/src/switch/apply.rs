@@ -13,17 +13,17 @@ use gix_index::{
 use crate::{
     checkout,
     switch::{
-        Options, Switched, Unremoved,
+        Changes, Options, Unremoved,
         path::{self, LeadingPath, LeadingPaths},
-        plan::{Action, Plan},
+        plan::{Action, Plan, checked_out},
     },
 };
 
-/// Return the index that `index` becomes with `plan`: removed entries are gone, changed entries have the object and mode
-/// of the new tree, and added entries are new. The entries that change record a size of 0 until their files are checked
-/// out, and so do the entries that stay if their files may have changed since `index` was written, as its timestamp
-/// becomes the time at which the switch began. The cache tree is repaired as Git repairs it, and the resolve-undo
-/// information is dropped.
+/// Return the index that `index` becomes with `plan`: removed entries and resolved conflicts are gone, changed entries
+/// have the object and mode of the new tree, and added entries and those that resolve conflicts are new. The entries that
+/// change record a size of 0 until their files are checked out, and so do the entries that stay if their files may have
+/// changed since `index` was written, as its timestamp becomes the time at which the switch or reset began. The cache
+/// tree is repaired as Git repairs it, and the resolve-undo information is dropped.
 pub(crate) fn result_index<O>(index: &State, plan: &Plan, objects: &O, stat_options: stat::Options) -> Result<State>
 where
     O: gix_object::Exists,
@@ -41,7 +41,12 @@ where
                 entry.stat = Stat::default();
                 entry.flags = Flags::empty();
             }
-            Action::Keep | Action::Add(_) | Action::Absent(_) => continue,
+            Action::Resolve(start, end) => {
+                for entry in &mut entries[start..end] {
+                    entry.flags.insert(Flags::REMOVE);
+                }
+            }
+            Action::Keep | Action::Add(_) | Action::Absent(_) | Action::Restore(_) => continue,
         }
         invalidate(cache_tree.as_mut(), change.path.as_bstr());
     }
@@ -49,18 +54,43 @@ where
 
     let mut added = false;
     for (change, action) in plan.changes.iter().zip(&plan.actions) {
-        if let Action::Add(new) = *action {
-            invalidate(cache_tree.as_mut(), change.path.as_bstr());
-            result.dangerously_push_entry(Stat::default(), new.id, Flags::empty(), new.mode, change.path.as_bstr());
-            added = true;
-        }
+        let new = match *action {
+            Action::Add(new) => new,
+            Action::Resolve(..) => match change.new {
+                Some(new) => new,
+                None => continue,
+            },
+            Action::Keep | Action::Delete(_) | Action::Update(..) | Action::Absent(_) | Action::Restore(_) => continue,
+        };
+        invalidate(cache_tree.as_mut(), change.path.as_bstr());
+        result.dangerously_push_entry(Stat::default(), new.id, Flags::empty(), new.mode, change.path.as_bstr());
+        added = true;
     }
     if added {
         result.sort_entries();
     }
 
-    let timestamp = result.timestamp();
-    for entry in result.entries_mut() {
+    smudge_racy_entries(&mut result, stat_options);
+    let tree = result.repair_cache_tree(cache_tree.as_ref(), objects)?;
+    result.set_tree(tree);
+    result.remove_resolve_undo();
+    Ok(result)
+}
+
+/// Invalidate the nodes of `cache_tree` along `path`, if there is a cache tree.
+pub(crate) fn invalidate(cache_tree: Option<&mut gix_index::extension::Tree>, path: &BStr) {
+    if let Some(cache_tree) = cache_tree {
+        cache_tree.invalidate_path(path);
+    }
+}
+
+/// Make the entries of `index` record a size of 0 if their files may have changed since `index` was written, as their
+/// modification times aren't older than its timestamp, so that the next comparison reads their files once the timestamp
+/// becomes a later time. Entries that are assumed to be unchanged, those of submodules and those that record a size of 0
+/// already stay as they are.
+pub(crate) fn smudge_racy_entries(index: &mut State, stat_options: stat::Options) {
+    let timestamp = index.timestamp();
+    for entry in index.entries_mut() {
         if !entry.mode.is_submodule()
             && !entry.flags.contains(Flags::ASSUME_VALID)
             && entry.stat.size != 0
@@ -69,21 +99,10 @@ where
             entry.stat.size = 0;
         }
     }
-    let tree = result.repair_cache_tree(cache_tree.as_ref(), objects)?;
-    result.set_tree(tree);
-    result.remove_resolve_undo();
-    Ok(result)
 }
 
-/// Invalidate the nodes of `cache_tree` along `path`, if there is a cache tree.
-fn invalidate(cache_tree: Option<&mut gix_index::extension::Tree>, path: &BStr) {
-    if let Some(cache_tree) = cache_tree {
-        cache_tree.invalidate_path(path);
-    }
-}
-
-/// Remove the files of the entries of `index` that `plan` removes, and check out the files of the added and changed
-/// entries of `result`, which receive the stat information of their new files.
+/// Remove the files of the entries of `index` that `plan` removes, and check out the files of the added, changed and
+/// restored entries of `result`, which receive the stat information of their new files.
 pub(crate) fn update_worktree<O>(
     index: &State,
     result: &mut State,
@@ -92,17 +111,27 @@ pub(crate) fn update_worktree<O>(
     objects: O,
     cwd: Option<&BStr>,
     options: &Options,
-) -> Switched
+) -> Changes
 where
     O: gix_object::Find + Send + Clone,
 {
     let unremoved = remove_files(index, plan, worktree, cwd, options.checkout.fs.ignore_case);
     let (checkout, checkout_error) = check_out(result, plan, worktree, objects, options);
-    let count = |is: fn(&Action) -> bool| plan.actions.iter().filter(|action| is(action)).count();
-    Switched {
-        added: count(|action| matches!(action, Action::Add(_))),
-        modified: count(|action| matches!(action, Action::Update(..))),
-        removed: count(|action| matches!(action, Action::Delete(_))),
+    let (mut added, mut modified, mut removed) = (0, 0, 0);
+    for (change, action) in plan.changes.iter().zip(&plan.actions) {
+        match action {
+            Action::Add(_) => added += 1,
+            Action::Update(..) => modified += 1,
+            Action::Delete(_) => removed += 1,
+            Action::Resolve(..) if change.new.is_some() => modified += 1,
+            Action::Resolve(..) => removed += 1,
+            Action::Keep | Action::Absent(_) | Action::Restore(_) => {}
+        }
+    }
+    Changes {
+        added,
+        modified,
+        removed,
         unremoved,
         checkout,
         checkout_error,
@@ -116,8 +145,10 @@ fn remove_files(index: &State, plan: &Plan, worktree: &Path, cwd: Option<&BStr>,
     let mut leading = LeadingPaths::new(worktree);
     let mut directories = BTreeSet::new();
     for (change, action) in plan.changes.iter().zip(&plan.actions) {
-        let Action::Delete(entry_index) = *action else {
-            continue;
+        let entry_index = match *action {
+            Action::Delete(entry_index) => entry_index,
+            Action::Resolve(start, _) if change.new.is_none() => start,
+            _ => continue,
         };
         let rela_path = change.path.as_bstr();
         let is_submodule = index.entries()[entry_index].mode.is_submodule();
@@ -199,7 +230,8 @@ fn remove_empty_directories(
     }
 }
 
-/// Check out the files of the entries that `plan` adds or changes, and copy their new stat information to `result`.
+/// Check out the files of the entries that `plan` adds, changes or restores, and copy their new stat information to
+/// `result`.
 ///
 /// They are checked out from an index of their own, which also has the `.gitattributes` files of `result` that don't
 /// change, excluded from the checkout, so that the attributes of the checkout come from all of them.
@@ -215,7 +247,7 @@ where
 {
     let mut files = State::new(result.object_hash());
     for (change, action) in plan.changes.iter().zip(&plan.actions) {
-        if let Action::Add(new) | Action::Update(_, new) = *action {
+        if let Some(new) = checked_out(change, *action) {
             files.dangerously_push_entry(Stat::default(), new.id, Flags::empty(), new.mode, change.path.as_bstr());
         }
     }
