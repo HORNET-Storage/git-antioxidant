@@ -450,7 +450,8 @@ Check out the [performance discussion][gix-diff-performance] as well.
     - [ ] rewrite so that the whole logic can be proven to be correct - it's too insane now and probably has way 
           more possible states than are tested, despite best attempts.
 * [x] **commits** - with handling of multiple merge bases by recursive merge-base merge
-* [ ] persist merge-in-progress state compatible with [`MERGE_HEAD`](https://git-scm.com/docs/gitrepository-layout), [`MERGE_MSG`](https://git-scm.com/docs/git-merge) and [`MERGE_MODE`](https://github.com/git/git/blob/ce74208c2fa13943fffa58f168ac27a76d0eb789/path.c#L1585)
+* [x] persist merge-in-progress state compatible with [`MERGE_HEAD`](https://git-scm.com/docs/gitrepository-layout), [`MERGE_MSG`](https://git-scm.com/docs/git-merge) and [`MERGE_MODE`](https://github.com/git/git/blob/ce74208c2fa13943fffa58f168ac27a76d0eb789/path.c#L1585)
+    * [ ] `AUTO_MERGE`, a pseudo-reference that `gix` writes and deletes through `gix-ref`
 * [ ] support merge continuation and abort flows as used by [`git merge --continue`](https://git-scm.com/docs/git-merge) and [`git merge --abort`](https://git-scm.com/docs/git-merge)
 * [x] API documentation
     * [ ] Examples

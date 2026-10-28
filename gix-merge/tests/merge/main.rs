@@ -2,6 +2,7 @@ use gix_hash::ObjectId;
 extern crate core;
 
 mod blob;
+mod state;
 mod tree;
 
 pub use gix_testtools::Result;
