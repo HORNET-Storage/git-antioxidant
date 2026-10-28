@@ -1,4 +1,3 @@
-#Requires -Version 7.3
 param(
     [Parameter(Mandatory = $true)][string]$Executable,
     [Parameter(Mandatory = $true)][string]$TestName,
@@ -17,7 +16,8 @@ $process = Start-Process -FilePath $Executable `
     -WorkingDirectory (Get-Location).Path -WindowStyle Hidden `
     -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
 $limit = [TimeSpan]::FromMinutes(2)
-if (-not $process.WaitForExit($limit)) {
+# Windows PowerShell 5.1 runs on .NET Framework, whose `WaitForExit` takes milliseconds only.
+if (-not $process.WaitForExit([int]$limit.TotalMilliseconds)) {
     Stop-Process -Id $process.Id -Force
     throw "The console editor test did not finish within $($limit.TotalSeconds) seconds."
 }
