@@ -8,6 +8,8 @@ pub use types::{Item, Mapping, Source, SourceRef, match_lhs, match_rhs};
 ///
 pub mod validate;
 
+pub mod match_push;
+
 /// Initialization
 impl<'a> MatchGroup<'a> {
     /// Create a match group from all fetch refspecs in `specs`, ignoring push refspecs.
@@ -31,11 +33,11 @@ impl<'spec> MatchGroup<'spec> {
     /// `items` are expected to be references on the remote, which will be matched and mapped to obtain their local counterparts,
     /// i.e. *left side of refspecs is mapped to their right side*.
     /// *Note that this method is correct only for fetch-specs*, even though it also *works for push-specs*.
+    /// Use [`match_push()`](Self::match_push()) to match push-specs as `git push` does.
     ///
     /// Object IDs are emitted directly without being matched against `items`.
     ///
     /// Note that negative matches are not part of the return value, so they are not observable but will be used to remove mappings.
-    // TODO: figure out how to deal with push-specs, probably when push is being implemented.
     pub fn match_lhs<'item>(
         self,
         mut items: impl Iterator<Item = Item<'item>> + Clone,

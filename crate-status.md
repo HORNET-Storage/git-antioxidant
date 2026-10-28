@@ -642,7 +642,7 @@ Provide a native SSH transport and authentication backend so `gix` users can shi
 * [x] parse
 * [x] matching of references and object names
     * [x] for fetch
-    * [ ] for push
+    * [x] for push
 
 ### gix-command
 * [x] execute commands directly

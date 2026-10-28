@@ -10,3 +10,8 @@
 # than freezing it together with copies of every case repository and template.
 /reverse_baseline.tar
 /reverse_baseline_sha256.tar
+
+# The push baseline captures `git push --dry-run --porcelain <spec>` output and errors, which may also
+# change between git versions.
+/match_push_baseline.tar
+/match_push_baseline_sha256.tar
