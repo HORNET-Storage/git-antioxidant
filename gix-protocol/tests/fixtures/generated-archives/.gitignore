@@ -1,0 +1,3 @@
+# The push fixture records the exchange of `git push` with `git receive-pack`, which may change between Git versions.
+/push.tar
+/push_sha256.tar

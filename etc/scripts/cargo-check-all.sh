@@ -109,6 +109,9 @@ cargo check -p gix-transport --features http-client-reqwest
 cargo check -p gix-protocol --features blocking-client 2>&1 >/dev/null | grep 'Please set either the `sha1` or the `sha256` feature flag'
 cargo check -p gix-protocol --features sha1,blocking-client
 cargo check -p gix-protocol --features sha1,async-client
+cargo check -p gix-protocol --features sha1,push
+cargo check -p gix-protocol --features sha1,blocking-client,push
+cargo check -p gix-protocol --features sha1,async-client,push
 cargo check -p gix --no-default-features --features sha1,async-network-client
 cargo check -p gix --no-default-features --features sha1,async-network-client-async-std
 cargo check -p gix --no-default-features --features sha1,blocking-network-client
