@@ -195,8 +195,18 @@ fn versions_get_the_deltas_of_git() -> TestResult {
     assert_as_git("versions", "default", one_thread())
 }
 
+/// Whether the installed Git stores the case `versions` as the tests with a small window expect: Git before 2.51
+/// writes an object whole that later Git, like gix, stores as a delta. The fixture has no archive to take the packs of
+/// later Git from, as it records those of the installed Git.
+fn git_stores_small_windows_as_expected() -> bool {
+    *gix_testtools::GIT_VERSION >= (2, 51, 0)
+}
+
 #[test]
 fn versions_get_the_deltas_of_git_with_a_window_of_one_object() -> TestResult {
+    if !git_stores_small_windows_as_expected() {
+        return Ok(());
+    }
     assert_as_git(
         "versions",
         "window1",
@@ -209,6 +219,9 @@ fn versions_get_the_deltas_of_git_with_a_window_of_one_object() -> TestResult {
 
 #[test]
 fn versions_get_the_deltas_of_git_with_a_window_memory() -> TestResult {
+    if !git_stores_small_windows_as_expected() {
+        return Ok(());
+    }
     assert_as_git(
         "versions",
         "window-memory",

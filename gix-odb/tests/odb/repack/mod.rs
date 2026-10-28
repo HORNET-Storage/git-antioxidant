@@ -28,6 +28,22 @@ use gix_utils::progress;
 /// The script that makes the cases and records what git does with them.
 const FIXTURE: &str = "make_repack.sh";
 
+/// Whether Git of `version` records the cases of [`FIXTURE`] as the tests expect: Git 2.52 added the
+/// `geometric-repack` task of `git maintenance`, and Git 2.53 made `git repack --geometric` work with promisor packs.
+/// With older Git, the fixture is taken from its archive.
+fn git_records_the_cases(version: (u8, u8, u8)) -> bool {
+    version >= (2, 53, 0)
+}
+
+/// The error if Git is too old to record the cases and the archive of the fixture doesn't match its script.
+const NO_FIXTURE: &str = "Git before 2.53 can't record the cases, and no archive matches the script";
+
+/// The fixture, made by [`FIXTURE`] or taken from its archive, see [`git_records_the_cases()`].
+fn fixture() -> TestResult<PathBuf> {
+    let fixture = gix_testtools::scripted_fixture_read_only_with_git_version(FIXTURE, git_records_the_cases)?;
+    Ok(fixture.ok_or(NO_FIXTURE)?)
+}
+
 /// A copy of a case of the fixture, which the test may change.
 struct Case {
     /// The name of the case, which is also the name of the worktree of its repository.
@@ -37,9 +53,13 @@ struct Case {
 }
 
 impl Case {
-    /// A copy of the case `name`.
+    /// A copy of the case `name` of the fixture, see [`fixture()`].
     fn writable(name: &'static str) -> TestResult<Self> {
-        Self::of(FIXTURE, name)
+        let tmp = gix_testtools::scripted_fixture_writable_with_git_version(FIXTURE, git_records_the_cases)?;
+        Ok(Case {
+            name,
+            tmp: tmp.ok_or(NO_FIXTURE)?,
+        })
     }
 
     /// A copy of the case `name` of the fixture made by the script `fixture`.

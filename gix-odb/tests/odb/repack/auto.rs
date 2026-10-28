@@ -4,11 +4,11 @@
 use gix_odb::repack::{needs_repack, too_many_loose_objects};
 use gix_testtools::TestResult;
 
-use super::FIXTURE;
+use super::fixture;
 
 #[test]
 fn needs_repack_decides_as_git_maintenance_does() -> TestResult {
-    let dir = gix_testtools::scripted_fixture_read_only(FIXTURE)?;
+    let dir = fixture()?;
     let object_hash = gix_testtools::object_hash();
     let mut compared = 0;
     for line in std::fs::read_to_string(dir.join("decisions"))?.lines() {
@@ -35,7 +35,7 @@ fn needs_repack_decides_as_git_maintenance_does() -> TestResult {
 
 #[test]
 fn split_factors_below_2_combine_no_packs() -> TestResult {
-    let dir = gix_testtools::scripted_fixture_read_only(FIXTURE)?;
+    let dir = fixture()?;
     let objects_dir = dir.join("midx-retained").join(".git").join("objects");
     let object_hash = gix_testtools::object_hash();
     assert!(
