@@ -2020,6 +2020,16 @@ dependencies = [
 [[package]]
 name = "gix-hook"
 version = "0.0.0"
+dependencies = [
+ "bstr",
+ "gix-command",
+ "gix-config-value",
+ "gix-error",
+ "gix-hash",
+ "gix-hook",
+ "gix-path",
+ "gix-testtools",
+]
 
 [[package]]
 name = "gix-ignore"

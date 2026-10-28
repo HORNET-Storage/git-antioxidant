@@ -14,4 +14,28 @@ rust-version = "1.88"
 [lib]
 doctest = false
 
+[features]
+## Run hooks, starting their programs through `gix-command`. Without it, hooks are found and invocations prepared,
+## but no program is started.
+run = ["dep:gix-command"]
+## Enable support for the SHA-1 hash by enabling the respective feature in the `gix-hash` crate.
+sha1 = ["gix-hash/sha1"]
+## Enable support for the SHA-256 hash by enabling the respective feature in the `gix-hash` crate.
+sha256 = ["gix-hash/sha256"]
+
 [dependencies]
+gix-command = { version = "^0.12.1", path = "../gix-command", optional = true }
+gix-config-value = { version = "^0.21.1", path = "../gix-config-value" }
+gix-error = { version = "^0.5.2", path = "../gix-error", features = ["bstr"] }
+gix-hash = { version = "^0.28.1", path = "../gix-hash" }
+gix-path = { version = "^0.14.1", path = "../gix-path" }
+
+bstr = { version = "1.12.0", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+gix-hook = { path = ".", features = ["run"] }
+gix-hash = { path = "../gix-hash", features = ["sha1", "sha256"] }
+gix-testtools = { path = "../tests/tools" }
+
+[package.metadata.docs.rs]
+features = ["run", "sha1"]

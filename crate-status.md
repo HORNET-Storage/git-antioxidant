@@ -707,10 +707,14 @@ A basic crate for comon error types and utilities, changed as needed to replace 
 
 Provide discovery and execution of Git hooks for client and receive-side workflows.
 
-* [ ] discover hooks in `$GIT_DIR/hooks` and [`core.hooksPath`](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corehooksPath)
-* [ ] execute hooks with Git-compatible cwd, env, argv and stdin
-* [ ] client-side hooks for commit, checkout, rebase, merge, am and push
-* [ ] receive-side hooks and [`reference-transaction`](https://git-scm.com/docs/githooks#_reference_transaction)
+* [x] discover hooks in `$GIT_DIR/hooks` and [`core.hooksPath`](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corehooksPath)
+* [x] hooks of the configuration, `hook.<name>.command` and `hook.<name>.event`, in the order that `git hook list` shows
+    * [ ] run them in parallel as `hook.jobs` allows
+* [x] execute hooks with Git-compatible cwd, env, argv and stdin
+* [x] client-side hooks for commit, checkout, rebase, merge and push
+    * [ ] `git am`
+* [x] [`reference-transaction`](https://git-scm.com/docs/githooks#_reference_transaction)
+* [ ] receive-side hooks
 * [ ] [quarantine](https://git-scm.com/docs/git-receive-pack#_quarantine_environment)-aware hook execution
 
 ### gix-filter

@@ -1,0 +1,4 @@
+# The fixture records how the Git that runs the tests starts hooks, which differs between Unix and Git for Windows, so
+# it's always made by the test host instead of being archived.
+make_hook_records.tar
+make_hook_records_sha256.tar
