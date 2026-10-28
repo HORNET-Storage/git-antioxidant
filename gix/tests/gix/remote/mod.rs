@@ -67,6 +67,7 @@ pub(crate) fn into_daemon_remote_if_async<'repo, 'a>(
 mod connect;
 mod default_branch;
 pub(crate) mod fetch;
+mod push;
 mod ref_map;
 mod save;
 mod name {

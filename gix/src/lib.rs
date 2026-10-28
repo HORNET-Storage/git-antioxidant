@@ -227,6 +227,8 @@ pub mod object;
 pub mod pathspec;
 pub mod reference;
 pub mod repository;
+#[cfg(feature = "reset")]
+pub mod reset;
 #[cfg(feature = "attributes")]
 pub mod submodule;
 pub mod tag;

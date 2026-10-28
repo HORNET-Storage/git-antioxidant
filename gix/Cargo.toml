@@ -77,6 +77,7 @@ extras = [
     "merge",
     "notes",
     "hooks",
+    "reset",
 ]
 
 ## Various progress-related features that improve the look of progress message units.
@@ -146,6 +147,9 @@ worktree-mutation = ["status", "dep:gix-worktree-state", "gix-worktree/add", "gi
 ## Find and run the hooks of a repository as Git does, starting their programs through `gix-command`.
 hooks = ["dep:gix-hook"]
 
+## Reset the index and the worktree to a tree, as `git reset` does.
+reset = ["worktree-mutation", "gix-worktree-state/reset"]
+
 ## Retrieve a worktree stack for querying exclude information
 excludes = ["dep:gix-ignore", "dep:gix-worktree", "index"]
 
@@ -204,6 +208,8 @@ worktree-archive = ["gix-archive", "worktree-stream", "attributes"]
 ## Make `gix-protocol` available along with an async client.
 async-network-client = [
     "gix-protocol/async-client",
+    "gix-protocol/push",
+    "gix-pack/generate",
     "gix-pack/streaming-input",
     "dep:gix-transport",
     "attributes",
@@ -218,6 +224,8 @@ async-network-client-async-std = [
 ## Make `gix-protocol` available along with a blocking client, providing access to the `file://`, `git://` and `ssh://` transports.
 blocking-network-client = [
     "gix-protocol/blocking-client",
+    "gix-protocol/push",
+    "gix-pack/generate",
     "gix-pack/streaming-input",
     "dep:gix-transport",
     "attributes",

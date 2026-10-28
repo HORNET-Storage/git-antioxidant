@@ -11,6 +11,7 @@ mod attributes;
 #[cfg(feature = "blame")]
 mod blame;
 mod branch;
+mod commit;
 pub(crate) mod config;
 #[cfg(feature = "excludes")]
 mod excludes;
@@ -31,6 +32,8 @@ mod open;
 mod pathspec;
 mod reference;
 mod remote;
+#[cfg(feature = "reset")]
+mod reset;
 mod shallow;
 mod state;
 #[cfg(feature = "attributes")]

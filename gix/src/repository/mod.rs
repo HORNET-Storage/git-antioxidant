@@ -95,6 +95,7 @@ pub mod branch;
 mod cache;
 #[cfg(feature = "worktree-mutation")]
 mod checkout;
+mod commit;
 mod config;
 
 ///
@@ -129,6 +130,8 @@ mod object;
 mod pathspec;
 mod reference;
 mod remote;
+#[cfg(feature = "reset")]
+mod reset;
 mod revision;
 mod shallow;
 mod state;
