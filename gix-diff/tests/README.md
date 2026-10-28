@@ -77,4 +77,5 @@ diffs every pair with `git diff --no-index` for `myers`, `minimal` and `histogra
 heuristic. The test fails unless gix-diff's output matches every one of these diffs.
 
 The committed archives of this fixture hold the diffs of Git 2.55.0. Set `GIX_TEST_IGNORE_ARCHIVES=1` to compare with
-the installed Git instead.
+the installed Git instead. That takes Git 2.54 or later, which corrected the final clean-up of histogram diffs; with
+older Git, the test uses the archives regardless.

@@ -47,7 +47,16 @@ fn baseline() -> gix_testtools::TestResult {
 /// does, with and without the indent heuristic.
 #[test]
 fn xdiff_decisions_match_git() -> gix_testtools::TestResult {
-    let cases = cases_from_fixture("make_diff_for_xdiff_cases_repo.sh", true)?;
+    // Git 2.54 corrected the final clean-up of histogram diffs, which made some of them suboptimal. With older Git, the
+    // diffs are taken from the archive of the fixture.
+    let Some(worktree_path) =
+        gix_testtools::scripted_fixture_read_only_with_git_version("make_diff_for_xdiff_cases_repo.sh", |version| {
+            version >= (2, 54, 0)
+        })?
+    else {
+        return Ok(());
+    };
+    let cases = cases_in(&worktree_path, true)?;
     assert!(!cases.is_empty(), "the xdiff baseline must contain cases");
     assert_diffs(&cases);
     assert_no_indent_heuristic_diffs(&cases);
@@ -159,15 +168,19 @@ fn read_fixture(
 }
 
 fn cases_from_fixture(fixture: &str, read_no_indent: bool) -> gix_testtools::Result<Vec<Case>> {
-    let worktree_path = crate::scripted_fixture_read_only(fixture)?;
+    cases_in(&crate::scripted_fixture_read_only(fixture)?, read_no_indent)
+}
+
+/// The cases of the fixture at `worktree_path`.
+fn cases_in(worktree_path: &Path, read_no_indent: bool) -> gix_testtools::Result<Vec<Case>> {
     let asset_dir = worktree_path.join("assets");
 
-    let dir = std::fs::read_dir(&worktree_path)?;
+    let dir = std::fs::read_dir(worktree_path)?;
     let mut cases = Vec::new();
 
     for entry in dir {
         let entry = entry?;
-        if let Some(case) = read_fixture(&worktree_path, &asset_dir, entry, read_no_indent)? {
+        if let Some(case) = read_fixture(worktree_path, &asset_dir, entry, read_no_indent)? {
             cases.push(case);
         }
     }
