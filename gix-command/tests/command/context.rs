@@ -5,6 +5,14 @@ fn winfix(expected: impl Into<String>) -> String {
     if cfg!(windows) { "\"\"".into() } else { expected.into() }
 }
 
+/// The variables that `cmd` sets, without the `PATH` that commands receive on Windows with the directories of Git's
+/// programs in front, as Git sets it for the programs it starts.
+fn envs_without_git_path(cmd: &std::process::Command) -> Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> {
+    cmd.get_envs()
+        .filter(|(name, _)| !(cfg!(windows) && name.eq_ignore_ascii_case("PATH")))
+        .collect()
+}
+
 #[test]
 fn git_dir_sets_env_only() -> gix_testtools::TestResult {
     let dir = gix_testtools::tempfile::TempDir::new()?;
@@ -15,7 +23,7 @@ fn git_dir_sets_env_only() -> gix_testtools::TestResult {
     };
     let cmd = std::process::Command::try_from(gix_command::prepare("").with_context(ctx))?;
     assert_eq!(
-        cmd.get_envs().collect::<Vec<_>>(),
+        envs_without_git_path(&cmd),
         [(std::ffi::OsStr::new("GIT_DIR"), Some(path.as_os_str()))],
         "the absolute Git directory is passed through unchanged"
     );
@@ -33,7 +41,7 @@ fn worktree_dir_sets_env_only() -> gix_testtools::TestResult {
     };
     let cmd = std::process::Command::try_from(gix_command::prepare("").with_context(ctx))?;
     assert_eq!(
-        cmd.get_envs().collect::<Vec<_>>(),
+        envs_without_git_path(&cmd),
         [(std::ffi::OsStr::new("GIT_WORK_TREE"), Some(path.as_os_str()))],
         "the absolute worktree directory is passed through unchanged"
     );
