@@ -809,6 +809,10 @@ mod exe_info {
         config_paths_from_executable().installation
     }
 
+    /// Write `script` as a fake Git into a new temporary directory.
+    ///
+    /// The tests that use it are serial, as other tests change the environment, like `TMPDIR`, which locates the
+    /// directory.
     #[cfg(unix)]
     fn fake_git(script: &str) -> (tempfile::TempDir, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
@@ -822,6 +826,23 @@ mod exe_info {
         permissions.set_mode(0o755);
         std::fs::set_permissions(&executable, permissions).expect("can make fake Git executable");
         (tempdir, executable)
+    }
+
+    /// Start the fake Git of [`fake_git()`] with `start`, again while starting it fails as the file is busy.
+    ///
+    /// A process that another test starts while `fake_git()` writes the file inherits the file's descriptor and
+    /// holds it until it runs its own program, and Linux doesn't start a file that is open for writing.
+    #[cfg(unix)]
+    fn start_fake_git<T>(mut start: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+        for _ in 0..100 {
+            match start() {
+                Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+        start()
     }
 
     #[cfg(unix)]
@@ -1064,6 +1085,7 @@ mod exe_info {
     }
 
     #[test]
+    #[serial]
     #[cfg(unix)]
     fn one_scoped_query_finds_both_config_paths() -> gix_testtools::TestResult {
         let (_tempdir, executable) = fake_git(
@@ -1074,7 +1096,7 @@ printf 'unknown\000file:/installation/gitconfig\000core.one\000system\000file:/s
         );
 
         assert_eq!(
-            config_paths_from_executable_at(executable.clone())?,
+            start_fake_git(|| config_paths_from_executable_at(executable.clone()))?,
             ConfigPaths {
                 installation: Some("/installation/gitconfig".into()),
                 installation_is_system: false,
@@ -1095,6 +1117,7 @@ printf 'unknown\000file:/installation/gitconfig\000core.one\000system\000file:/s
     }
 
     #[test]
+    #[serial]
     #[cfg(unix)]
     fn retries_without_scope_for_old_git() -> gix_testtools::TestResult {
         let (_tempdir, executable) = fake_git(
@@ -1108,7 +1131,7 @@ printf 'file:/legacy/gitconfig\000core.one\000'
         );
 
         assert_eq!(
-            config_paths_from_executable_at(executable.clone())?,
+            start_fake_git(|| config_paths_from_executable_at(executable.clone()))?,
             ConfigPaths {
                 installation: Some("/legacy/gitconfig".into()),
                 ..Default::default()
