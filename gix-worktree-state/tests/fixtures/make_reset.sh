@@ -71,21 +71,34 @@ record_paths() {
   fi
 }
 
+# spell <letter> prints the content that <letter> stands for in a row: the letter repeated as often as its place in the
+# alphabet. Different contents have different sizes that way, so that a changed file is told by its size where its time
+# stamps can't tell it: Git for Windows compares them to the second and has no inode numbers, so a copy made in the
+# second of the entry's time stamps otherwise looks unchanged.
+spell() {
+  case "$1" in
+    A) echo A ;;
+    B) echo BB ;;
+    C) echo CCC ;;
+    D) echo DDDD ;;
+  esac
+}
+
 # row <worktree> <index> <head> <new> makes the file `f` hold <head> in `HEAD`, <new> in `new`, <index> in the index and
 # <worktree> in the worktree, as a row of the tables in the discussion of `git reset --help` names them.
 row() {
-  echo "$3" > f
+  spell "$3" > f
   commit head
   git branch new
   if test "$4" != "$3"; then
     git switch -q new
-    echo "$4" > f
+    spell "$4" > f
     commit new
     git switch -q main
   fi
-  echo "$2" > f
+  spell "$2" > f
   git add f
-  echo "$1" > f
+  spell "$1" > f
 }
 
 # conflict <new> stops a merge that conflicts in the file `f`, which holds `A` in `HEAD` and the conflict markers in the
