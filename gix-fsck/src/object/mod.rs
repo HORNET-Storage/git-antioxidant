@@ -275,8 +275,9 @@ fn parse_hex_oid(hex: &[u8], kind: gix_hash::Kind) -> Option<ObjectId> {
     let hex = hex.get(..kind.len_in_hex())?;
     let digit = |c: u8| (c as char).to_digit(16);
     let mut id = ObjectId::null(kind);
-    for (byte, pair) in id.as_mut_slice().iter_mut().zip(hex.chunks_exact(2)) {
-        *byte = (digit(pair[0])? << 4 | digit(pair[1])?) as u8;
+    let (pairs, _) = hex.as_chunks::<2>();
+    for (byte, &[high, low]) in id.as_mut_slice().iter_mut().zip(pairs) {
+        *byte = (digit(high)? << 4 | digit(low)?) as u8;
     }
     Some(id)
 }
