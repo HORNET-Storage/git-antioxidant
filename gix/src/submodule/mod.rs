@@ -22,6 +22,8 @@ pub type ModulesSnapshot = gix_fs::SharedFileSnapshot<File>;
 /// The name of the file containing (sub) module information.
 pub(crate) const MODULES_FILE: &str = ".gitmodules";
 
+mod url;
+
 /// A platform maintaining state needed to interact with submodules, created by [`Repository::submodules()].
 pub(crate) struct SharedState<'repo> {
     pub repo: &'repo Repository,
@@ -104,9 +106,12 @@ impl Submodule<'_> {
         self.state.modules.path(self.name())
     }
 
-    /// Return the url from which to clone or update the submodule.
+    /// Return the raw configured URL of the submodule, parsed as a Git URL.
     ///
     /// This method takes into consideration submodule configuration overrides.
+    /// Relative URLs like `./module` or `../module` are returned unchanged and parsed as local file paths,
+    /// even when they refer to a location relative to the superproject's remote.
+    /// Use [`resolved_url()`](Self::resolved_url()) to obtain a URL suitable for cloning or fetching.
     pub fn url(&self) -> Result<gix_url::Url> {
         self.state.modules.url(self.name())
     }
@@ -461,21 +466,35 @@ pub mod status {
                 Some(repo) => repo,
             };
 
-            let checked_out_head_id = sm_repo.head_id().ok().map(crate::Id::detach);
-            let mut status = Status {
+            Status {
                 state,
                 index_id,
-                checked_out_head_id,
                 ..Default::default()
-            };
-            if ignore == config::Ignore::Dirty || check_dirty && status.is_dirty() == Some(true) {
-                return Ok(status);
+            }
+            .with_worktree_status(&sm_repo, ignore, check_dirty, adjust_options)
+        }
+    }
+
+    impl Status {
+        pub(crate) fn with_worktree_status(
+            mut self,
+            repo: &crate::Repository,
+            ignore: config::Ignore,
+            check_dirty: bool,
+            adjust_options: &mut dyn for<'a> FnMut(
+                crate::status::Platform<'a, gix_utils::progress::Discard>,
+            )
+                -> crate::status::Platform<'a, gix_utils::progress::Discard>,
+        ) -> Result<Self> {
+            self.checked_out_head_id = repo.head_id().ok().map(crate::Id::detach);
+            if ignore == config::Ignore::Dirty || check_dirty && self.is_dirty() == Some(true) {
+                return Ok(self);
             }
 
-            if !state.worktree_checkout {
-                return Ok(status);
+            if !self.state.worktree_checkout {
+                return Ok(self);
             }
-            let statuses = adjust_options(sm_repo.status(gix_utils::progress::Discard)?)
+            let statuses = adjust_options(repo.status(gix_utils::progress::Discard)?)
                 .index_worktree_options_mut(|opts| {
                     if ignore == config::Ignore::Untracked {
                         opts.dirwalk_options = None;
@@ -489,12 +508,10 @@ pub mod status {
                     break;
                 }
             }
-            status.changes = Some(changes);
-            Ok(status)
+            self.changes = Some(changes);
+            Ok(self)
         }
-    }
 
-    impl Status {
         /// Return `Some(true)` if the submodule status could be determined sufficiently and
         /// if there are changes that would render this submodule dirty.
         ///

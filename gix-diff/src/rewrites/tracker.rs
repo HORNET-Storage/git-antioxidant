@@ -2,7 +2,8 @@
 //! [`rename`]: renames as `git diff -M` finds them, and renames and copies as `git diff -C` finds them.
 //!
 //! Before that, unlike Git, it pairs directories that were deleted and added by their identity, along with the files
-//! in them, and afterwards the directories whose files were renamed to another directory without change.
+//! in them, and afterwards a deleted and an added directory if a file was renamed from one to the other without change
+//! and kept its directory relative to them.
 
 use std::{
     collections::HashSet,
@@ -246,6 +247,7 @@ impl<T: Change> Tracker<T> {
         PushSourceTreeFn: FnMut(&mut dyn FnMut(T, &BStr)) -> std::result::Result<(), E>,
         E: std::error::Error + Send + Sync + 'static,
     {
+        self.child_renames.clear();
         diff_cache.options.skip_internal_diff_if_external_is_configured = false;
 
         let mut out = Outcome {
@@ -463,7 +465,10 @@ impl<T: Change> Tracker<T> {
                     }
                 }
                 Some((Relation::ChildOfParent(src), Relation::ChildOfParent(dst))) => {
-                    self.child_renames.insert((src, dst));
+                    self.child_renames
+                        .entry((src, dst))
+                        .or_default()
+                        .push((src_idx, dest_idx));
                 }
                 _ => {}
             }
@@ -638,7 +643,10 @@ impl<T: Change> Tracker<T> {
                 return Ok(Action::Break(()));
             }
             if let Some((Relation::ChildOfParent(src), Relation::ChildOfParent(dst))) = relations {
-                self.child_renames.insert((src, dst));
+                self.child_renames
+                    .entry((src, dst))
+                    .or_default()
+                    .push((src_idx, dst_idx));
             }
         }
         Ok(Action::Continue(()))
@@ -711,7 +719,7 @@ impl<T: Change> Tracker<T> {
     /// Then use the previously stored emitted renames with relation id to learn which directories they 'link'
     /// and emit them, too.
     /// Note that this works whenever top-level directories are renamed because they are always added and deleted,
-    /// and we only match those. Thus, one rewrite inside the directory is enough.
+    /// and we only match those. One rewrite preserving the relative directory path is enough.
     fn match_renamed_directories(
         &mut self,
         cb: &mut impl FnMut(visit::Destination<'_, T>, Option<visit::Source<'_, T>>) -> Action,
@@ -721,7 +729,7 @@ impl<T: Change> Tracker<T> {
                 !i.emitted && matches!(i.change.relation(), Some(Relation::Parent(pid)) if pid == child_id)
             })
         }
-        for (deleted_child_id, added_child_id) in &self.child_renames {
+        for ((deleted_child_id, added_child_id), children) in &self.child_renames {
             let Some(src_idx) = unemitted_directory_matching_relation_id(&self.items, *deleted_child_id) else {
                 continue;
             };
@@ -732,6 +740,28 @@ impl<T: Change> Tracker<T> {
             };
 
             let (src_item, dst_item) = (&self.items[src_idx], &self.items[dst_idx]);
+            if !children.iter().any(|&(src_child_idx, dst_child_idx)| {
+                let relative_directory = |child_idx: usize, parent: &Item<T>| {
+                    let child = &self.items[child_idx];
+                    child
+                        .location(&self.path_backing)
+                        .strip_prefix(parent.location(&self.path_backing).as_bytes())
+                        .and_then(|path| path.strip_prefix(b"/"))
+                        .map(|path| {
+                            if child.change.entry_mode().is_tree() {
+                                path
+                            } else {
+                                // File names may change without renaming their containing directory.
+                                &path[..path.rfind_byte(b'/').unwrap_or(0)]
+                            }
+                        })
+                };
+                let src_relative = relative_directory(src_child_idx, src_item);
+                let dst_relative = relative_directory(dst_child_idx, dst_item);
+                src_relative.is_some() && src_relative == dst_relative
+            }) {
+                continue;
+            }
             let entry_mode = src_item.change.entry_mode();
             let location = src_item.location(&self.path_backing);
             let src = visit::Source {

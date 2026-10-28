@@ -95,7 +95,7 @@ fn decisions_match_git() -> Result {
     assert!(cases.len() > 50, "all cases are recorded");
     // Git 2.52 began to read `:(optional)` values, and Git 2.53 goes on to the values after a missing one, as gix
     // does. Older Git decides the `optional` cases by other rules.
-    let git_reads_optional_values = *gix_testtools::GIT_VERSION >= (2, 53, 0);
+    let git_reads_optional_values = *gix_testtools::GIT_BASH_VERSION >= (2, 53, 0);
 
     let mut mismatches = Vec::new();
     for case in &cases {

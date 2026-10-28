@@ -9,11 +9,6 @@ use libfuzzer_sys::arbitrary::{self, Arbitrary, Unstructured};
 /// repetitive inputs while preserving room for historical regression fixtures.
 const MAX_FUZZ_INPUT_BYTES: usize = 150 * 1024;
 
-/// `MyersMinimal` searches for a shortest diff without Git's cost limit, as `git diff --minimal` does,
-/// in time proportional to the number of lines times the number of changed lines. Inputs with more lines
-/// are diffed without it, so that libFuzzer's timeout reports searches that don't end rather than that cost.
-const MAX_MINIMAL_LINES: usize = 4096;
-
 #[derive(arbitrary::Arbitrary, Debug)]
 struct Input<'a> {
     before: &'a [u8],
@@ -22,8 +17,7 @@ struct Input<'a> {
     after_str: &'a str,
 }
 
-/// Tests all three diff algorithms (Myers, Histogram, MyersMinimal on inputs of at most
-/// `MAX_MINIMAL_LINES` lines) with:
+/// Tests all three diff algorithms (Myers, Histogram, MyersMinimal) with:
 /// - Computing diffs on arbitrary string inputs
 /// - Postprocessing with no heuristic and line heuristic
 /// - Unified diff printing
@@ -38,7 +32,7 @@ fn do_fuzz(
     }: Input<'_>,
 ) {
     // Create interned input
-    let input = InternedInput::new(before, after);
+    let mut input = InternedInput::new(before, after);
 
     // Test all three diff algorithms
     for algorithm in [
@@ -46,10 +40,11 @@ fn do_fuzz(
         Algorithm::Myers,
         Algorithm::MyersMinimal,
     ] {
-        if algorithm == Algorithm::MyersMinimal && input.before.len() + input.after.len() > MAX_MINIMAL_LINES {
-            continue;
+        // Keep quadratic minimal diffs within the fuzz timeout.
+        if algorithm == Algorithm::MyersMinimal {
+            input.before.truncate(512);
+            input.after.truncate(512);
         }
-
         // Compute diff
         let mut diff = Diff::compute(algorithm, &input);
 

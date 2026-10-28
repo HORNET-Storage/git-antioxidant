@@ -31,3 +31,12 @@ function commit_at() {
   commit_at tip 1000000400
   git commit-graph write --no-progress --reachable
 )
+
+# Record Git's results beside each repository, so that the tests don't run Git.
+for repo in same_time newer_old; do
+  (cd "$repo"
+    git log --all --format='%H %s' >commit-names.baseline
+    git rev-list hidden >rev-list-hidden.baseline
+    git rev-list tip old --not hidden >rev-list.baseline
+  )
+done

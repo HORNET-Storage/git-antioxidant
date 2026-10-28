@@ -53,7 +53,7 @@ pub(super) mod function {
         options.fail_on_conflict = None;
         options.tree_conflicts = Some(crate::tree::ResolveWith::VirtualMergeBase);
         // Directory renames are only detected in the outermost merge, as merge-ort does.
-        options.directory_renames = crate::tree::DirectoryRenames::Ignore;
+        options.directory_renames = crate::tree::DirectoryRenames::Disabled;
         options.blob_merge.is_virtual_ancestor = true;
         let conflict = &mut options.blob_merge.text.conflict;
         if !matches!(conflict, builtin_driver::text::Conflict::Keep { .. }) {

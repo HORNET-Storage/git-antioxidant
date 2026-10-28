@@ -37,6 +37,9 @@ pub enum ConflictKind {
     /// Added to or renamed into a directory that the other side renamed, and moved into the renamed directory, which is
     /// left for the user to confirm.
     DirectoryRenamedWithModificationInside,
+    /// A path was automatically moved through a directory rename, as `merge.directoryRenames=true` asks.
+    /// This isn't a conflict.
+    PathUpdatedDueToDirectoryRename,
     /// Added files differ in mode.
     DistinctModes,
     /// The same file was renamed to different destinations.
@@ -53,9 +56,6 @@ pub enum ConflictKind {
     /// A directory rename wasn't applied to a file, as the side of the file renamed the destination directory itself.
     /// This isn't a conflict.
     DirectoryRenameSkipped,
-    /// A file was moved into the directory that the other side renamed, as `merge.directoryRenames=true` asks.
-    /// This isn't a conflict.
-    DirectoryRenameApplied,
     /// A file or directory is in the way of moving a file into the directory that the other side renamed.
     FileInWayOfDirectoryRename,
     /// Directory renames would move several files to one path, so none of them is moved.
@@ -70,7 +70,9 @@ impl ConflictKind {
     pub fn is_conflict(&self) -> bool {
         !matches!(
             self,
-            ConflictKind::AutoMerging | ConflictKind::DirectoryRenameSkipped | ConflictKind::DirectoryRenameApplied
+            ConflictKind::AutoMerging
+                | ConflictKind::DirectoryRenameSkipped
+                | ConflictKind::PathUpdatedDueToDirectoryRename
         )
     }
 }
@@ -312,6 +314,7 @@ fn parse_info<'a>(mut lines: impl Iterator<Item = &'a str>) -> Option<ConflictIn
         "CONFLICT (file/directory)" => ConflictKind::ConflictDirectoryBlocksFile,
         "CONFLICT (modify/delete)" => ConflictKind::ConflictModifyDelete,
         "CONFLICT (directory rename suggested)" => ConflictKind::DirectoryRenamedWithModificationInside,
+        "Path updated due to directory rename" => ConflictKind::PathUpdatedDueToDirectoryRename,
         "CONFLICT (distinct modes)" => ConflictKind::DistinctModes,
         "CONFLICT (rename/rename)" => ConflictKind::RenameRename,
         "CONFLICT (rename/delete)" => ConflictKind::RenameAddDelete,
@@ -319,7 +322,6 @@ fn parse_info<'a>(mut lines: impl Iterator<Item = &'a str>) -> Option<ConflictIn
         "CONFLICT (binary)" => ConflictKind::Binary,
         "CONFLICT (submodule not initialized)" => ConflictKind::SubmoduleNotInitialized,
         "Directory rename skipped since directory was renamed on both sides" => ConflictKind::DirectoryRenameSkipped,
-        "Path updated due to directory rename" => ConflictKind::DirectoryRenameApplied,
         "CONFLICT (file in way of directory rename)" => ConflictKind::FileInWayOfDirectoryRename,
         "CONFLICT(directory rename collision)" => ConflictKind::DirectoryRenameCollision,
         "CONFLICT(directory rename unclear split)" => ConflictKind::DirectoryRenameSplit,

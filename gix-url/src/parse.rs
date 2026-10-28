@@ -79,9 +79,10 @@ pub(crate) fn find_scheme(input: &BStr) -> InputScheme {
         // allow user to select files containing a `:` by passing them as absolute or relative path
         // this is behavior explicitly mentioned by the scp and git manuals
         let explicitly_local = &input[..colon].contains(&b'/');
-        let dos_driver_letter = cfg!(windows) && input[..colon].len() == 1;
+        let has_drive =
+            cfg!(windows) && gix_path::windows_drive_prefix(input).is_some_and(|prefix| prefix.len() == colon + 1);
 
-        if !explicitly_local && !dos_driver_letter {
+        if !explicitly_local && !has_drive {
             return InputScheme::Scp { colon };
         }
     }
@@ -180,26 +181,15 @@ pub(crate) fn url(input: &BStr, protocol_end: usize) -> Result<crate::Url> {
     let password = url.password;
     let port = url.port;
 
-    // For SSH URLs, strip brackets from IPv6 addresses
+    // SSH ignores an empty port, but retains brackets around the host.
     let host = if scheme == Scheme::Ssh {
         url.host.map(|mut h| {
-            // Bracketed IPv6 forms
-            if let Some(h2) = h.strip_prefix('[') {
-                if let Some(inner) = h2.strip_suffix("]:") {
-                    // "[::1]:" → "::1"
-                    h = inner.to_owned();
-                } else if let Some(inner) = h2.strip_suffix(']') {
-                    // "[::1]" → "::1"
-                    h = inner.to_owned();
+            if h.starts_with('[') {
+                if h.ends_with("]:") {
+                    h.pop();
                 }
-            } else {
-                // Non-bracketed host: strip a single trailing colon
-                let colon_count = h.chars().filter(|&c| c == ':').take(2).count();
-                if colon_count == 1
-                    && let Some(inner) = h.strip_suffix(':')
-                {
-                    h = inner.to_string();
-                }
+            } else if h.ends_with(':') && h.bytes().filter(|&c| c == b':').take(2).count() == 1 {
+                h.pop();
             }
             h
         })
@@ -257,14 +247,7 @@ pub(crate) fn scp(input: &BStr, colon: usize) -> Result<crate::Url> {
 
     let port = url.port;
 
-    // For SCP-like SSH URLs, strip brackets from IPv6 addresses
-    let host = url.host.map(|h| {
-        if let Some(h) = h.strip_prefix("[").and_then(|h| h.strip_suffix("]")) {
-            h.to_string()
-        } else {
-            h
-        }
-    });
+    let host = url.host;
 
     Ok(crate::Url {
         serialize_alternative_form: true,
@@ -311,7 +294,7 @@ pub(crate) fn file_url(input: &BStr, protocol_colon: usize) -> Result<crate::Url
             input_after_protocol
         };
         // parse `file://x:/path/to/git` as explained above
-        if input_after_protocol.chars().nth(1) == Some(':') {
+        if gix_path::windows_drive_prefix(input_after_protocol.as_bytes().as_bstr()).is_some() {
             Some(input_after_protocol)
         } else {
             None

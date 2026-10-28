@@ -199,7 +199,7 @@ fn versions_get_the_deltas_of_git() -> TestResult {
 /// writes an object whole that later Git, like gix, stores as a delta. The fixture has no archive to take the packs of
 /// later Git from, as it records those of the installed Git.
 fn git_stores_small_windows_as_expected() -> bool {
-    *gix_testtools::GIT_VERSION >= (2, 51, 0)
+    *gix_testtools::GIT_BASH_VERSION >= (2, 51, 0)
 }
 
 #[test]

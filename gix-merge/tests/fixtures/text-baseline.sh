@@ -662,6 +662,15 @@ mkdir ambiguous-insertion
   write_lines start '' case '  two)' esac '' case '  one)' esac >theirs.blob
 )
 
+# Both sides append at EOF. Indentation-based hunk placement can move ours before
+# the last unchanged `b`, hiding the overlap and incorrectly avoiding a conflict.
+mkdir eof-append-conflict
+(cd eof-append-conflict
+  printf 'a\n\n\nb\n' > base.blob
+  printf 'a\n\n\nb\n\nb\n' > ours.blob
+  printf 'a\n\n\nb\nc\n' > theirs.blob
+)
+
 
 for dir in  simple-conflict-3 \
             simple-conflict-2 \
@@ -681,6 +690,7 @@ for dir in  simple-conflict-3 \
             no-change-remove \
             line-ending-change \
             ambiguous-insertion \
+            eof-append-conflict \
             complex/no-change \
             complex/no-conflict \
             complex/no-conflict-too \
@@ -707,3 +717,41 @@ for dir in  simple-conflict-3 \
   baseline ours base theirs diff3-histogram --diff3 --diff-algorithm=histogram
   baseline ours base theirs zdiff3-histogram --zdiff3 --diff-algorithm=histogram
 done
+
+# Minimized cases from https://github.com/GitoxideLabs/gitoxide/issues/3076.
+# Repeated lines make Myers alignments ambiguous; preserve each missing final LF.
+# Compare default merge behavior in both directions using the baseline helper.
+DIR=equal-lines-1
+mkdir "$DIR"
+printf '%b' 'a\na\na\na\nb\nd\nd\nb\nb\nd\nb\nb\n' > "$DIR/base.blob"
+printf '%b' 'a\na\na\na\nd\nb\nd\nd\nb\nb' > "$DIR/ours.blob"
+printf '%b' 'b\na\na\nb\nd\nd\nb\nb\nd\na\nb\nb' > "$DIR/theirs.blob"
+baseline ours base theirs merge
+
+DIR=equal-lines-2
+mkdir "$DIR"
+printf '%b' 'a\na\na\na\nd\na\na\na\na\na\nd\na\na\na\na\nb' > "$DIR/base.blob"
+printf '%b' 'a\na\na\na\nd\na\na\na\na\na\nd\na\na\na\na\nb\n' > "$DIR/ours.blob"
+printf '%b' 'a\na\na\na\nd\na\na\nb\na\na\na\na\na\na\na\na\nb\n' > "$DIR/theirs.blob"
+baseline ours base theirs merge
+
+DIR=equal-lines-3
+mkdir "$DIR"
+printf '%b' 'c\na\na\na\na\na\na\na\na\na\nc\nb\na\na\nb\n' > "$DIR/base.blob"
+printf '%b' 'c\na\na\na\na\na\na\na\na\na\nc\nb\na\na\nb' > "$DIR/ours.blob"
+printf '%b' 'c\na\na\na\na\na\na\na\na\na\na\nb' > "$DIR/theirs.blob"
+baseline ours base theirs merge
+
+DIR=equal-lines-4
+mkdir "$DIR"
+printf '%b' 'a\na\na\na\na\na\na\na\na\na\na\na\nd\nb\nb\nb' > "$DIR/base.blob"
+printf '%b' 'a\na\na\na\na\na\na\na\na\nb\nd\nc\nb\nd\nb\nb\nb\n' > "$DIR/ours.blob"
+printf '%b' 'a\na\na\na\na\na\na\na\na\na\na\na\nd\nc\nb\nb' > "$DIR/theirs.blob"
+baseline ours base theirs merge
+
+DIR=equal-lines-5
+mkdir "$DIR"
+printf '%b' 'a\na\na\na\na\na\na\nc\na\na\nb\nb\nb\nc\nc\na\na\na\nc\na\na\nb\nb\na' > "$DIR/base.blob"
+printf '%b' 'a\na\na\na\na\na\na\nc\na\na\nc\nb\nb\nc\nc\na\nc\na\na\na\nc\na\na\na' > "$DIR/ours.blob"
+printf '%b' 'a\na\na\na\na\na\na\nc\na\na\nb\nb\nc\nc\na\na\na\nc\na\na\nb\nb\na' > "$DIR/theirs.blob"
+baseline ours base theirs merge

@@ -25,8 +25,9 @@ use gix_object::{
 
 use super::walk::{self, Pair, PathFacts, Walk};
 use crate::tree::{
-    Conflict, ConflictIndexEntry, ConflictMapping, DirectoryRenames, Resolution, ResolutionFailure, TreatAsUnresolved,
-    utils::{ChangeList, ChangeListRef},
+    Conflict, ConflictIndexEntry, ConflictMapping, DirectoryRenames, Resolution, ResolutionFailure, ResolveWith,
+    TreatAsUnresolved,
+    utils::{ChangeList, ChangeListRef, to_components},
 };
 
 /// What [`find()`] leaves for the merge to record.
@@ -57,22 +58,32 @@ pub(super) struct Move {
     /// Whether the move returned a renamed file to its source, which the other side renamed as well. merge-ort then
     /// merges the file at the destination of the rename of the other side and removes the source.
     taken_by_rename: bool,
+    /// For an addition, the file of its side that rename detection as `git diff` does it pairs the addition with: the
+    /// source of a rename that merge-ort didn't need to find. A resolution that forces the location of the move treats
+    /// it as the source of a rename. Only [`prepare_forced_locations()`] finds it.
+    added_from: Option<(BString, EntryMode, ObjectId)>,
+    /// The location at which our side has the moved file, which a resolution forced in favor of ours gives it: that of
+    /// a change of ours before the move, and for a change of theirs, where ours kept the file that the change replaces
+    /// or renamed it to. An addition of theirs that replaces no file, and a file that ours deleted, have none. Only
+    /// [`prepare_forced_locations()`] sets it.
+    ours_location: Option<BString>,
 }
 
 impl Move {
     /// Record the move as merge-ort reports it with `directory_renames`, once the merge recorded
     /// `resolver_conflicts` while it resolved the changes of both sides.
     ///
-    /// With [`DirectoryRenames::Move`] the move is [resolved](Resolution::SourceLocationAffectedByRename), as is a move
-    /// that returned a renamed file to a source that the other side renamed as well: merge-ort merges the file at the
-    /// destination of that rename and removes the source. Otherwise the moved change is in conflict at its new
+    /// With [`DirectoryRenames::Enabled`] the move is [resolved](Resolution::SourceLocationAffectedByRename), as is a
+    /// move that returned a renamed file to a source that the other side renamed as well: merge-ort merges the file
+    /// at the destination of that rename and removes the source. Otherwise the moved change is in conflict at its new
     /// location, with the stages that merge-ort gives the path: those of a resolved conflict that the merge recorded
     /// for the moved change or at its new location, or else those of the move itself. If such a conflict remains
-    /// unresolved, it has these stages already, and the record has none.
+    /// unresolved, it has these stages already, and the record has none. The record carries the content merge of the
+    /// latest such conflict, if any.
     pub(super) fn record(&self, directory_renames: DirectoryRenames, resolver_conflicts: &[Conflict]) -> Conflict {
         let final_location = self.moved.location().to_owned();
         let changes = directory_conflict(self.side, &self.directory, &self.original);
-        if directory_renames == DirectoryRenames::Move || self.taken_by_rename {
+        if directory_renames == DirectoryRenames::Enabled || self.taken_by_rename {
             return Conflict::with_resolution(
                 Resolution::SourceLocationAffectedByRename { final_location },
                 changes,
@@ -112,11 +123,104 @@ impl Move {
         } else {
             entries
         };
+        let merged_blob = resolver_conflicts
+            .iter()
+            .filter(&related)
+            .rev()
+            .find_map(Conflict::content_merge);
         Conflict::without_resolution(
-            ResolutionFailure::SourceLocationAffectedByRename { final_location },
+            ResolutionFailure::DirectoryRename {
+                final_location,
+                merged_blob,
+            },
             changes,
             entries,
         )
+    }
+
+    /// Give the moved file in `editor`, the merged tree, the location that `resolution` forces on the move, unless one of
+    /// `resolver_conflicts`, the conflicts that the merge recorded, already forced a resolution at the new location,
+    /// which then decides about the file, as for a rename whose source the other side deleted.
+    ///
+    /// The ancestor's location puts the entries of the merge-base at the new location and at the [source](Self::source)
+    /// of the file. In favor of ours, a change of ours stays where ours made it, and a change of theirs doesn't follow
+    /// the directory rename of ours: the file goes to the location at which our side has it, with the content that the
+    /// merge gave it at the new location, unless our side has an entry of its own there, which leaves the file the
+    /// content of the change. The new location then gets the entry that our side has there, if any.
+    ///
+    /// `objects` holds `base_tree` and `our_tree`, the merge-base and our tree, from which the entries of the chosen side
+    /// come.
+    pub(super) fn force_location(
+        &self,
+        resolution: ResolveWith,
+        editor: &mut gix_object::tree::Editor<'_>,
+        objects: &dyn gix_object::Find,
+        [base_tree, our_tree]: [&gix_hash::oid; 2],
+        resolver_conflicts: &[Conflict],
+        buf: &mut Vec<u8>,
+    ) -> Result<()> {
+        let location = self.moved.location();
+        let merged = editor.get(to_components(location)).map(|entry| (entry.mode, entry.oid));
+        let forced_at_location = resolver_conflicts.iter().any(|conflict| {
+            matches!(conflict.resolution, Ok(Resolution::Forced(_)))
+                && [&conflict.ours, &conflict.theirs]
+                    .into_iter()
+                    .any(|change| *change == self.moved || change.location() == location)
+        });
+        // A resolved move keeps its place, as does a file that the merge put beside a directory at its new location.
+        if self.taken_by_rename || forced_at_location || merged.is_some_and(|(mode, _)| mode.is_tree()) {
+            return Ok(());
+        }
+        match resolution {
+            ResolveWith::Ancestor => {
+                set_entry(editor, location, entry_at(objects, base_tree, location, buf)?)?;
+                if let Some((source, mode, id)) = self.source() {
+                    set_entry(editor, source, Some((mode, id)))?;
+                }
+            }
+            ResolveWith::Ours => {
+                if self
+                    .ours_location
+                    .as_ref()
+                    .is_some_and(|ours_location| ours_location.as_bstr() == location)
+                {
+                    return Ok(());
+                }
+                let ours_at_location = entry_at(objects, our_tree, location, buf)?;
+                set_entry(editor, location, ours_at_location)?;
+                let content = if ours_at_location.is_some() {
+                    let (mode, id) = self.moved.entry_mode_and_id();
+                    Some((mode, id.to_owned()))
+                } else {
+                    merged
+                };
+                if let (Some(ours_location), Some(content)) = (&self.ours_location, content) {
+                    set_entry(editor, ours_location.as_bstr(), Some(content))?;
+                }
+            }
+            // Merges of merge-bases apply no directory renames, so they move no files.
+            ResolveWith::VirtualMergeBase => {}
+        }
+        Ok(())
+    }
+
+    /// The file of the merge-base that the moved change replaces: the source of a rename, or the file that an addition
+    /// [replaces](Self::added_from).
+    fn source(&self) -> Option<(&BStr, EntryMode, ObjectId)> {
+        match &self.original {
+            Change::Rewrite {
+                source_location,
+                source_entry_mode,
+                source_id,
+                copy: false,
+                ..
+            } => Some((source_location.as_bstr(), *source_entry_mode, *source_id)),
+            Change::Addition { .. } => self
+                .added_from
+                .as_ref()
+                .map(|(location, mode, id)| (location.as_bstr(), *mode, *id)),
+            Change::Rewrite { .. } | Change::Deletion { .. } | Change::Modification { .. } => None,
+        }
     }
 }
 
@@ -178,18 +282,9 @@ pub(super) fn find(
     // which only held files that a directory rename moved away.
     let mut removed: [Vec<bool>; 2] = std::array::from_fn(|side| vec![false; changes[side].len()]);
 
-    let mut attributes = Attributes::default();
-    attributes.initialize_with_selection(&Default::default(), ["diff"]);
-    let mut blobs = MergeBlobs {
-        objects,
-        attr_stack: &mut diff_resource_cache.attr_stack,
-        drivers: diff_resource_cache.filter.drivers(),
-        attributes,
-    };
+    let mut blobs = MergeBlobs::new(objects, diff_resource_cache);
     let options = diffcore::merge::Options {
-        min_score: rewrites.percentage.map_or(MAX_SCORE, |percentage| {
-            (percentage.clamp(0.0, 1.0) * MAX_SCORE as f32).round() as u32
-        }),
+        min_score: min_score(rewrites),
         limit: rewrites.limit,
         rename_empty: rewrites.track_empty,
     };
@@ -234,7 +329,7 @@ pub(super) fn find(
         }
     }
 
-    if directory_renames != DirectoryRenames::Ignore {
+    if directory_renames != DirectoryRenames::Disabled {
         let mut buf = Vec::new();
         let null = ObjectId::null(trees[0].kind());
         // A directory was renamed to the directory to which more of its files went than to any other, which is a
@@ -392,6 +487,8 @@ pub(super) fn find(
                     directory: directory.clone(),
                     entries: [None; 3],
                     taken_by_rename: false,
+                    added_from: None,
+                    ours_location: None,
                 });
             }
         }
@@ -437,6 +534,82 @@ pub(super) fn find(
     }
     set_entries(&mut outcome.moves, changes);
     Ok(outcome)
+}
+
+/// Prepare the `moves` for a resolution that forces their locations, once [`find()`] found them among `changes`, the
+/// changes of both sides: pair each moved addition with the file of its side that it replaces, a deleted file that
+/// rename detection as `git diff` does it pairs the addition with, which merge-ort leaves unpaired if the merge doesn't
+/// need to know where the file went, and set the location at which our side has each moved file.
+///
+/// `objects`, `diff_resource_cache` and `rewrites` are those that [`find()`] used.
+pub(super) fn prepare_forced_locations(
+    moves: &mut [Move],
+    changes: &[ChangeList; 2],
+    objects: &impl gix_object::FindObjectOrHeader,
+    diff_resource_cache: &mut gix_diff::blob::Platform,
+    rewrites: gix_diff::Rewrites,
+) -> Result<()> {
+    let pairable = |id: &gix_hash::oid| rewrites.track_empty || !id.is_empty_blob();
+    let mut blobs = MergeBlobs::new(objects, diff_resource_cache);
+    for (side, side_changes) in changes.iter().enumerate() {
+        let additions: Vec<usize> = (0..moves.len())
+            .filter(|&index| {
+                let moved = &moves[index];
+                moved.side == side && matches!(&moved.original, Change::Addition { id, .. } if pairable(id))
+            })
+            .collect();
+        if additions.is_empty() {
+            continue;
+        }
+        let deletions: Vec<_> = side_changes
+            .iter()
+            .filter_map(|change| match &change.inner {
+                Change::Deletion {
+                    location,
+                    entry_mode,
+                    id,
+                    ..
+                } if !entry_mode.is_tree() && pairable(id) => Some(diffcore::Entry {
+                    location: location.as_bstr(),
+                    mode: *entry_mode,
+                    id,
+                }),
+                _ => None,
+            })
+            .collect();
+        let destinations: Vec<_> = additions
+            .iter()
+            .map(|&index| {
+                let original = &moves[index].original;
+                let (mode, id) = original.entry_mode_and_id();
+                diffcore::Entry {
+                    location: original.location(),
+                    mode,
+                    id,
+                }
+            })
+            .collect();
+        let options = diffcore::Options {
+            min_score: min_score(rewrites),
+            limit: rewrites.limit,
+        };
+        let detected = diffcore::detect(&deletions, &destinations, &mut blobs, options)?;
+        for rename in detected.renames {
+            let source = deletions[rename.source];
+            moves[additions[rename.destination]].added_from =
+                Some((source.location.to_owned(), source.mode, source.id.to_owned()));
+        }
+    }
+    set_our_locations(moves, &changes[0]);
+    Ok(())
+}
+
+/// The similarity, out of [`MAX_SCORE`], that a rename needs with `rewrites`, whose rename tracking without a percentage
+/// pairs identical files only.
+fn min_score(rewrites: gix_diff::Rewrites) -> u32 {
+    rewrites.percentage.map_or(MAX_SCORE, |percentage| {
+        (percentage.clamp(0.0, 1.0) * MAX_SCORE as f32).round() as u32
+    })
 }
 
 /// Order the `changes` of a side for the merge: the modifications in the order of the diff, the renames by the location
@@ -809,6 +982,66 @@ fn set_entries(moves: &mut [Move], changes: &[ChangeList; 2]) {
     }
 }
 
+/// Set the location at which our side has the file of each of the `moves`, which a resolution forced in favor of ours
+/// gives the file: for a change of ours its location before the move, and for a change of theirs, where `ours`, our
+/// changes, keep the file that the change [replaces](Move::source) or rename it to. An addition of theirs that replaces
+/// no file, and a file that ours deleted, have none.
+fn set_our_locations(moves: &mut [Move], ours: &ChangeListRef) {
+    for moved in moves {
+        let location = if moved.side == 0 {
+            Some(moved.original.location().to_owned())
+        } else {
+            moved.source().and_then(|(source, _, _)| {
+                match ours
+                    .iter()
+                    .map(|change| &change.inner)
+                    .find(|change| !change.entry_mode().is_tree() && change.source_location() == source)
+                {
+                    None | Some(Change::Modification { .. }) => Some(source.to_owned()),
+                    Some(Change::Rewrite { location, .. }) => Some(location.clone()),
+                    Some(Change::Addition { .. } | Change::Deletion { .. }) => None,
+                }
+            })
+        };
+        moved.ours_location = location;
+    }
+}
+
+/// The mode and id of the entry at `path` in the tree `root`, read from `objects`, if there is one.
+fn entry_at(
+    objects: &dyn gix_object::Find,
+    root: &gix_hash::oid,
+    path: &BStr,
+    buf: &mut Vec<u8>,
+) -> Result<Option<(EntryMode, ObjectId)>> {
+    let (parent, name) = match path.rfind_byte(b'/') {
+        Some(slash) => (path[..slash].as_bstr(), path[slash + 1..].as_bstr()),
+        None => ("".into(), path),
+    };
+    let Some(parent) = tree_at(objects, root, parent, buf)? else {
+        return Ok(None);
+    };
+    let tree = objects.find_tree(&parent, buf)?;
+    Ok(tree
+        .entries
+        .iter()
+        .find(|entry| entry.filename == name)
+        .map(|entry| (entry.mode, entry.oid.to_owned())))
+}
+
+/// Put `entry` at `path` in `editor`, or remove the file at `path` if there is no `entry`.
+fn set_entry(
+    editor: &mut gix_object::tree::Editor<'_>,
+    path: &BStr,
+    entry: Option<(EntryMode, ObjectId)>,
+) -> Result<()> {
+    match entry {
+        Some((mode, id)) => editor.upsert(to_components(path), mode.kind(), id)?,
+        None => editor.remove_if_leaf(to_components(path))?,
+    };
+    Ok(())
+}
+
 /// The stage of a file with `mode` and `id` at the location of its conflict.
 fn index_entry(mode: EntryMode, id: &gix_hash::oid) -> Option<ConflictIndexEntry> {
     Some(ConflictIndexEntry {
@@ -829,7 +1062,19 @@ struct MergeBlobs<'a, O> {
     attributes: Attributes,
 }
 
-impl<O: gix_object::FindObjectOrHeader> MergeBlobs<'_, O> {
+impl<'a, O: gix_object::FindObjectOrHeader> MergeBlobs<'a, O> {
+    /// Read the blobs from `objects`, with the attributes and diff drivers of `diff_resource_cache`.
+    fn new(objects: &'a O, diff_resource_cache: &'a mut gix_diff::blob::Platform) -> Self {
+        let mut attributes = Attributes::default();
+        attributes.initialize_with_selection(&Default::default(), ["diff"]);
+        MergeBlobs {
+            objects,
+            attr_stack: &mut diff_resource_cache.attr_stack,
+            drivers: diff_resource_cache.filter.drivers(),
+            attributes,
+        }
+    }
+
     /// Whether Git takes the blob of the file at `location` with `mode` for binary data before reading it:
     /// `Some(true)` for binary data, `Some(false)` for text and `None` if its bytes decide. The `diff` attribute of a
     /// regular file makes it text and `-diff` binary, and `diff=<name>` takes the `binary` setting of that driver. A

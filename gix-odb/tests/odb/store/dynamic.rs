@@ -714,6 +714,34 @@ fn lookup() {
     );
 }
 
+#[test]
+fn exists_without_refresh() {
+    let handle = db();
+    assert!(
+        handle.exists_without_refresh(&hex_to_id("dd25c539efbb0ab018caa4cda2d133285634e9b5")),
+        "the store still reads the object directory once and loads the indices it finds"
+    );
+    assert!(
+        handle.exists_without_refresh(&hex_to_id("37d4e6c5c48ba0d245164c4e10d5f41140cab980")),
+        "loose objects are found too"
+    );
+
+    let num_refreshes = handle.store_ref().metrics().num_refreshes;
+    assert!(!handle.exists_without_refresh(&missing_id(&handle)));
+    assert_eq!(
+        handle.store_ref().metrics().num_refreshes,
+        num_refreshes,
+        "a miss doesn't look for new packs…"
+    );
+
+    assert!(!handle.exists(&missing_id(&handle)));
+    assert_eq!(
+        handle.store_ref().metrics().num_refreshes,
+        num_refreshes + 1,
+        "…while `exists()` does, as the handle's refresh mode allows it"
+    );
+}
+
 fn assert_all_indices_loaded(handle: &gix_odb::Handle, num_refreshes: usize, open_reachable_indices: usize) {
     assert_eq!(
         handle.store_ref().metrics(),
@@ -879,6 +907,30 @@ mod lookup_prefix {
         store::dynamic::all_orderings,
         store::dynamic::{assert_all_indices_loaded, db_with_all_object_sources},
     };
+
+    #[test]
+    fn mixed_packed_and_loose_ambiguity_matches_git() -> gix_testtools::TestResult {
+        let fixture = gix_testtools::scripted_fixture_read_only("make_prefix_lookup_repos.sh")?;
+        for object_hash in [gix_hash::Kind::Sha1, gix_hash::Kind::Sha256] {
+            let root = fixture.join(object_hash.to_string());
+            let handle = gix_odb::at(root.join(".git/objects"), object_hash)?;
+            let expected: HashSet<_> = std::fs::read_to_string(root.join("mixed.git"))?
+                .lines()
+                .map(|line| gix_hash::ObjectId::from_hex(line.as_bytes()))
+                .collect::<Result<_, _>>()?;
+            for mut candidates in [None, Some(HashSet::default())] {
+                assert_eq!(
+                    handle.lookup_prefix(gix_hash::Prefix::from_hex("dead")?, candidates.as_mut())?,
+                    Some(Err(())),
+                    "{object_hash}: a packed candidate must not hide a loose candidate"
+                );
+                if let Some(candidates) = candidates {
+                    assert_eq!(candidates, expected, "all packed and loose candidates match Git");
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn returns_none_for_prefixes_without_any_match() {

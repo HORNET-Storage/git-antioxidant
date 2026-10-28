@@ -23,6 +23,9 @@ impl Store {
     ///
     /// Pass `candidates` to obtain the set of all object ids matching `prefix`, with the same return value as
     /// one would have received if it remained `None`.
+    ///
+    /// As in Git, a `prefix` with more digits than the ids of this store matches an id if all of its digits after
+    /// the end of the id are zeros.
     pub fn lookup_prefix(
         &self,
         prefix: gix_hash::Prefix,
@@ -34,8 +37,7 @@ impl Store {
                 .max_depth(1)
                 .follow_links(false)
                 .into_iter(),
-            // Object file names have the store's hash length. A prefix parsed from hex has the kind its
-            // number of digits implies, whatever the store's hash, so its kind can't provide that length.
+            // Object file names have the store's hash length, whatever kind the prefix's number of digits implies.
             hash_hex_len: self.object_hash.len_in_hex(),
         };
         let mut candidate = None;
@@ -98,7 +100,7 @@ impl Store {
         };
         let mut header = [0_u8; HEADER_MAX_SIZE];
         let mut inflate = gix_zlib::Inflate::default();
-        let (status, _consumed_in, consumed_out) = inflate.once(&map, &mut header).or_raise(context)?;
+        let (status, _consumed_in, consumed_out) = inflate.prefix(&map, &mut header).or_raise(context)?;
 
         if status == gix_zlib::Status::BufError {
             bail!(
@@ -123,7 +125,7 @@ impl Store {
         let mut header = [0_u8; HEADER_MAX_SIZE];
 
         let mut inflate = gix_zlib::Inflate::default();
-        let (status, consumed_in, consumed_out) = inflate.once(&map, &mut header)?;
+        let (status, consumed_in, consumed_out) = inflate.prefix(&map, &mut header)?;
         if status == gix_zlib::Status::BufError {
             bail!(corruption("The zlib status indicated an error, status was 'BufError'"));
         }
@@ -149,27 +151,20 @@ impl Store {
         // If the first inflate already reached the end of the stream, the fixed-size `header` buffer
         // contains the complete decompressed object, so we can skip a second streaming inflate pass.
         out.clear();
-        out.try_reserve(size_usize)
+        out.try_reserve(size_usize.saturating_add(header_size))
             .or_raise(|| message!("Cannot store loose object of {size} bytes in memory"))?;
         if status == gix_zlib::Status::StreamEnd {
             out.extend_from_slice(&header[header_size..consumed_out]);
         } else {
-            out.resize(size_usize, 0);
-            out[..decompressed_body_prefix_len].copy_from_slice(&header[header_size..consumed_out]);
-
-            let mut input = &map[consumed_in..];
-            let num_decompressed_bytes = gix_zlib::stream::inflate::read(
-                &mut input,
-                &mut inflate.state,
-                &mut out[decompressed_body_prefix_len..],
-            )
-            .or_error()?;
-
-            if num_decompressed_bytes as u64 + decompressed_body_prefix_len as u64 != size {
-                return Err(size_mismatch(
-                    num_decompressed_bytes as u64 + decompressed_body_prefix_len as u64,
-                    size,
-                ));
+            let n = inflate.rest(
+                &map[consumed_in..],
+                &header[..consumed_out],
+                header_size,
+                out,
+                size_usize,
+            )?;
+            if n as u64 != size {
+                return Err(size_mismatch(n as u64, size));
             }
         }
         Ok(Some(gix_object::Data {

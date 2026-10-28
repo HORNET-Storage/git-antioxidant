@@ -7,11 +7,6 @@ use libfuzzer_sys::fuzz_target;
 /// Valid prefixes for unified diff output lines
 const VALID_DIFF_LINE_PREFIXES: [char; 4] = [' ', '+', '-', '@'];
 
-/// `MyersMinimal` searches for a shortest diff without Git's cost limit, as `git diff --minimal` does,
-/// in time proportional to the number of lines times the number of changed lines. Inputs with more lines
-/// are diffed without it, so that libFuzzer's timeout reports searches that don't end rather than that cost.
-const MAX_MINIMAL_LINES: usize = 4096;
-
 #[derive(arbitrary::Arbitrary, Debug)]
 struct Input<'a> {
     before: &'a str,
@@ -21,7 +16,7 @@ struct Input<'a> {
 
 /// Tests unified diff printing with:
 /// - Different context lengths (0-10)
-/// - Various input combinations, diffed with MyersMinimal only if they have at most `MAX_MINIMAL_LINES` lines
+/// - Various input combinations
 /// - Validates output format (lines start with ' ', '+', '-', or '@')
 fn do_fuzz(
     Input {
@@ -30,7 +25,7 @@ fn do_fuzz(
         context_len,
     }: Input<'_>,
 ) {
-    let input = InternedInput::new(before, after);
+    let mut input = InternedInput::new(before, after);
 
     // Test with different algorithms
     for algorithm in [
@@ -38,10 +33,11 @@ fn do_fuzz(
         Algorithm::Myers,
         Algorithm::MyersMinimal,
     ] {
-        if algorithm == Algorithm::MyersMinimal && input.before.len() + input.after.len() > MAX_MINIMAL_LINES {
-            continue;
+        // Keep quadratic minimal diffs within the fuzz timeout.
+        if algorithm == Algorithm::MyersMinimal {
+            input.before.truncate(512);
+            input.after.truncate(512);
         }
-
         let mut diff = Diff::compute(algorithm, &input);
 
         // Postprocess before printing

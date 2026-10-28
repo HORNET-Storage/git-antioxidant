@@ -372,28 +372,49 @@ mod ssh {
 
 #[cfg(feature = "status")]
 mod status {
-    use gix::{config::tree::Status, status::UntrackedFiles};
+    use gix::{
+        config::tree::{Key, Status},
+        status::UntrackedFiles,
+    };
     use gix_testtools::TestResult;
 
     #[test]
     fn default() -> TestResult {
         for (actual, expected) in [
             ("no", UntrackedFiles::None),
+            ("NO", UntrackedFiles::None),
+            ("false", UntrackedFiles::None),
+            ("FaLsE", UntrackedFiles::None),
+            ("off", UntrackedFiles::None),
+            ("0", UntrackedFiles::None),
+            ("", UntrackedFiles::None),
             ("normal", UntrackedFiles::Collapsed),
+            ("true", UntrackedFiles::Collapsed),
+            ("TrUe", UntrackedFiles::Collapsed),
+            ("yes", UntrackedFiles::Collapsed),
+            ("on", UntrackedFiles::Collapsed),
+            ("1", UntrackedFiles::Collapsed),
+            ("2", UntrackedFiles::Collapsed),
+            ("-1", UntrackedFiles::Collapsed),
             ("all", UntrackedFiles::Files),
         ] {
             assert_eq!(
                 Status::SHOW_UNTRACKED_FILES.try_into_show_untracked_files(actual)?,
-                expected
+                expected,
+                "untracked files mode for {actual:?}"
+            );
+            assert!(
+                Status::SHOW_UNTRACKED_FILES.validate(actual.into()).is_ok(),
+                "the key validator accepts {actual:?}"
             );
         }
 
         crate::config::key::assert_config_error(
             &Status::SHOW_UNTRACKED_FILES
-                .try_into_show_untracked_files("NO")
+                .try_into_show_untracked_files("NORMAL")
                 .expect_err("invalid configuration"),
             "status.showUntrackedFiles",
-            Some("NO".as_bytes().into()),
+            Some("NORMAL".as_bytes().into()),
             None,
         );
         Ok(())
@@ -616,9 +637,78 @@ mod diff {
 
 #[cfg(feature = "merge")]
 mod merge {
-    use gix::config::tree::{Key, Merge};
+    use gix::config::tree::{Key, Merge, Section};
+    use gix::merge::tree::DirectoryRenames;
     use gix_merge::blob::builtin_driver::text::ConflictStyle;
     use gix_testtools::TestResult;
+
+    #[test]
+    fn directory_renames() -> TestResult {
+        let key = &Merge::DIRECTORY_RENAMES;
+        assert!(
+            Merge.keys().iter().any(|key| key.name() == "directoryRenames"),
+            "directory rename handling is registered in the merge section"
+        );
+        assert_eq!(
+            key.try_into_directory_renames(Ok(None))?,
+            DirectoryRenames::Conflict,
+            "an absent key uses the schema's default"
+        );
+        for (value, expected) in [
+            ("true", DirectoryRenames::Enabled),
+            ("YES", DirectoryRenames::Enabled),
+            ("on", DirectoryRenames::Enabled),
+            ("1", DirectoryRenames::Enabled),
+            ("false", DirectoryRenames::Disabled),
+            ("NO", DirectoryRenames::Disabled),
+            ("off", DirectoryRenames::Disabled),
+            ("0", DirectoryRenames::Disabled),
+            ("", DirectoryRenames::Disabled),
+            ("conflict", DirectoryRenames::Conflict),
+            ("CoNfLiCt", DirectoryRenames::Conflict),
+        ] {
+            let boolean = gix_config::Boolean::try_from(gix::bstr::BStr::new(value)).map(|b| Some(b.0));
+            assert_eq!(
+                key.try_into_directory_renames(boolean)?,
+                expected,
+                "{value} selects the expected mode"
+            );
+            key.validate(value.into())?;
+        }
+        for value in ["invalid", "copies"] {
+            crate::config::key::assert_config_error(
+                &key.validate(value.into())
+                    .expect_err("the schema rejects invalid directory rename modes"),
+                "merge.directoryRenames",
+                Some(value.as_bytes().into()),
+                None,
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn directory_renames_preserves_other_errors() -> TestResult {
+        use gix_error::{ErrorExt, message};
+
+        for context in [message("caller error"), message("caller error").with_input("conflict")] {
+            let expected = context.to_string();
+            let source = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+            let err = Merge::DIRECTORY_RENAMES
+                .try_into_directory_renames(Err(source.and_raise(context)))
+                .expect_err("caller errors without byte input are propagated");
+            assert_eq!(
+                err.error().to_string(),
+                expected,
+                "the caller's context and metadata are preserved"
+            );
+            assert!(
+                err.downcast_any_ref::<std::io::Error>().is_some(),
+                "the caller's original cause is preserved"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn conflict_style() -> TestResult {
@@ -1196,6 +1286,38 @@ mod extensions {
         );
         assert!(Extensions::OBJECT_FORMAT.validate("invalid".into()).is_err());
         Ok(())
+    }
+}
+
+mod init {
+    use gix::config::tree::{Init, Key};
+
+    /// Values are parsed like `extensions.objectFormat`, whose test covers the accepted names.
+    #[test]
+    fn default_object_format() {
+        crate::config::key::assert_config_error(
+            &Init::DEFAULT_OBJECT_FORMAT
+                .try_into_object_format("invalid")
+                .expect_err("invalid configuration"),
+            "init.defaultObjectFormat",
+            Some("invalid".as_bytes().into()),
+            Some("GIT_DEFAULT_HASH"),
+        );
+        for err in [
+            Init::DEFAULT_OBJECT_FORMAT
+                .validate("invalid".into())
+                .expect_err("invalid configuration"),
+            Init::DEFAULT_OBJECT_FORMAT
+                .validated_assignment("invalid".into())
+                .expect_err("invalid assignment"),
+        ] {
+            crate::config::key::assert_config_error(
+                &err,
+                "init.defaultObjectFormat",
+                Some("invalid".as_bytes().into()),
+                Some("GIT_DEFAULT_HASH"),
+            );
+        }
     }
 }
 

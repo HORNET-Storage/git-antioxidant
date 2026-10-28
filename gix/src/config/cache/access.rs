@@ -296,15 +296,24 @@ impl Cache {
         const ALWAYS_ON_FOR_SAFETY: bool = true;
         Ok(gix_validate::path::component::Options {
             protect_windows: config::tree::gitoxide::Core::PROTECT_WINDOWS
-                .enrich_error(self.resolved.boolean(config::tree::gitoxide::Core::PROTECT_WINDOWS))
+                .enrich_error(self.resolved.boolean_filter(
+                    config::tree::gitoxide::Core::PROTECT_WINDOWS,
+                    &mut self.filter_config_section.clone(),
+                ))
                 .with_lenient_default_value(self.lenient_config, Some(IS_WINDOWS))?
                 .unwrap_or(IS_WINDOWS),
             protect_hfs: config::tree::Core::PROTECT_HFS
-                .enrich_error(self.resolved.boolean(config::tree::Core::PROTECT_HFS))
+                .enrich_error(
+                    self.resolved
+                        .boolean_filter(config::tree::Core::PROTECT_HFS, &mut self.filter_config_section.clone()),
+                )
                 .with_lenient_default_value(self.lenient_config, Some(IS_MACOS))?
                 .unwrap_or(IS_MACOS),
             protect_ntfs: config::tree::Core::PROTECT_NTFS
-                .enrich_error(self.resolved.boolean(config::tree::Core::PROTECT_NTFS))
+                .enrich_error(self.resolved.boolean_filter(
+                    config::tree::Core::PROTECT_NTFS,
+                    &mut self.filter_config_section.clone(),
+                ))
                 .with_lenient_default_value(self.lenient_config, Some(ALWAYS_ON_FOR_SAFETY))?
                 .unwrap_or(ALWAYS_ON_FOR_SAFETY),
         })
@@ -408,15 +417,13 @@ impl Cache {
             parse_ignore,
         ))
     }
-    /// Assemble global attributes, including `$GIT_COMMON_DIR/info/attributes`.
+
     #[cfg(feature = "attributes")]
-    pub(crate) fn assemble_attribute_globals(
+    pub(crate) fn attribute_global_paths(
         &self,
-        common_dir: &std::path::Path,
         current_dir: &std::path::Path,
-        source: gix_worktree::stack::state::attributes::Source,
         attributes: crate::open::permissions::Attributes,
-    ) -> Result<(gix_worktree::stack::state::Attributes, Vec<u8>)> {
+    ) -> Result<Vec<PathBuf>> {
         use gix_attributes::Source;
         let configured_or_user_attributes = match trusted_file_path_with_base(
             &self.resolved,
@@ -438,16 +445,31 @@ impl Cache {
                 }
             }
         };
-        let attribute_files = [gix_attributes::Source::GitInstallation, gix_attributes::Source::System]
-            .into_iter()
-            .filter(|source| match source {
-                Source::GitInstallation => attributes.git_binary,
-                Source::System => attributes.system,
-                Source::Git | Source::Local => unreachable!("we don't offer turning this off right now"),
-            })
-            .filter_map(|source| source.storage_location(&mut Self::make_source_env(self.environment)))
-            .chain(configured_or_user_attributes)
-            .map(|path| current_dir.join(path));
+        Ok(
+            [gix_attributes::Source::GitInstallation, gix_attributes::Source::System]
+                .into_iter()
+                .filter(|source| match source {
+                    Source::GitInstallation => attributes.git_binary,
+                    Source::System => attributes.system,
+                    Source::Git | Source::Local => unreachable!("we don't offer turning this off right now"),
+                })
+                .filter_map(|source| source.storage_location(&mut Self::make_source_env(self.environment)))
+                .chain(configured_or_user_attributes)
+                .map(|path| current_dir.join(path))
+                .collect(),
+        )
+    }
+
+    /// Assemble global attributes, including `$GIT_COMMON_DIR/info/attributes`.
+    #[cfg(feature = "attributes")]
+    pub(crate) fn assemble_attribute_globals(
+        &self,
+        common_dir: &std::path::Path,
+        current_dir: &std::path::Path,
+        source: gix_worktree::stack::state::attributes::Source,
+        attributes: crate::open::permissions::Attributes,
+    ) -> Result<(gix_worktree::stack::state::Attributes, Vec<u8>)> {
+        let attribute_files = self.attribute_global_paths(current_dir, attributes)?;
         let info_attributes_path = current_dir.join(common_dir).join("info").join("attributes");
         let mut buf = Vec::new();
         let mut collection = gix_attributes::search::MetadataCollection::default();

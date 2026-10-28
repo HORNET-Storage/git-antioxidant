@@ -268,6 +268,8 @@ impl Diff {
         self.added.clear();
         self.removed.resize(before.len(), false);
         self.added.resize(after.len(), false);
+        // As in Git, both algorithms get the whole files: histogram matches lines anywhere in them, and
+        // Myers counts their tokens before it sets the common prefix and postfix aside.
         let (removed, added) = (&mut self.removed[..], &mut self.added[..]);
         match algorithm {
             Algorithm::Histogram => histogram::diff(before, after, removed, added, num_tokens),

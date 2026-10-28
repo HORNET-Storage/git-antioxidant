@@ -3,7 +3,7 @@ use std::{fs, io};
 
 use gix_error::{ErrorExt, ResourceExhaustionKind, ResultExt, bail, message};
 use gix_hash::{Hasher, ObjectId};
-use gix_zlib::Decompress;
+use gix_zlib::{Decompress, stream::inflate};
 
 use crate::data::input;
 
@@ -16,7 +16,9 @@ use crate::data::input;
 /// are kept. Blobs above a [big-file threshold](Self::with_big_file_threshold()) are hashed while they are inflated, too.
 pub struct BytesToEntriesIter<BR> {
     read: BR,
-    decompressor: Decompress,
+    measure: inflate::Measure,
+    /// Inflates the blobs above `big_file_threshold` to hash them, created for the first of them.
+    decompressor: Option<Decompress>,
     offset: u64,
     had_error: bool,
     version: crate::data::Version,
@@ -96,7 +98,8 @@ where
         let (version, num_objects) = crate::data::header::decode(&header_data)?;
         let mut iter = BytesToEntriesIter {
             read,
-            decompressor: Decompress::new(),
+            measure: inflate::Measure::default(),
+            decompressor: None,
             compressed,
             offset: crate::data::header::SIZE as u64,
             had_error: false,
@@ -171,8 +174,7 @@ where
             hash
         });
 
-        // Decompress the object to learn its compressed bytes, which are passed on as they are consumed.
-        self.decompressor.reset();
+        // Inflate the object to learn its compressed bytes, which are passed on as they are consumed.
         let (inflated, kept, consumed, stop) = {
             let mut compressed = EntryRead {
                 kept: (self.compressed.keep() && out.is_none()).then(Vec::new),
@@ -184,13 +186,14 @@ where
                 consumed: 0,
                 stop: None,
             };
-            let inflated = io::copy(
-                &mut DecompressRead {
-                    inner: &mut compressed,
-                    decompressor: &mut self.decompressor,
-                },
-                &mut Inflated(object.as_mut()),
-            );
+            let inflated = match object.as_mut() {
+                Some(object) => hash_inflated(
+                    &mut compressed,
+                    self.decompressor.get_or_insert_with(Decompress::new),
+                    object,
+                ),
+                None => self.measure.read(&mut compressed),
+            };
             (inflated, compressed.kept, compressed.consumed, compressed.stop)
         };
         match stop {
@@ -203,7 +206,7 @@ where
             Some(Stop::Write(err)) => return Err(io_error(err)),
             None => {}
         }
-        let bytes_copied = inflated.map_err(io_error)?;
+        let (bytes_copied, compressed_size) = inflated.map_err(io_error)?;
         if bytes_copied != entry.decompressed_size {
             bail!(gix_error::corruption(format!(
                 "pack is incomplete: it was decompressed into {bytes_copied} bytes but {} bytes where expected.",
@@ -212,7 +215,6 @@ where
         }
 
         let pack_offset = self.offset;
-        let compressed_size = self.decompressor.total_in();
         debug_assert_eq!(
             compressed_size, consumed,
             "we must track exactly the same amount of bytes as read by the decompressor"
@@ -399,19 +401,20 @@ fn reserve_within(
     Ok(())
 }
 
-/// Discards the inflated bytes of an entry, but hashes them first if the id of its object is computed.
-struct Inflated<'a>(Option<&'a mut Hasher>);
-
-impl io::Write for Inflated<'_> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if let Some(hash) = self.0.as_mut() {
-            hash.update(buf);
+/// Inflate the zlib stream that `rd` starts with using `state`, hash its inflated bytes into `hash` and return
+/// `(decompressed_size, compressed_size)` as [`Measure::read()`](inflate::Measure::read()) does.
+fn hash_inflated(rd: &mut impl io::BufRead, state: &mut Decompress, hash: &mut Hasher) -> io::Result<(u64, u64)> {
+    state.reset();
+    let mut buf = [0; 8 * 1024];
+    let mut decompressed = 0;
+    loop {
+        match inflate::read(rd, state, &mut buf)? {
+            0 => return Ok((decompressed, state.total_in())),
+            n => {
+                hash.update(&buf[..n]);
+                decompressed += n as u64;
+            }
         }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 }
 
@@ -449,23 +452,6 @@ fn io_error(err: io::Error) -> Error {
 
 fn hash_io_error(err: Error) -> Error {
     err.and_raise(message("An IO operation failed while streaming an entry"))
-}
-
-/// The boxed variant is faster for what we do (moving the decompressor in and out a lot)
-pub struct DecompressRead<'a, R> {
-    /// The reader from which bytes should be decompressed.
-    pub inner: R,
-    /// The decompressor doing all the work.
-    pub decompressor: &'a mut Decompress,
-}
-
-impl<R> io::Read for DecompressRead<'_, R>
-where
-    R: io::BufRead,
-{
-    fn read(&mut self, into: &mut [u8]) -> io::Result<usize> {
-        gix_zlib::stream::inflate::read(&mut self.inner, self.decompressor, into)
-    }
 }
 
 /// A utility to automatically generate a hash while writing into an inner writer.

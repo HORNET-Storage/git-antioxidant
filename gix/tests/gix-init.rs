@@ -765,6 +765,7 @@ mod with_overrides {
             .set("EMAIL", "user email")
             .set("GIX_PACK_CACHE_MEMORY", "0")
             .set("GIT_NOTES_DISPLAY_REF", "refs/notes/review:refs/notes/*")
+            .set("GIT_DEFAULT_HASH", "sha256")
             .set("GIX_PARSE_PRECIOUS", "1")
             .set("GIX_OBJECT_CACHE_MEMORY", "5m")
             .set("GIX_CREDENTIALS_HELPER_STDERR", "creds-stderr")
@@ -936,6 +937,7 @@ mod with_overrides {
             ("gitoxide.commit.committerDate", default_date),
             ("gitoxide.user.emailFallback", "user email"),
             ("notes.displayRef", "refs/notes/review:refs/notes/*"),
+            ("init.defaultObjectFormat", "sha256"),
             ("gitoxide.parsePrecious", "1"),
             ("core.deltaBaseCacheLimit", "0"),
             ("gitoxide.objects.cacheLimit", "5m"),
@@ -1172,7 +1174,13 @@ fn repository_transitions_do_not_inherit_repository_environment_overrides() -> g
         Ok(())
     }
 
-    let fixture = gix_testtools::scripted_fixture_read_only_needs_archive("make_worktree_relative_linking.sh")?;
+    let Some(fixture) =
+        gix_testtools::scripted_fixture_read_only_with_git_version("make_worktree_relative_linking.sh", |version| {
+            version >= (2, 48, 0)
+        })?
+    else {
+        return Ok(());
+    };
     let main = std::fs::canonicalize(fixture.join("main"))?;
     let main_git_dir = main.join(".git");
     let main_index_file = main.join(".git/index");

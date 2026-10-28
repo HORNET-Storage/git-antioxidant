@@ -31,23 +31,21 @@ impl Mode {
     /// * if `executable_bit` is false the executable bit will not be compared
     ///   `Change::ExecutableBit` will never be generated
     ///
-    /// If there is a type change then we will use whatever information is
-    /// present on the FS. Specifically if `has_symlinks` is false we will
-    /// never generate `Change::TypeChange { new_mode: Mode::SYMLINK }`. and
-    /// if `executable_bit` is false we will never generate `Change::TypeChange
-    /// { new_mode: Mode::FILE_EXECUTABLE }` (all files are assumed to be not
-    /// executable). That means that unstaging and staging files can be a lossy
-    /// operation on such file systems.
+    /// Type changes use the type observed on disk. Actual symlinks retain their
+    /// type even if `has_symlinks` is false; that option only permits regular
+    /// files to represent existing symlink entries. If `executable_bit` is false,
+    /// type changes never produce `Change::Type { new_mode: Mode::FILE_EXECUTABLE }`
+    /// (all files are assumed to be not executable). That means that unstaging
+    /// and staging files can be a lossy operation on such file systems.
     ///
     /// If a directory replaced a normal file/symlink we assume that the
     /// directory is a submodule. Normal (non-submodule) directories would
     /// cause a file to be deleted from the index and should be handled before
     /// calling this function.
     ///
-    /// Regular files of either mode that aren't regular files on disk anymore changed their type.
-    /// If the stat information belongs to something other than a regular file, a directory or a
-    /// symlink (like a socket), the new mode is that of a regular file, as git can't commit other
-    /// kinds of files.
+    /// If the stat information belongs to something other than a normal file/
+    /// directory (like a socket) we just return an identity change (non-files
+    /// can not be committed to git).
     pub fn change_to_match_fs(
         self,
         stat: &crate::fs::Metadata,
@@ -65,8 +63,7 @@ impl Mode {
     }
 
     /// Like [`change_to_match_fs`](Self::change_to_match_fs) but accepts pre-extracted
-    /// file-type and permission bits, for callers that already have them (e.g. cached
-    /// metadata from a batched directory enumeration).
+    /// file-type and permission bits, for callers that already have them.
     ///
     /// Note that some parameters are mutually exclusive, but inconsistency won't be a problem
     /// if the source of the data is consistent.
@@ -90,7 +87,8 @@ impl Mode {
         executable_bit: bool,
     ) -> Option<Change> {
         match self {
-            Mode::FILE | Mode::FILE_EXECUTABLE if !is_file => (),
+            Mode::FILE if !is_file => (),
+            Mode::FILE_EXECUTABLE if is_dir || is_symlink => (),
             Mode::SYMLINK if is_symlink => return None,
             Mode::SYMLINK if has_symlinks && !is_symlink => (),
             Mode::SYMLINK if !has_symlinks && !is_file => (),
@@ -103,7 +101,7 @@ impl Mode {
             Mode::COMMIT
         } else if executable_bit && is_executable {
             Mode::FILE_EXECUTABLE
-        } else if has_symlinks && is_symlink {
+        } else if is_symlink {
             Mode::SYMLINK
         } else {
             Mode::FILE

@@ -118,6 +118,12 @@ pub fn tree<'objects>(
         tree::Editor::new(ancestor_tree.to_owned(), objects, base_tree.kind())
     };
     let resolve_tree_conflicts = options.tree_conflicts;
+    // Where the locations that directory renames infer are in conflict, a forced resolution also chooses the location of
+    // each file that a directory rename moved.
+    let forced_location = resolve_tree_conflicts.filter(|resolution| {
+        matches!(resolution, ResolveWith::Ancestor | ResolveWith::Ours)
+            && options.directory_renames == DirectoryRenames::Conflict
+    });
 
     let mut changes = [
         collect_changes(
@@ -139,15 +145,30 @@ pub fn tree<'objects>(
             diff_state,
         )?,
     ];
+    // `our_tree` names the path tree of our changes below, so forced resolutions after the merge read the input trees
+    // from here.
+    let trees = [base_tree, our_tree, their_tree];
     let renames = match options.rewrites {
-        Some(rewrites) => renames::find(
-            [base_tree, our_tree, their_tree],
-            &mut changes,
-            objects,
-            diff_resource_cache,
-            rewrites,
-            options.directory_renames,
-        )?,
+        Some(rewrites) => {
+            let mut renames = renames::find(
+                trees,
+                &mut changes,
+                objects,
+                diff_resource_cache,
+                rewrites,
+                options.directory_renames,
+            )?;
+            if forced_location.is_some() {
+                renames::prepare_forced_locations(
+                    &mut renames.moves,
+                    &changes,
+                    objects,
+                    diff_resource_cache,
+                    rewrites,
+                )?;
+            }
+            renames
+        }
         None => renames::Outcome::default(),
     };
     let [ours, theirs] = changes;
@@ -174,7 +195,7 @@ pub fn tree<'objects>(
         moves,
     } = renames;
     let moves_before_resolver =
-        options.fail_on_conflict.is_some() && options.directory_renames == DirectoryRenames::MoveAsConflict;
+        options.fail_on_conflict.is_some() && options.directory_renames == DirectoryRenames::Conflict;
     if moves_before_resolver {
         early_conflicts.extend(moves.iter().map(|moved| moved.record(options.directory_renames, &[])));
     }
@@ -251,16 +272,25 @@ pub fn tree<'objects>(
                                 let renamed_location = unique_path_in_tree(
                                     location.as_bstr(),
                                     &editor,
-                                    their_tree,
+                                    &[&*their_tree],
                                     labels.other.unwrap_or_default(),
                                 )?;
                                 match resolve_tree_conflicts {
                                     None | Some(ResolveWith::VirtualMergeBase) => {
+                                        // A rename leaves its source, although its entry goes to the unique path.
+                                        if let Change::Rewrite {
+                                            source_location,
+                                            copy: false,
+                                            ..
+                                        } = theirs
+                                        {
+                                            editor.remove_if_leaf(toc(source_location))?;
+                                        }
                                         editor.upsert(toc(&renamed_location), mode.kind(), id.to_owned())?;
                                     }
                                     Some(ResolveWith::Ours) => {
                                         if outer_side.is_swapped() {
-                                            editor.upsert(to_components(location), mode.kind(), id.to_owned())?;
+                                            apply_change(&mut editor, theirs)?;
                                         }
                                     }
                                     Some(ResolveWith::Ancestor) => {
@@ -395,7 +425,9 @@ pub fn tree<'objects>(
                                         pick(side, &*our_changes, &*their_changes),
                                         their_location.as_bstr(),
                                     );
-                                    let (merged_blob_id, resolution) = if renamed_without_change {
+                                    // Without a change by the rename, or with the same content on both sides, the
+                                    // content of the modification is the result, and only the modes are merged.
+                                    let (merged_blob_id, resolution) = if renamed_without_change || our_id == their_id {
                                         (*our_id, identical_content_resolution(modes_merged_cleanly))
                                     } else {
                                         // The conflict markers give a rename that a directory rename moved the
@@ -763,7 +795,7 @@ pub fn tree<'objects>(
                                 let renamed_location = unique_path_in_tree(
                                     blocking_location.as_bstr(),
                                     &editor,
-                                    our_tree,
+                                    &[&*our_tree],
                                     labels.current.unwrap_or_default(),
                                 )?;
                                 let conflict = Conflict::without_resolution(
@@ -824,7 +856,7 @@ pub fn tree<'objects>(
                                 let renamed_location = unique_path_in_tree(
                                     blocking_location.as_bstr(),
                                     &editor,
-                                    our_tree,
+                                    &[&*our_tree],
                                     labels.current.unwrap_or_default(),
                                 )?;
                                 let conflict = Conflict::without_resolution(
@@ -1096,7 +1128,7 @@ pub fn tree<'objects>(
                                             let renamed_path = unique_path_in_tree(
                                                 location.as_bstr(),
                                                 &editor,
-                                                our_tree,
+                                                &[&*our_tree],
                                                 label_of_side_to_be_moved,
                                             )?;
                                             editor.remove_if_leaf(toc(location))?;
@@ -1523,7 +1555,7 @@ pub fn tree<'objects>(
                                 let renamed_location = unique_path_in_tree(
                                     blocking_location.as_bstr(),
                                     &editor,
-                                    our_tree,
+                                    &[&*our_tree],
                                     labels.current.unwrap_or_default(),
                                 )?;
                                 let conflict = Conflict::without_resolution(
@@ -2076,18 +2108,33 @@ pub fn tree<'objects>(
         outer_side = outer_side.swapped();
     }
 
-    if !failed_on_first_conflict && !moves_before_resolver {
+    if !failed_on_first_conflict {
         let resolver_conflicts = &conflicts[resolver_start..];
-        let records: Vec<_> = moves
-            .iter()
-            .map(|moved| {
-                with_forced_resolution(
-                    moved.record(options.directory_renames, resolver_conflicts),
-                    resolve_tree_conflicts,
-                )
-            })
-            .collect();
-        conflicts.extend(records);
+        if let Some(resolution) = forced_location {
+            let mut buf = Vec::new();
+            for moved in &moves {
+                moved.force_location(
+                    resolution,
+                    &mut editor,
+                    objects,
+                    [trees[0], trees[1]],
+                    resolver_conflicts,
+                    &mut buf,
+                )?;
+            }
+        }
+        if !moves_before_resolver {
+            let records: Vec<_> = moves
+                .iter()
+                .map(|moved| {
+                    with_forced_resolution(
+                        moved.record(options.directory_renames, resolver_conflicts),
+                        resolve_tree_conflicts,
+                    )
+                })
+                .collect();
+            conflicts.extend(records);
+        }
     }
 
     Ok(Outcome {
@@ -2275,7 +2322,8 @@ struct PlacedEntry {
 impl DistinctTypes {
     /// Place the local *ours* entry `(our_mode, our_id)` and the local *theirs* entry
     /// `(their_mode, their_id)`, which both want `location`. An entry that moves is named after its side
-    /// in `labels`, at a path that neither `editor` nor the path tree of its side uses.
+    /// in `labels`, at a path that neither `editor` nor the path tree of either side uses, as Git's `unique_path()`
+    /// avoids every path of the merge.
     fn new(
         location: &BString,
         (our_mode, our_id): (EntryMode, ObjectId),
@@ -2296,7 +2344,14 @@ impl DistinctTypes {
             )
         };
         let our_unique_location = ours_moves
-            .then(|| unique_path_in_tree(location.as_bstr(), editor, our_tree, labels.current.unwrap_or_default()))
+            .then(|| {
+                unique_path_in_tree(
+                    location.as_bstr(),
+                    editor,
+                    &[our_tree, their_tree],
+                    labels.current.unwrap_or_default(),
+                )
+            })
             .transpose()?;
         // If both entries move, sides with equal names would otherwise get the same path.
         let their_unique_location = theirs_moves
@@ -2304,7 +2359,7 @@ impl DistinctTypes {
                 unique_path_in_tree_avoiding(
                     location.as_bstr(),
                     editor,
-                    their_tree,
+                    &[our_tree, their_tree],
                     labels.other.unwrap_or_default(),
                     our_unique_location.as_ref().map(|path| path.as_bstr()),
                 )

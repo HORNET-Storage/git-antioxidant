@@ -154,9 +154,9 @@ function baseline () (
        conflict_style="diff3"
    fi
   local directory_renames="conflict"
-  if [[ "$output_name" == *-dir-renames-true ]]; then
+  if [[ "$output_name" == *directory-renames-true* ]]; then
     directory_renames="true"
-  elif [[ "$output_name" == *-dir-renames-false ]]; then
+  elif [[ "$output_name" == *directory-renames-false* ]]; then
     directory_renames="false"
   fi
   local strategy_option=""
@@ -330,6 +330,7 @@ EOF
 )
 
 git init simple
+
 (cd simple
   rm -Rf .git/hooks
   write_lines 1 2 3 4 5 >numbers
@@ -617,6 +618,124 @@ git init identical-renames-to-same-destination-with-mode-change
   git mv two target
   git commit -m "rename two to target"
 )
+
+for change in add enable disable; do
+  git init "same-content-different-modes-$change"
+  (
+    cd "same-content-different-modes-$change"
+    write_lines anchor >anchor
+    git add anchor
+    if test "$change" != add; then
+      write_lines old >file
+      git add file
+      if test "$change" = disable; then
+        chmod +x file
+        git update-index --chmod=+x file
+      fi
+    fi
+    git commit -m base
+    git branch A
+    git branch B
+
+    # Both sides agree on content; only the executable mode differs.
+    git checkout A
+    write_lines new >file
+    git add file
+    chmod +x file
+    git update-index --chmod=+x file
+    git commit -m "executable content"
+
+    git checkout B
+    write_lines new >file
+    git add file
+    chmod -x file
+    git update-index --chmod=-x file
+    git commit -m "non-executable content"
+  )
+done
+
+for destination in z e e-with-renamed-file; do
+  git init "renamed-subdirectory-$destination"
+  (
+    cd "renamed-subdirectory-$destination"
+    mkdir -p d/e
+    echo 1 >d/e/f
+    git add d
+    git commit -m base
+    git branch A
+    git branch B
+    git checkout A
+    mkdir y
+    git mv d/e "y/${destination%%-*}"
+    if test "$destination" = e-with-renamed-file; then
+      git mv y/e/f y/e/g
+    fi
+    # Changing the inner name must not imply a rename of its parent directory.
+    echo extra >y/extra
+    git add y
+    git commit -m "move the subdirectory"
+    git checkout B
+    echo x >d/c
+    git add d/c
+    git commit -m "add beside the moved subdirectory"
+  )
+done
+
+for change in add modify; do
+  for types in blob-link blob-commit link-commit; do
+    git init "distinct-types-$change-$types"
+    (
+      cd "distinct-types-$change-$types"
+      git config core.symlinks false
+      if test "$change" = modify; then
+        echo 1 >a
+        git add a
+      fi
+      git commit --allow-empty -m base
+      commit_id=$(git rev-parse HEAD)
+      make_resolve_tree ancestor A B
+      make_resolve_tree ancestor B A
+      git branch A
+      git branch B
+      for side in A B; do
+        git checkout -f "$side"
+        if test "$side" = A; then type=${types%-*}; else type=${types#*-}; fi
+        case "$type" in
+          blob) mode=100644; object_id=$(echo 2 | git hash-object -w --stdin) ;;
+          link) mode=120000; object_id=$(printf target | git hash-object -w --stdin) ;;
+          commit) mode=160000; object_id=$commit_id ;;
+        esac
+        # Index-only setup also works without native symlink or submodule support.
+        git update-index --add --cacheinfo "$mode,$object_id,a"
+        git commit -m "$side uses $type"
+        if test "$side" = A; then make_resolve_tree ours A B; else make_resolve_tree ours B A; fi
+      done
+    )
+  done
+done
+
+for deleted in c f; do
+  git init "directory-replaced-partly-deleted-$deleted"
+  (
+    cd "directory-replaced-partly-deleted-$deleted"
+    mkdir d
+    echo c >d/c
+    echo f >d/f
+    git add d
+    git commit -m base
+    git branch A
+    git branch B
+    git checkout A
+    git rm -r d
+    echo x >d
+    git add d
+    git commit -m "replace directory with file"
+    git checkout B
+    # Shared deletions must not look like surviving descendants of the directory.
+    git rm "d/$deleted"
+    git commit -m "delete part of the directory"
+  )
+done
 
 git init deleted-file-added-dir-with-rename
 (cd deleted-file-added-dir-with-rename
@@ -2090,6 +2209,21 @@ git init rename-and-modification
   git commit -am "changed a/x.f"
 )
 
+git init rename-and-identical-modification
+(cd rename-and-identical-modification
+  # Both sides produce the same blob; only A renames it. No content merge is needed.
+  seq 5 >a
+  git add a && git commit -m "base"
+  git branch A
+  git checkout -b B
+  seq 6 >a
+  git commit -am "modify in place"
+  git checkout A
+  git mv a c
+  seq 6 >c
+  git commit -am "rename and make the identical modification"
+)
+
 git init symlink-modification
 (cd symlink-modification
   touch a b o
@@ -3122,6 +3256,19 @@ baseline same-rename-and-file-to-directory A-B A B
 baseline renames-to-same-destination A-B A B
 baseline identical-renames-to-same-destination A-B A B
 baseline identical-renames-to-same-destination-with-mode-change A-B A B
+baseline same-content-different-modes-add A-B A B
+baseline same-content-different-modes-enable A-B A B
+baseline same-content-different-modes-disable A-B A B
+baseline directory-replaced-partly-deleted-c A-B A B
+baseline directory-replaced-partly-deleted-f A-B A B
+baseline renamed-subdirectory-z A-B A B
+baseline renamed-subdirectory-e A-B A B
+baseline renamed-subdirectory-e-with-renamed-file A-B A B
+for change in add modify; do
+  for types in blob-link blob-commit link-commit; do
+    baseline "distinct-types-$change-$types" A-B A B
+  done
+done
 baseline deleted-file-added-dir-with-rename A-B A B
 baseline deleted-file-replaced-by-renamed-dir A-B A B
 baseline renamed-file-replaced-by-renamed-dir A-B A B
@@ -3191,6 +3338,7 @@ baseline multiple-merge-bases-with-file-directory-conflicts A-B-diff3 A B
 baseline recursive-merge-driver A-B A B
 
 baseline rename-and-modification A-B A B
+baseline rename-and-identical-modification A-B A B
 baseline symlink-modification A-B A B
 baseline symlink-addition A-B A B
 baseline added-file-vs-added-directory A-B A B
@@ -3215,37 +3363,37 @@ baseline distinct-types A-B A B
 baseline conflicts-when-ours-is-processed-first A-B A B
 
 baseline directory-rename-moves A-B A B
-baseline directory-rename-moves A-B-dir-renames-true A B
-baseline directory-rename-moves A-B-dir-renames-false A B
+baseline directory-rename-moves A-B-directory-renames-true A B
+baseline directory-rename-moves A-B-directory-renames-false A B
 baseline directory-rename-split A-B A B
-baseline directory-rename-split A-B-dir-renames-true A B
-baseline directory-rename-split A-B-dir-renames-false A B
+baseline directory-rename-split A-B-directory-renames-true A B
+baseline directory-rename-split A-B-directory-renames-false A B
 baseline directory-rename-file-in-way A-B A B
-baseline directory-rename-file-in-way A-B-dir-renames-true A B
-baseline directory-rename-file-in-way A-B-dir-renames-false A B
+baseline directory-rename-file-in-way A-B-directory-renames-true A B
+baseline directory-rename-file-in-way A-B-directory-renames-false A B
 baseline directory-rename-collision A-B A B
-baseline directory-rename-collision A-B-dir-renames-true A B
-baseline directory-rename-collision A-B-dir-renames-false A B
+baseline directory-rename-collision A-B-directory-renames-true A B
+baseline directory-rename-collision A-B-directory-renames-false A B
 baseline directory-rename-into-renamed-directory A-B A B
-baseline directory-rename-into-renamed-directory A-B-dir-renames-true A B
-baseline directory-rename-into-renamed-directory A-B-dir-renames-false A B
+baseline directory-rename-into-renamed-directory A-B-directory-renames-true A B
+baseline directory-rename-into-renamed-directory A-B-directory-renames-false A B
 baseline directory-rename-to-same-destination A-B A B
-baseline directory-rename-to-same-destination A-B-dir-renames-true A B
-baseline directory-rename-to-same-destination A-B-dir-renames-false A B
+baseline directory-rename-to-same-destination A-B-directory-renames-true A B
+baseline directory-rename-to-same-destination A-B-directory-renames-false A B
 baseline identical-rename-destinations-in-walk-order A-B A B
 baseline identical-rename-destinations-in-deferred-order A-B A B
 baseline rename-to-self-modified A-B A B
-baseline rename-to-self-modified A-B-dir-renames-true A B
-baseline rename-to-self-modified A-B-dir-renames-false A B
+baseline rename-to-self-modified A-B-directory-renames-true A B
+baseline rename-to-self-modified A-B-directory-renames-false A B
 baseline rename-to-self-deleted A-B A B
-baseline rename-to-self-deleted A-B-dir-renames-true A B
-baseline rename-to-self-deleted A-B-dir-renames-false A B
+baseline rename-to-self-deleted A-B-directory-renames-true A B
+baseline rename-to-self-deleted A-B-directory-renames-false A B
 baseline rename-to-self-renamed A-B A B
-baseline rename-to-self-renamed A-B-dir-renames-true A B
-baseline rename-to-self-renamed A-B-dir-renames-false A B
+baseline rename-to-self-renamed A-B-directory-renames-true A B
+baseline rename-to-self-renamed A-B-directory-renames-false A B
 baseline rename-to-self-kept A-B A B
-baseline rename-to-self-kept A-B-dir-renames-true A B
-baseline rename-to-self-kept A-B-dir-renames-false A B
+baseline rename-to-self-kept A-B-directory-renames-true A B
+baseline rename-to-self-kept A-B-directory-renames-false A B
 
 ##
 ## Only once the tree-merges were performed can we refer to their objects
@@ -3370,25 +3518,17 @@ baseline rename-to-self-kept A-B-dir-renames-false A B
 )
 
 (cd renamed-file-inside-renamed-directory
-  # Ancestor rejects the divergent rename of `h/b/a`, but the separate file
-  # rename is cleanly relocated through A's directory rename to `c/h`.
+  # Each change is in conflict: the renames of `h/b/a` to different places, and B's rename of
+  # `a/a/a` into `h`, which A's directory rename moves to `c/h`. Ancestor therefore gives the
+  # merge-base's tree, and choosing a side gives the tree of that side.
   git read-tree main
-  git update-index --force-remove a/a/a
-  git update-index --add --cacheinfo "100644,$(git rev-parse main:a/a/a),c/h"
   make_resolve_tree ancestor A B
   make_resolve_tree ancestor B A
 
-  # Choosing A still retains the independently relocated file from B.
   git read-tree A
-  git update-index --force-remove a/a/a
-  git update-index --add --cacheinfo "100644,$(git rev-parse main:a/a/a),c/h"
   make_resolve_tree ours A B
 
-  # Choosing B keeps B's divergent rename, while the other file still follows
-  # the independently resolved directory relocation.
   git read-tree B
-  git update-index --force-remove h/h
-  git update-index --add --cacheinfo "100644,$(git rev-parse main:a/a/a),c/h"
   make_resolve_tree ours B A
 )
 
@@ -3518,10 +3658,9 @@ baseline rename-to-self-kept A-B-dir-renames-false A B
   make_resolve_tree ancestor B A
 )
 
-# Forced resolution leaves the trees of these merges as they are: the files that directory renames moved stay where
-# they were moved, the other directory rename conflicts change no file, and the remaining merges are clean.
-for dir in directory-rename-moves directory-rename-split directory-rename-file-in-way directory-rename-collision \
-  directory-rename-into-renamed-directory directory-rename-to-same-destination \
+# Forced resolution leaves the trees of these merges as they are: their directory rename conflicts change no file, and
+# the remaining merges are clean.
+for dir in directory-rename-split directory-rename-file-in-way directory-rename-collision \
   identical-rename-destinations-in-walk-order identical-rename-destinations-in-deferred-order; do
   (cd "$dir"
     IFS= read -r -d '' merged_tree_id <A-B.merge-info
@@ -3534,6 +3673,60 @@ for dir in directory-rename-moves directory-rename-split directory-rename-file-i
     make_resolve_tree ours B A
   )
 done
+
+# Forced resolution gives each file that a directory rename moved the location of the chosen side. The merge-base's
+# drops an added file and returns a renamed file to its source with the content of the merge-base, and that of a side
+# keeps the file where that side has it, with the content that the merge gave it.
+(cd directory-rename-moves
+  # A's directory rename stays. Ancestor drops B's additions and returns `src/moved`, which B renamed into `old` and
+  # A changed, to the merge-base's version.
+  git read-tree A
+  git update-index --add --cacheinfo "100644,$(git rev-parse main:src/moved),src/moved"
+  make_resolve_tree ancestor A B
+  make_resolve_tree ancestor B A
+  # Choosing A leaves B's files out of the directory that A renamed, which gives A's tree, as B renamed `src/moved`
+  # without changing it.
+  git read-tree A
+  make_resolve_tree ours A B
+  # Choosing B keeps B's files in `old`, where `old/moved` has A's change.
+  git update-index --force-remove src/moved
+  git update-index --add --cacheinfo "100644,$(git rev-parse B:old/added),old/added"
+  git update-index --add --cacheinfo "100644,$(git rev-parse B:old/sub/added),old/sub/added"
+  git update-index --add --cacheinfo "100644,$(git rev-parse A:src/moved),old/moved"
+  make_resolve_tree ours B A
+)
+
+(cd directory-rename-into-renamed-directory
+  # B's moves of `d/1` and `d/2` into `e`, which A renamed to `f`, are moved on to `f`. Ancestor returns them to `d`,
+  # which gives A's tree, as does choosing A.
+  git read-tree A
+  make_resolve_tree ancestor A B
+  make_resolve_tree ancestor B A
+  make_resolve_tree ours A B
+  # Choosing B keeps them in `e`, where B moved them.
+  git update-index --force-remove d/1 d/2
+  git update-index --add --cacheinfo "100644,$(git rev-parse B:e/1),e/1"
+  git update-index --add --cacheinfo "100644,$(git rev-parse B:e/2),e/2"
+  make_resolve_tree ours B A
+)
+
+(cd directory-rename-to-same-destination
+  # B's rename of `file` into `old`, which A renamed to `new`, is moved to `new/file`, where A renamed `file` as well.
+  # Ancestor returns `file` to the merge-base's version.
+  git read-tree A
+  git update-index --force-remove new/file
+  git update-index --add --cacheinfo "100644,$(git rev-parse main:file),file"
+  make_resolve_tree ancestor A B
+  make_resolve_tree ancestor B A
+  # Choosing A keeps the merged file at `new/file`, where A renamed it, which gives the merged tree.
+  IFS= read -r -d '' merged_tree_id <A-B.merge-info
+  git read-tree "$merged_tree_id"
+  make_resolve_tree ours A B
+  # Choosing B moves the merged file to `old/file`, where B renamed it.
+  git update-index --force-remove new/file
+  git update-index --add --cacheinfo "100644,$(git rev-parse "$merged_tree_id:new/file"),old/file"
+  make_resolve_tree ours B A
+)
 
 (cd simple
   rm .git/index
@@ -3877,31 +4070,33 @@ EOF
   # A renames `a` to `a-renamed`, while B moves `a/sub` up to `a` and deletes the rest of `a`.
   # A's directory rename moves B's `a/y.f` and `a/z` to `a-renamed`. The tree conflicts are
   # `x.f`, which A renames and B deletes, and `sub/y.f`, which each side renames differently.
-  # Ancestor keeps both files at their base versions and none of their destinations, while
-  # B's `a/z`, which only A's directory rename moved, stays at `a-renamed/z`.
+  # Ancestor keeps both files at their base versions and none of their destinations, and drops
+  # B's `a/z`, an addition that only A's directory rename moved.
   IFS= read -r -d '' merged_tree_id <A-B.merge-info
   git read-tree "$merged_tree_id"
-  git update-index --force-remove a-renamed/sub/y.f a-renamed/x.f a-renamed/y.f
+  git update-index --force-remove a-renamed/sub/y.f a-renamed/x.f a-renamed/y.f a-renamed/z
   git update-index --add --cacheinfo "100644,$(git rev-parse main:a/x.f),a/x.f"
   git update-index --add --cacheinfo "100644,$(git rev-parse main:a/sub/y.f),a/sub/y.f"
   make_resolve_tree ancestor A B
   make_resolve_tree ancestor B A
 
-  # With A as ours, A's renames win with their merged contents, while B's `a/z` stays where
-  # A's directory rename moved it.
+  # With A as ours, A's renames win with their merged contents, and B's `a/z`, an addition in
+  # the directory that A renamed, is dropped.
   rm .git/index
   git update-index --index-info <<EOF
   100644 blob $(oid b414108e81e5091fe0974a1858b4d0d22b107f70)	a-renamed/sub/y.f
   100644 blob $(oid e69de29bb2d1d6434b8b29ae775ad8c2e48c5391)	a-renamed/sub/z
   100644 blob $(oid 8a1218a1024a212bb3db30becd860315f9f3ac52)	a-renamed/x.f
-  100644 blob $(oid e69de29bb2d1d6434b8b29ae775ad8c2e48c5391)	a-renamed/z
   100644 blob $(oid e69de29bb2d1d6434b8b29ae775ad8c2e48c5391)	a-renamed/w
 EOF
   make_resolve_tree ours A B
 
-  # With B as ours, B's deletion of `x.f` and B's rename of `sub/y.f` win.
+  # With B as ours, B's deletion of `x.f` and B's rename of `sub/y.f` win, and `a/z` stays
+  # where B added it. B's `y.f` stays where A's directory rename moved it, as the conflict
+  # of its renames decides about it.
   git read-tree "$merged_tree_id"
-  git update-index --force-remove a-renamed/sub/y.f a-renamed/x.f
+  git update-index --force-remove a-renamed/sub/y.f a-renamed/x.f a-renamed/z
+  git update-index --add --cacheinfo "100644,$(git rev-parse B:a/z),a/z"
   make_resolve_tree ours B A
 )
 
@@ -4180,3 +4375,300 @@ EOF
   git update-index --force-remove a-renamed/sub/y.f
   make_resolve_tree ours B A
 )
+
+# Identical additions meet after a directory rename, despite having different
+# original paths. Equal contents and modes must remain a clean content merge.
+git init identical-additions-after-directory-rename
+(cd identical-additions-after-directory-rename
+  mkdir -p a/h
+  write_lines retained >a/h/a
+  git add .
+  git commit -m base
+  git branch A
+  git branch B
+
+  git checkout A
+  git mv a d
+  write_lines shared >d/a
+  git add d/a
+  git commit -m "rename the directory and add a file"
+
+  git checkout B
+  write_lines shared >a/a
+  git add a/a
+  git commit -m "add the same file at its original location"
+)
+for mode in false conflict true; do
+  baseline identical-additions-after-directory-rename "directory-renames-$mode" A B
+done
+
+# Directory relocation applies to new files and explicit rename destinations,
+# but disabling it must not prevent an existing renamed file from receiving
+# the other side's modification.
+git init directory-rename-paths
+(cd directory-rename-paths
+  mkdir old
+  write_lines retained >old/existing
+  write_lines incoming >outside
+  git add .
+  git commit -m base
+  git branch A
+  git branch B
+
+  git checkout A
+  git mv old new
+  git commit -m "rename the directory"
+
+  git checkout B
+  write_lines added >old/added
+  git mv outside old/incoming
+  write_lines retained modified >old/existing
+  git add .
+  git commit -m "add, rename into, and modify inside the old directory"
+
+  # Exercise relocation through each resolver path that pairs the renamed
+  # source before considering its destination inside the renamed directory.
+  git checkout -b modified-source A
+  write_lines incoming modified >outside
+  git commit -am "modify the source renamed on the other side"
+
+  git checkout -b converging-destinations A
+  git mv outside new/incoming
+  git commit -m "rename the source to the inferred destination"
+)
+for mode in false conflict true; do
+  baseline directory-rename-paths "directory-renames-$mode" A B
+  for side in modified-source converging-destinations; do
+    baseline directory-rename-paths "directory-renames-$mode-$side" "$side" B
+  done
+done
+
+(cd identical-additions-after-directory-rename
+  git read-tree main
+  git update-index --force-remove a/h/a
+  git update-index --add --cacheinfo "100644,$(git rev-parse A:d/h/a),d/h/a"
+  git write-tree >.git/force-ancestor.tree
+  git update-index --add --cacheinfo "100644,$(git rev-parse A:d/a),d/a"
+  git write-tree >.git/force-A.tree
+  git update-index --force-remove d/a
+  git update-index --add --cacheinfo "100644,$(git rev-parse B:a/a),a/a"
+  git write-tree >.git/force-B.tree
+)
+
+# With file-rename tracking disabled, every directory mode must behave alike.
+for dir in identical-additions-after-directory-rename directory-rename-paths; do
+  for mode in false conflict true; do
+    (cd "$dir"
+      git config merge.renames false
+    )
+    baseline "$dir" "directory-renames-$mode-without-rewrites" A B
+  done
+done
+
+(cd directory-rename-paths
+  # Expected forced tree resolutions retain independent changes, but choose
+  # ancestor/ours for each newly inferred file location. Prepare these trees
+  # in the fixture, never by mutating the cached repository from a Rust test.
+  git read-tree main
+  git update-index --force-remove old/existing
+  git update-index --add --cacheinfo "100644,$(git rev-parse B:old/existing),new/existing"
+  git write-tree >.git/force-ancestor.tree
+  git write-tree >.git/force-A.tree
+
+  git update-index --force-remove outside
+  git update-index --add --cacheinfo "100644,$(git rev-parse B:old/added),old/added"
+  git update-index --add --cacheinfo "100644,$(git rev-parse B:old/incoming),old/incoming"
+  git write-tree >.git/force-B.tree
+
+  git read-tree main
+  git update-index --force-remove old/existing
+  git update-index --add --cacheinfo "100644,$(git rev-parse B:old/existing),new/existing"
+  git update-index --add --cacheinfo "100644,$(git rev-parse modified-source:outside),outside"
+  git write-tree >.git/force-modified-source.tree
+
+  git update-index --force-remove outside
+  git update-index --add --cacheinfo "100644,$(git rev-parse B:old/added),old/added"
+  git update-index --add --cacheinfo "100644,$(git rev-parse modified-source:outside),old/incoming"
+  git write-tree >.git/force-B-modified-source.tree
+
+  git update-index --force-remove old/added old/incoming
+  git update-index --force-remove outside
+  git update-index --add --cacheinfo "100644,$(git rev-parse converging-destinations:new/incoming),new/incoming"
+  git write-tree >.git/force-converging-destinations.tree
+)
+
+# A deferred file rename collides with an identical addition at the inferred
+# directory destination. Clean contents still require location confirmation.
+git init relocated-rewrite-add
+(cd relocated-rewrite-add
+  mkdir old
+  write_lines a >old/a
+  write_lines b >old/b
+  write_lines incoming >outside
+  git add .
+  git commit -m base
+  git branch B
+  git checkout -b A
+  git mv old new
+  cp outside new/incoming
+  git add .
+  git commit -m "move the directory and add the incoming contents"
+  git checkout B
+  git mv outside old/incoming
+  git commit -m "rename into the old directory"
+
+  git read-tree A
+  git write-tree >.git/force-A.tree
+  git update-index --force-remove new/incoming
+  git write-tree >.git/force-ancestor.tree
+  git update-index --force-remove outside
+  git update-index --add --cacheinfo "100644,$(git rev-parse B:old/incoming),old/incoming"
+  git write-tree >.git/force-B.tree
+)
+
+# Location confirmation must accompany rename/delete and divergent renames,
+# with index stages pointing to the paths actually present in the result.
+git init relocated-rename-failures
+(cd relocated-rename-failures
+  mkdir x z
+  write_lines incoming >x/d
+  write_lines a >z/a
+  write_lines b >z/b
+  git add .
+  git commit -m base
+  git branch B
+  git checkout -b A
+  git mv z y
+  git rm x/d
+  git commit -m "move the directory and delete the incoming file"
+  git checkout -b divergent main
+  git mv z y
+  git mv x/d elsewhere
+  git commit -m "move the directory and rename elsewhere"
+  git checkout B
+  git mv x/d z/d
+  git commit -m "rename into the old directory"
+)
+
+# Tree favor selects a location while file favor independently merges content.
+# The two distant edits must survive both modify/rename and converging renames.
+git init relocated-merged-content
+(cd relocated-merged-content
+  mkdir old
+  write_lines a >old/a
+  write_lines b >old/b
+  write_lines one two three four five six seven eight >outside
+  git add .
+  git commit -m base
+  git branch B
+  git checkout -b A
+  git mv old new
+  write_lines ONE two three four five six seven eight >outside
+  git commit -am "move the directory and edit the first line"
+  git checkout -b converging A
+  git mv outside new/incoming
+  git commit -m "rename to the inferred destination"
+  git checkout B
+  git mv outside old/incoming
+  write_lines one two three four five six seven EIGHT >old/incoming
+  git commit -am "rename into the old directory and edit the last line"
+
+  # Expected tree favor results choose the original path of the favored side,
+  # retaining the clean content merge even when file favor is unset.
+  merged_blob=$(write_lines ONE two three four five six seven EIGHT | git hash-object -w --stdin)
+  for side in A B converging; do
+    git read-tree A
+    git update-index --force-remove outside
+    case "$side" in
+      A) path=outside ;;
+      B) path=old/incoming ;;
+      converging) path=new/incoming ;;
+    esac
+    git update-index --add --cacheinfo "100644,$merged_blob,$path"
+    git write-tree >".git/force-$side.tree"
+  done
+)
+
+for mode in false conflict true; do
+  for dir in relocated-rewrite-add relocated-rename-failures relocated-merged-content; do
+    baseline "$dir" "directory-renames-$mode" A B
+  done
+  baseline relocated-rename-failures "directory-renames-$mode-divergent" divergent B
+  baseline relocated-merged-content "directory-renames-$mode-converging" converging B
+done
+
+# A distinct-type conflict relocates the regular file. Its generated name must
+# avoid unrelated paths from either side and unchanged paths in the base tree.
+for occupancy in opposite unchanged; do
+  for regular_side in A B; do
+    repo="distinct-types-occupied-$occupancy-$regular_side"
+    git init "$repo"
+    (
+      cd "$repo"
+      git config core.symlinks false
+      echo base >a
+      if test "$occupancy" = unchanged; then
+        echo untouched >"a~$regular_side"
+      fi
+      git add .
+      git commit -m base
+      git branch A
+      git branch B
+      for side in A B; do
+        git checkout -f "$side"
+        if test "$side" = "$regular_side"; then
+          echo edited >a
+          git add a
+        else
+          blob_id=$(printf target | git hash-object -w --stdin)
+          git update-index --cacheinfo "120000,$blob_id,a"
+          if test "$occupancy" = opposite; then
+            echo unrelated >"a~$regular_side"
+            git add "a~$regular_side"
+          fi
+        fi
+        git commit -m "$side changes a"
+      done
+    )
+    baseline "$repo" A-B A B
+  done
+done
+
+# A keeps and modifies a directory, while B replaces it with a renamed file or
+# symlink. The rename must retain its contents beside the surviving directory.
+for kind in blob symlink; do
+  repo=renamed-$kind-vs-modified-directory
+  git init "$repo"
+  (cd "$repo"
+    mkdir d
+    write_lines 1 >d/f
+    if test "$kind" = symlink; then
+      ln -s payload a
+    else
+      write_lines payload >a
+    fi
+    git add .
+    git commit -m "base with a rename source and a directory"
+    git branch A
+    git branch B
+
+    git checkout A
+    write_lines 2 >d/f
+    git commit -am "modify the directory's file"
+
+    git checkout B
+    git rm -r d
+    git mv a d
+    git commit -m "replace the directory with the renamed source"
+  )
+  baseline "$repo" A-B A B
+  (cd "$repo"
+    git read-tree A^
+    make_resolve_tree ancestor A B
+    make_resolve_tree ancestor B A
+    git read-tree A
+    make_resolve_tree ours A B
+    git read-tree B
+    make_resolve_tree ours B A
+  )
+done

@@ -5,8 +5,10 @@ use std::{
 
 use gix_date::SecondsSinceUnixEpoch;
 use gix_error::Result;
-use gix_hash::ObjectId;
+use gix_hash::{ObjectId, oid};
 use smallvec::SmallVec;
+
+use crate::commit::Parents;
 
 #[derive(Default, Debug, Copy, Clone)]
 /// The order with which to prioritize the search.
@@ -152,38 +154,37 @@ fn to_queue_key(i: i64, order: CommitTimeOrder) -> QueueKey<i64> {
     }
 }
 
-/// The number of commits that `compute_hidden_frontier()` takes from its queue after the queued commits became older
-/// than every commit that was only `VISIBLE` when it was taken, as many as git's `limit_list()` takes. With them, it
-/// can reach a commit that is newer than a few of the commits through which the hidden tips reach it.
-const EXTRA_COMMITS: usize = 4;
-
 /// Compute the boundary at which the visible walk must stop because commits become reachable from
 /// both the visible tips and the hidden tips.
 ///
 /// The algorithm performs a merge-base-style paint in a temporary `gix_revwalk::Graph`:
 /// visible tips are marked with `VISIBLE`, hidden tips with `HIDDEN`, and these flags are
 /// propagated to parents in generation/time order. Once a commit carries both flags, it is part
-/// of the overlap between the two histories and is marked `STALE` so older ancestors no longer
-/// need to keep re-propagating the same combined state.
+/// of the overlap between the two histories and is marked `STALE`. With generation numbers,
+/// older ancestors no longer need to keep re-propagating the same combined state.
+/// Without them, Git's date-based heuristic stops after five hidden commits when only hidden
+/// commits older than the last visible commit remain queued. Extreme clock skew can put hidden
+/// ancestors beyond this stopping point.
 ///
-/// Painting ends when every queued commit is `STALE`, unless a queued commit may still reach a commit that was only
-/// `VISIBLE` when it was taken from the queue. Without generation numbers, commits are taken in the order of their
-/// commit times, so a commit is taken before its descendants if they are as old as it or older, and `HIDDEN` is
-/// propagated to it only afterwards. Like git's `limit_list()`, painting therefore continues while the newest queued
-/// commit is at least as new as the oldest commit that was taken while only `VISIBLE`, and then for `EXTRA_COMMITS`
-/// more commits.
-///
-/// The returned set is not all commits reachable from hidden tips. It is only the overlap frontier
+/// The returned set is not all commits reachable from hidden tips. It covers the overlap frontier
 /// where the visible traversal must stop. The actual `Simple` walk then skips these commits and
 /// refuses to enqueue parents across them, which avoids traversing hidden-only history.
-fn compute_hidden_frontier(
+/// `visible_tips` must be sorted and contain no duplicates.
+/// `parents` and `predicate` restrict visible paths only; hidden ancestry always follows all parents.
+pub(super) fn compute_hidden_frontier(
     visible_tips: &[ObjectId],
     hidden_tips: &[ObjectId],
     objects: &impl gix_object::Find,
     cache: Option<&gix_commitgraph::Graph>,
+    parents: Parents,
+    mut predicate: impl FnMut(&oid) -> bool,
 ) -> Result<gix_revwalk::graph::IdMap<()>> {
     let mut graph = gix_revwalk::Graph::<gix_revwalk::graph::Commit<PaintFlags>>::new(objects, cache);
     let mut queue = gix_revwalk::PriorityQueue::<GenThenTime, ObjectId>::new();
+    let mut unhidden_tips = visible_tips.len();
+    let mut last_visible_time = SecondsSinceUnixEpoch::MAX;
+    let mut slop = 5;
+    let mut stopped_on_date = false;
 
     for &visible in visible_tips {
         graph.get_or_insert_full_commit(visible, |commit| {
@@ -193,47 +194,92 @@ fn compute_hidden_frontier(
     }
     for &hidden in hidden_tips {
         graph.get_or_insert_full_commit(hidden, |commit| {
+            if commit.data == PaintFlags::VISIBLE {
+                unhidden_tips -= 1;
+            }
             commit.data |= PaintFlags::HIDDEN;
             queue.insert(GenThenTime::from(&*commit), hidden);
         })?;
     }
 
-    let mut oldest_visible: Option<GenThenTime> = None;
-    let mut extra_commits = EXTRA_COMMITS;
-    loop {
-        let all_stale = !queue.iter_unordered().any(|id| {
-            graph
-                .get(id)
-                .is_some_and(|commit| !commit.data.contains(PaintFlags::STALE))
-        });
-        if all_stale {
-            match (queue.peek(), oldest_visible) {
-                (Some((newest, _)), Some(oldest)) if *newest >= oldest => extra_commits = EXTRA_COMMITS,
-                (Some(_), Some(_)) if extra_commits > 0 => extra_commits -= 1,
-                _ => break,
-            }
-        } else {
-            extra_commits = EXTRA_COMMITS;
-        }
-        let Some((key, commit_id)) = queue.pop() else {
+    while queue.iter_unordered().any(|id| {
+        graph.get(id).is_some_and(|commit| {
+            !commit.data.contains(PaintFlags::STALE)
+                || commit
+                    .generation
+                    .is_none_or(|generation| !(1..gix_commitgraph::GENERATION_NUMBER_MAX).contains(&generation))
+        })
+    }) {
+        if unhidden_tips == 0 {
             break;
+        }
+        let (_info, commit_id) = match queue.pop() {
+            Some(v) => v,
+            None => break,
         };
-        let commit = graph.get_mut(&commit_id).expect("queued commits are in the graph");
+        let commit = graph.get(&commit_id).expect("queued commits are in the graph");
         let mut flags = commit.data;
-        if flags == PaintFlags::VISIBLE {
-            oldest_visible = Some(oldest_visible.map_or(key, |oldest| oldest.min(key)));
+        let parent_ids = commit.parents.clone();
+        let use_date_cutoff = commit
+            .generation
+            .is_none_or(|generation| !(1..gix_commitgraph::GENERATION_NUMBER_MAX).contains(&generation));
+        if !flags.contains(PaintFlags::HIDDEN) {
+            last_visible_time = commit.commit_time;
         }
         if flags == (PaintFlags::VISIBLE | PaintFlags::HIDDEN) {
             flags |= PaintFlags::STALE;
         }
 
-        for parent_id in commit.parents.clone() {
+        for (index, parent_id) in parent_ids.into_iter().enumerate() {
+            if !flags.contains(PaintFlags::HIDDEN) {
+                if index > 0 && matches!(parents, Parents::First) {
+                    break;
+                }
+                if !predicate(&parent_id) {
+                    continue;
+                }
+            }
             graph.get_or_insert_full_commit(parent_id, |parent| {
                 if (parent.data & flags) != flags {
+                    if flags.contains(PaintFlags::HIDDEN)
+                        && parent.data == PaintFlags::VISIBLE
+                        && visible_tips.binary_search(&parent_id).is_ok()
+                    {
+                        unhidden_tips -= 1;
+                    }
                     parent.data |= flags;
                     queue.insert(GenThenTime::from(&*parent), parent_id);
                 }
             })?;
+        }
+
+        if use_date_cutoff && flags.contains(PaintFlags::HIDDEN) {
+            // Git's limit_list() allows five older hidden commits before stopping without generations.
+            if queue.iter_unordered().any(|id| {
+                let commit = graph.get(id).expect("queued commits are in the graph");
+                !commit.data.contains(PaintFlags::HIDDEN) || commit.commit_time >= last_visible_time
+            }) {
+                slop = 5;
+            } else {
+                slop -= 1;
+                if slop == 0 {
+                    stopped_on_date = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if stopped_on_date {
+        // Like Git's mark_parents_uninteresting(), finish painting already-loaded ancestry without more I/O.
+        let mut pending = hidden_tips.to_vec();
+        let mut seen = gix_hashtable::HashSet::default();
+        while let Some(commit_id) = pending.pop() {
+            let Some(commit) = graph.get_mut(&commit_id).filter(|_| seen.insert(commit_id)) else {
+                continue;
+            };
+            commit.data |= PaintFlags::HIDDEN;
+            pending.extend(&commit.parents);
         }
     }
 
@@ -349,9 +395,8 @@ mod init {
         /// Hide the given `tips`, along with all commits reachable by them so that they will not be returned
         /// by the traversal.
         ///
-        /// Without the generation numbers of a commit-graph, commits are inspected in the order of their commit times.
-        /// Like `git rev-list`, the traversal may then return a commit that the hidden tips reach only through more
-        /// than a few commits that are older than it.
+        /// Without usable commit-graph generation numbers, this uses Git's date-based stopping
+        /// heuristic. Extreme clock skew can leave hidden ancestors beyond the stopping point.
         pub fn hide(mut self, tips: impl IntoIterator<Item = ObjectId>) -> Result<Self> {
             self.state.hidden_tips = tips.into_iter().collect();
             Ok(self)
@@ -397,8 +442,14 @@ mod init {
             if visible_tips.is_empty() {
                 return Ok(());
             }
-            self.state.hidden =
-                compute_hidden_frontier(&visible_tips, &hidden_tips, &self.objects, self.cache.as_ref())?;
+            self.state.hidden = compute_hidden_frontier(
+                &visible_tips,
+                &hidden_tips,
+                &self.objects,
+                self.cache.as_ref(),
+                Parents::All,
+                |_| true,
+            )?;
             self.state.next.retain(|id| !self.state.hidden.contains_key(id));
             self.state.queue = std::mem::replace(&mut self.state.queue, gix_revwalk::PriorityQueue::new())
                 .into_iter_unordered()

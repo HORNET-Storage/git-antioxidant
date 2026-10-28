@@ -25,6 +25,7 @@ impl Diff {
     /// * `heuristic` - The slider heuristic to use for positioning hunks
     pub fn postprocess_with(&mut self, before: &[Token], after: &[Token], mut heuristic: impl SliderHeuristic) {
         let rediff = self.algorithm == Algorithm::Histogram;
+        // Compact removals first so ambiguous additions align with them, as in Git.
         Postprocessor {
             added: &mut self.removed,
             removed: &mut self.added,

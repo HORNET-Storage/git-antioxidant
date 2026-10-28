@@ -11,7 +11,10 @@ use crate::{
     Error, Result, ThreadSafeRepository,
     bstr::BString,
     config,
-    config::tree::{Core, Key, Safe, gitoxide},
+    config::{
+        cache::util::ApplyLeniencyDefaultValue,
+        tree::{Core, Key, Safe, gitoxide},
+    },
     open::{Permissions, safe_directory},
 };
 
@@ -279,12 +282,14 @@ impl ThreadSafeRepository {
                 })
                 .transpose()?;
         }
+        let mut filter_config_section = filter_config_section.unwrap_or(config::section::is_trusted);
         let repo_config = config::cache::StageOne::new(
             common_dir.as_deref().unwrap_or(&git_dir),
             git_dir.as_ref(),
             *git_dir_trust,
             lossy_config,
             lenient_config,
+            filter_config_section,
         )
         .or_raise(|| message("Repository configuration could not be loaded"))?;
 
@@ -335,7 +340,6 @@ impl ThreadSafeRepository {
         let git_install_dir = crate::path::install_dir().ok();
         let home = gix_path::env::home_dir().and_then(|home| env.home.check_opt(home));
 
-        let mut filter_config_section = filter_config_section.unwrap_or(config::section::is_trusted);
         let mut config = config::Cache::from_stage_one(
             repo_config,
             common_dir_ref,
@@ -556,6 +560,17 @@ impl ThreadSafeRepository {
             }
             config.resolved = resolved.into();
         }
+
+        // Trust promotion and trusted overrides are only available after configuration is resolved.
+        let use_on_windows = cfg!(windows);
+        refs.prohibit_windows_device_names = gitoxide::Core::PROTECT_WINDOWS
+            .enrich_error(
+                config
+                    .resolved
+                    .boolean_filter(gitoxide::Core::PROTECT_WINDOWS, &mut filter_config_section),
+            )
+            .with_lenient_default_value(lenient_config, Some(use_on_windows))?
+            .unwrap_or(use_on_windows);
 
         let index_path = match config
             .resolved

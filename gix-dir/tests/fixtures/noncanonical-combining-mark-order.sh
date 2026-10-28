@@ -13,6 +13,5 @@ minimal_name="$(printf '\330\247\331\221\331\217')"
 
 touch "tracked/$real_world_name" "tracked/$minimal_name"
 touch "untracked/$real_world_name" "untracked/$minimal_name"
-# Below a deep checkout, the long name exceeds Windows' traditional path limit, which Git for Windows enforces
-# unless `core.longpaths` is set.
+# The real-world name's absolute path can exceed Windows' traditional path limit.
 git -c core.longpaths=true -C tracked add "$real_world_name" "$minimal_name"

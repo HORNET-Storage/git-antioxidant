@@ -299,7 +299,8 @@ impl Conflict {
     pub fn content_merge(&self) -> Option<ContentMerge> {
         fn failure_merged_blob(failure: &ResolutionFailure) -> Option<ContentMerge> {
             match failure {
-                ResolutionFailure::OursRenamedTheirsRenamedDifferently { merged_blob } => *merged_blob,
+                ResolutionFailure::OursRenamedTheirsRenamedDifferently { merged_blob }
+                | ResolutionFailure::DirectoryRename { merged_blob, .. } => *merged_blob,
                 ResolutionFailure::Unknown
                 | ResolutionFailure::SubmoduleMerge
                 | ResolutionFailure::SubmoduleAddAdd
@@ -315,8 +316,7 @@ impl Conflict {
                 | ResolutionFailure::OursDeletedTheirsRenamed
                 | ResolutionFailure::DirectoryRenameSplit
                 | ResolutionFailure::FileInWayOfDirectoryRename { .. }
-                | ResolutionFailure::DirectoryRenameCollision { .. }
-                | ResolutionFailure::SourceLocationAffectedByRename { .. } => None,
+                | ResolutionFailure::DirectoryRenameCollision { .. } => None,
             }
         }
         match &self.resolution {
@@ -338,7 +338,7 @@ impl Conflict {
 #[derive(Debug, Clone)]
 pub enum Resolution {
     /// *ours* renamed a directory into which *theirs* added a file or renamed one. The file was moved into the renamed
-    /// directory, as [`DirectoryRenames::Move`] selects. With [`DirectoryRenames::MoveAsConflict`] as well, a move that
+    /// directory, as [`DirectoryRenames::Enabled`] selects. With [`DirectoryRenames::Conflict`] as well, a move that
     /// returned a file that *theirs* renamed to its source is resolved if *ours* renamed that source too: merge-ort
     /// skips such a rename to itself, and *their* version of the file is merged at the destination of *our* rename.
     SourceLocationAffectedByRename {
@@ -451,10 +451,13 @@ pub enum ResolutionFailure {
         destination: BString,
     },
     /// *ours* renamed a directory into which *theirs* added a file or renamed one. The file was moved into the renamed
-    /// directory, but as [`DirectoryRenames::MoveAsConflict`] selects, the move is left for the user to confirm.
-    SourceLocationAffectedByRename {
-        /// The repository-relative path that the file was moved to.
+    /// directory, but as [`DirectoryRenames::Conflict`] selects, the move is left for the user to confirm.
+    DirectoryRename {
+        /// The repository-relative path that the file was moved to, used by the merged tree and the conflicting stages.
         final_location: BString,
+        /// The content merge, if the moved file met a change at its new location. As merge-ort reports that merge
+        /// separately, a conflict of its own records it as well.
+        merged_blob: Option<ContentMerge>,
     },
     /// *ours* and *theirs* are in an untested state so it can't be handled yet, and is considered a conflict
     /// without adding our *or* their side to the resulting tree.
@@ -483,9 +486,11 @@ pub struct Options {
     /// [`limit`](Rewrites::limit) bounds the search for renames of changed files as Git's rename limit does. Copies are
     /// never detected, and empty files are only paired if [`track_empty`](Rewrites::track_empty) is set.
     pub rewrites: Option<Rewrites>,
-    /// What happens to files that one side added to a directory the other side renamed, or renamed into it.
+    /// What happens to files that one side added to a directory the other side renamed, or renamed into it, defaulting
+    /// to [`DirectoryRenames::Conflict`] as in Git.
     ///
-    /// It has no effect if [`rewrites`](Self::rewrites) is `None`, as directory renames are inferred from renames.
+    /// It has no effect if [`rewrites`](Self::rewrites) is `None`, as directory renames are inferred from renames, and
+    /// [`DirectoryRenames::Disabled`] doesn't disable the renames of files.
     pub directory_renames: DirectoryRenames,
     /// Decide how blob-merges should be done. This relates to if conflicts can be resolved or not.
     pub blob_merge: crate::blob::platform::merge::Options,
@@ -537,24 +542,25 @@ pub enum ResolveWith {
 }
 
 /// Decide what happens to a file that one side adds to a directory the other side renamed, or renames into it, as
-/// Git's `merge.directoryRenames` does.
+/// Git's `merge.directoryRenames` does, which defaults to [`Conflict`](Self::Conflict).
 ///
 /// A side renamed a directory if the directory is gone on that side, and more of its files were renamed into one
 /// other directory than into any other. No directory rename applies to a directory that both sides renamed, or in
 /// merges of merge-bases, which `merge-ort` performs without directory renames.
 #[derive(Default, Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum DirectoryRenames {
-    /// Leave such files where their side put them, as `merge.directoryRenames=false` does.
-    Ignore,
-    /// Move such files into the renamed directory, and record each move as
-    /// [`Resolution::SourceLocationAffectedByRename`], as `merge.directoryRenames=true` does.
-    Move,
+    /// Leave such files where their side put them, as `merge.directoryRenames=false` does. The renames of files are
+    /// still found.
+    Disabled,
     /// Move such files into the renamed directory, but record each move as the unresolved conflict
-    /// [`ResolutionFailure::SourceLocationAffectedByRename`], as `merge.directoryRenames=conflict`, Git's default,
-    /// does. A move that returns a renamed file to a source that the other side renamed as well is
+    /// [`ResolutionFailure::DirectoryRename`], as `merge.directoryRenames=conflict`, Git's default, does. A move that
+    /// returns a renamed file to a source that the other side renamed as well is
     /// [resolved](Resolution::SourceLocationAffectedByRename) in this mode too.
     #[default]
-    MoveAsConflict,
+    Conflict,
+    /// Move such files into the renamed directory, and record each move as
+    /// [`Resolution::SourceLocationAffectedByRename`], as `merge.directoryRenames=true` does.
+    Enabled,
 }
 
 pub(super) mod function;
@@ -645,7 +651,7 @@ pub mod apply_index_entries {
                         | ResolutionFailure::FileInWayOfDirectoryRename { .. }
                         | ResolutionFailure::DirectoryRenameCollision { .. }
                         | ResolutionFailure::Unknown => (None, ours.location()),
-                        ResolutionFailure::SourceLocationAffectedByRename { final_location } => {
+                        ResolutionFailure::DirectoryRename { final_location, .. } => {
                             (Some(final_location.as_bstr()), final_location.as_bstr())
                         }
                         ResolutionFailure::OursModifiedTheirsDirectoryThenOursRenamed {

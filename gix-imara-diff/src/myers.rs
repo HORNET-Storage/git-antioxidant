@@ -6,7 +6,7 @@ use std::ptr::NonNull;
 use crate::intern::Token;
 use crate::myers::middle_snake::{MiddleSnakeSearch, SearchResult};
 use crate::myers::slice::FileSlice;
-use crate::util::{common_edges, sqrt};
+use crate::util::{sqrt, strip_common_postfix, strip_common_prefix};
 
 mod middle_snake;
 mod preprocess;
@@ -25,13 +25,36 @@ mod slice;
 /// * `removed` - Output array marking removed tokens
 /// * `added` - Output array marking added tokens
 /// * `minimal` - If true, disables heuristics to guarantee a minimal diff
-pub fn diff(before: &[Token], after: &[Token], removed: &mut [bool], added: &mut [bool], minimal: bool) {
-    let (prefix, postfix) = common_edges(before, after);
-    let region1 = prefix as usize..before.len() - postfix as usize;
-    let region2 = prefix as usize..after.len() - postfix as usize;
+pub fn diff(mut before: &[Token], mut after: &[Token], removed: &mut [bool], added: &mut [bool], minimal: bool) {
+    // Preserve the complete inputs for occurrence statistics, but defer counting until we know the
+    // trimmed region needs a search.
+    let full_before = before;
+    let full_after = after;
+    let common_prefix = strip_common_prefix(&mut before, &mut after) as usize;
+    let common_postfix = strip_common_postfix(&mut before, &mut after) as usize;
+    let removed_end = removed.len() - common_postfix;
+    let removed = &mut removed[common_prefix..removed_end];
+    let added_end = added.len() - common_postfix;
+    let added = &mut added[common_prefix..added_end];
+
+    // If either trimmed input is empty, the other contains only additions or removals. No search
+    // or occurrence counting is needed, and we can return early.
+    if before.is_empty() {
+        added.fill(true);
+        return;
+    }
+    if after.is_empty() {
+        removed.fill(true);
+        return;
+    }
+
+    // Like Git's `xdl_prepare_env()`, count every token of both complete inputs. Trimming only
+    // limits the search and pruning windows, not the occurrence counts or frequency limits.
+    let counts = preprocess::TokenCounts::new(full_before, full_after, minimal);
+
     // Preprocess the files by removing parts of the file that are not contained in the other file at all.
     // This process remaps the token indices so we have to account for that during the rest of the diff
-    let (before, after) = preprocess::preprocess(before, after, region1, region2, removed, added, minimal);
+    let (before, after) = preprocess::preprocess(&counts, before, after, removed, added);
 
     // Perform the actual diff
     Myers::new(before.tokens.len(), after.tokens.len()).run(
@@ -122,10 +145,13 @@ impl Myers {
         let mut backwards_search = unsafe { MiddleSnakeSearch::<true>::new(self.kbackward, file1, file2) };
         let is_odd = file2.len().wrapping_sub(file1.len()) & 1 != 0;
 
-        // As in Git, the edit cost counts the search rounds from one.
-        let mut ec = 1;
+        // Number the edit cost like git's `for (ec = 1;; ec++)` in `xdl_split()`: the heuristics below
+        // compare against it and scale their threshold with it, so starting at 0 would apply them one
+        // round late and with a smaller threshold.
+        let mut ec = 0;
 
         loop {
+            ec += 1;
             let mut found_snake = false;
             forward_search.next_d();
             if is_odd {
@@ -174,7 +200,6 @@ impl Myers {
             };
 
             if need_min {
-                ec += 1;
                 continue;
             }
 
@@ -206,29 +231,29 @@ impl Myers {
                 }
             }
 
-            // Enough is enough. We spent too much time here and now we
-            // collect the furthest reaching path using the (i1 + i2) measure.
+            // like git, settle for the furthest reaching path once the cost reaches
+            // the limit.
             if ec >= self.max_cost {
-                let (distance_forward, token_idx1_forward) = forward_search.best_position(file1, file2);
-                let (distance_backwards, token_idx1_backwards) = backwards_search.best_position(file1, file2);
-                return if distance_forward > file1.len() as isize + file2.len() as isize - distance_backwards {
-                    Split {
-                        token_idx1: token_idx1_forward,
-                        token_idx2: (distance_forward - token_idx1_forward as isize) as i32,
-                        minimized_lo: true,
-                        minimized_hi: false,
-                    }
-                } else {
-                    Split {
-                        token_idx1: token_idx1_backwards,
-                        token_idx2: (distance_backwards - token_idx1_backwards as isize) as i32,
-                        minimized_lo: false,
-                        minimized_hi: true,
-                    }
-                };
+                break;
             }
+        }
 
-            ec += 1;
+        let (distance_forward, token_idx1_forward) = forward_search.best_position(file1, file2);
+        let (distance_backwards, token_idx1_backwards) = backwards_search.best_position(file1, file2);
+        if distance_forward > file1.len() as isize + file2.len() as isize - distance_backwards {
+            Split {
+                token_idx1: token_idx1_forward,
+                token_idx2: (distance_forward - token_idx1_forward as isize) as i32,
+                minimized_lo: true,
+                minimized_hi: false,
+            }
+        } else {
+            Split {
+                token_idx1: token_idx1_backwards,
+                token_idx2: (distance_backwards - token_idx1_backwards as isize) as i32,
+                minimized_lo: false,
+                minimized_hi: true,
+            }
         }
     }
 }
@@ -247,61 +272,3 @@ struct Split {
     /// Whether the upper subproblem was minimized.
     minimized_hi: bool,
 }
-
-// /// the mapping performed during preprocessing makes it impossible to directly call
-// /// the `sink` during the diff itself. Instead, `file.changed` is set to true for all
-// /// tokens that are changed
-// /// below these arrays are used to call the sink function
-// fn process_changes_with_sink(
-//     before: &PreprocessedFile,
-//     after: &PreprocessedFile,
-//     sink: &mut impl Sink,
-// ) {
-//     let before_end = before.changed.len() as u32 + before.offset;
-//     let after_end = after.changed.len() as u32 + after.offset;
-
-//     let mut before = before
-//         .changed
-//         .iter()
-//         .enumerate()
-//         .map(|(i, removed)| (i as u32 + before.offset, *removed));
-
-//     let mut after = after
-//         .changed
-//         .iter()
-//         .enumerate()
-//         .map(|(i, inserted)| (i as u32 + after.offset, *inserted));
-
-//     let mut next1 = before.next();
-//     let mut next2 = after.next();
-
-//     while let (Some((before_pos, removed)), Some((after_pos, inserted))) = (next1, next2) {
-//         if !(removed | inserted) {
-//             next1 = before.next();
-//             next2 = after.next();
-//             continue;
-//         }
-
-//         let mut hunk_before = before_pos..before_pos;
-//         let mut hunk_after = after_pos..after_pos;
-//         if removed {
-//             let end = before.find(|(_, changed)| !changed);
-//             next1 = end.map(|(end, _)| (end, false));
-//             hunk_before.end = end.map_or(before_end, |(end, _)| end);
-//         };
-
-//         if inserted {
-//             let end = after.find(|(_, changed)| !changed);
-//             next2 = end.map(|(end, _)| (end, false));
-//             hunk_after.end = end.map_or(after_end, |(end, _)| end);
-//         }
-
-//         sink.process_change(hunk_before, hunk_after);
-//     }
-
-//     if let Some((before_pos, _)) = next1 {
-//         sink.process_change(before_pos..before_end, after_end..after_end);
-//     } else if let Some((after_pos, _)) = next2 {
-//         sink.process_change(before_end..before_end, after_pos..after_end);
-//     }
-// }
