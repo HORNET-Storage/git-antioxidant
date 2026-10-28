@@ -44,7 +44,14 @@ fn assert_no_unknown_conflicts(outcome: &gix_merge::tree::Outcome<'_>, context: 
 ///    in the assertion that would then fail.
 #[test]
 fn run_baseline() -> TestResult {
-    let root = gix_testtools::scripted_fixture_read_only("tree-baseline.sh")?;
+    // Git 2.51.1 fixed bugs of the rename handling of merge-ort, which Git before it shows in some of these cases;
+    // require a compatible baseline archive then.
+    let Some(root) = gix_testtools::scripted_fixture_read_only_with_git_version("tree-baseline.sh", |version| {
+        version >= (2, 51, 1)
+    })?
+    else {
+        return Ok(());
+    };
     let cases = std::fs::read_to_string(root.join("baseline.cases"))?;
     let mut actual_cases = 0;
     let mut skipped_tree_resolve_cases = 0;
