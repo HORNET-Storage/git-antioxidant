@@ -119,3 +119,6 @@
 # Generate these small status fixtures with host-local symlink preflight and index timestamps.
 /make_status_attribute_and_ignore_repos.tar
 /make_status_attribute_and_ignore_repos_sha256.tar
+# Generate this small, configuration-only hooks fixture.
+/make_hooks_repos.tar
+/make_hooks_repos_sha256.tar

@@ -96,6 +96,8 @@ impl Core {
     pub const ATTRIBUTES_FILE: keys::Path =
         keys::Path::new_path("attributesFile", &config::Tree::CORE)
             .with_deviation("for checkout - it's already queried but needs building of attributes group, and of course support during checkout");
+    /// The `core.hooksPath` key.
+    pub const HOOKS_PATH: keys::Path = keys::Path::new_path("hooksPath", &config::Tree::CORE);
     /// The `core.sshCommand` key.
     pub const SSH_COMMAND: keys::Executable = keys::Executable::new_executable("sshCommand", &config::Tree::CORE)
         .with_environment_override("GIT_SSH_COMMAND");
@@ -160,6 +162,7 @@ impl Section for Core {
             &Self::ASKPASS,
             &Self::EXCLUDES_FILE,
             &Self::ATTRIBUTES_FILE,
+            &Self::HOOKS_PATH,
             &Self::SSH_COMMAND,
             &Self::USE_REPLACE_REFS,
             &Self::COMMIT_GRAPH,

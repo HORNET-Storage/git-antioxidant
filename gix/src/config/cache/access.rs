@@ -551,6 +551,54 @@ impl Cache {
     pub(crate) fn home_dir(&self) -> Option<PathBuf> {
         home_dir(self.environment)
     }
+
+    /// Return the hooks that run in the repository at `ctx`: the programs of the directory that `core.hooksPath` names,
+    /// or else of the `hooks` directory of the common Git directory, and the commands that the `hook.*` values of
+    /// trusted configuration files name, in the order Git reads them.
+    #[cfg(feature = "hooks")]
+    pub(crate) fn hooks(&self, ctx: gix_hook::Context<'_>) -> Result<gix_hook::Hooks> {
+        use gix_object::bstr::ByteSlice;
+
+        let mut filter = self.filter_config_section;
+        let hooks_path = self
+            .resolved
+            .path_filter(Core::HOOKS_PATH, &mut filter)
+            .filter(|path| !(self.lenient_config && path.is_empty()));
+        let mut values = Vec::new();
+        for section in self
+            .resolved
+            .sections_by_name_and_filter("hook", &mut filter)
+            .into_iter()
+            .flatten()
+        {
+            let name = section.header().subsection_name().map(ToOwned::to_owned);
+            // The values of the body leave out keys without `=`, which `value_names()` lists in their place.
+            let mut values_with_key = section.body().into_iter().peekable();
+            for key in section.value_names() {
+                let value = values_with_key
+                    .next_if(|(value_key, _)| *value_key == key)
+                    .map(|(_, value)| value);
+                values.push((name.clone(), key, value));
+            }
+        }
+        let configured = gix_hook::config::Configured::from_entries(values.iter().map(|(name, key, value)| {
+            gix_hook::config::Entry {
+                name: name.as_ref().map(|name| name.as_bstr()),
+                key: key.as_bytes().as_bstr(),
+                value: value.as_ref().map(|value| value.as_bstr()),
+            }
+        }))?;
+        let install_dir = crate::path::install_dir().ok();
+        let home = home_dir(self.environment);
+        gix_hook::Hooks::new(
+            ctx,
+            gix_hook::Config {
+                hooks_path,
+                interpolate: config::cache::interpolate_context(install_dir.as_deref(), home.as_deref()),
+                configured,
+            },
+        )
+    }
 }
 
 pub(crate) fn config_lock_timeout(

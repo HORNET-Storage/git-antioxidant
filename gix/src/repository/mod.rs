@@ -109,6 +109,8 @@ pub mod filter;
 ///
 pub mod freelist;
 mod graph;
+#[cfg(feature = "hooks")]
+mod hooks;
 pub(crate) mod identity;
 mod impls;
 #[cfg(feature = "index")]

@@ -76,6 +76,7 @@ extras = [
     "blame",
     "merge",
     "notes",
+    "hooks",
 ]
 
 ## Various progress-related features that improve the look of progress message units.
@@ -99,6 +100,7 @@ sha1 = [
     "gix-pack/sha1",
     "gix-note?/sha1",
     "gix-worktree-stream?/sha1",
+    "gix-hook?/sha1",
 ]
 
 ## Enable support for the SHA-256 hash throughout the `gix` stack.
@@ -108,6 +110,7 @@ sha256 = [
     "gix-pack/sha256",
     "gix-note?/sha256",
     "gix-worktree-stream?/sha256",
+    "gix-hook?/sha256",
 ]
 
 #! #### Components
@@ -139,6 +142,9 @@ credentials = ["dep:gix-credentials", "dep:gix-prompt", "dep:gix-negotiate"]
 
 ## Add, inspect, update, and remove worktrees.
 worktree-mutation = ["status", "dep:gix-worktree-state", "gix-worktree/add", "gix-worktree/remove"]
+
+## Find and run the hooks of a repository as Git does, starting their programs through `gix-command`.
+hooks = ["dep:gix-hook"]
 
 ## Retrieve a worktree stack for querying exclude information
 excludes = ["dep:gix-ignore", "dep:gix-worktree", "index"]
@@ -398,6 +404,7 @@ gix-status = { version = "^0.37.0", path = "../gix-status", optional = true, fea
     "worktree-rewrites",
 ] }
 gix-command = { version = "^0.12.1", path = "../gix-command", optional = true }
+gix-hook = { version = "^0.0.0", path = "../gix-hook", optional = true, features = ["run"] }
 
 gix-worktree-stream = { version = "^0.39.0", path = "../gix-worktree-stream", optional = true }
 gix-archive = { version = "^0.39.0", path = "../gix-archive", default-features = false, optional = true }

@@ -16,6 +16,8 @@ pub(crate) mod config;
 mod excludes;
 #[cfg(feature = "attributes")]
 mod filter;
+#[cfg(feature = "hooks")]
+mod hooks;
 mod location;
 #[cfg(feature = "mailmap")]
 mod mailmap;
