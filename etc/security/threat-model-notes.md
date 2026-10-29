@@ -1,14 +1,14 @@
 # Threat modeling notes
 
-*These are fragmentary thoughts about our threat model. They are currently incomplete in many ways, but especially in that they do not examine the ecosystem of software that uses gitoxide.*
+*These are fragmentary thoughts about our threat model. They are currently incomplete in many ways, but especially in that they do not examine the ecosystem of software that uses git-antioxidant.*
 
 ## Similar, but not identical, to Git security considerations
 
-The security considerations and threat landscape for Gitoxide is similar to that of Git, with several of the most important differences being:
+The security considerations and threat landscape for git-antioxidant are similar to those of Git, with several of the most important differences being:
 
-1. Gitoxide is primarily a library project. Used as a library, it contains a the `gix` crate (which most users declare as their dependency) and numerous more special-purpose `gix-*` crates.
+1. git-antioxidant is primarily a library project. Used as a library, it contains the `gix` crate (which most users declare as their dependency) and numerous more special-purpose `gix-*` crates.
 
-2. Gitoxide does not ship a Unix-like environment on Windows. We prefer instead to treat Windows as a "first-class" platform, and because we are primarily a library, there is no clear reasonable way to ship an MSYS2 or similar environment of our own. However, typical operations on Git repositories often include running shell scripts and other commands that expect Unix-like tools and some aspects of Unix-like path semantics. We try to accommodate this on Windows, and we also search for a suitable POSIX-compatible shell to run shell scripts in, preferring one that accompanies a Git for Windows installation when it is present and when we can find it. The uncertainty associated with the environment in which users may configure some custom commands to run makes it so that some assumptions that might seem safe for us to make are not.
+2. git-antioxidant does not ship a Unix-like environment on Windows. We prefer instead to treat Windows as a "first-class" platform, and because we are primarily a library, there is no clear reasonable way to ship an MSYS2 or similar environment of our own. However, typical operations on Git repositories often include running shell scripts and other commands that expect Unix-like tools and some aspects of Unix-like path semantics. We try to accommodate this on Windows, and we also search for a suitable POSIX-compatible shell to run shell scripts in, preferring one that accompanies a Git for Windows installation when it is present and when we can find it. The uncertainty associated with the environment in which users may configure some custom commands to run makes it so that some assumptions that might seem safe for us to make are not.
 
 3. We do not carry our own installation-scoped configuration. Instead, we use the one that Git provides, when present. The Git installation scoped configuration is usually the `system` scope, but some `git` builds (specifically, Apple Git on macOS) have a higher `unknown` scope. When not set or suppressed by an environment variable, the `system` scope configuration file, if present, is usually `/etc/gitconfig` except on Windows, but that is not guaranteed. We do not require that `git` be installed, but if it is then we want to respect the values of any variables in its installation-level configuration scope except where overridden in a narrower scope. To do this, we attempt to invoke `git` to ascertain the appropriate path. We have to make sure the program we're running is `git` and not an attacker-controlled decoy, and that we parse the output correctly even on systems with unexpected configurations.
 
@@ -16,7 +16,7 @@ The security considerations and threat landscape for Gitoxide is similar to that
 
 Aside from the subtle differences in point (4) above (and also that we do not yet have our own implementation of `upload-pack`), [the SECURITY section of the git(1) manual page](https://git-scm.com/docs/git#_security) applies fully.
 
-The rest of these notes are, therefore, not unique to Gitoxide, though they are presented in the context of Gitoxide, and they emphasize areas we have found we need to be especially careful about.
+The rest of these notes are, therefore, not unique to git-antioxidant, though they are presented in its context, and they emphasize areas we have found we need to be especially careful about.
 
 ## What data do we trust?
 
@@ -76,9 +76,9 @@ Because we trust files in a repository's `.git` dir (or just in the repository d
 
 - As in Git, the `safe.directory` configuration variable must be ignored in any non-protected scopes (local and worktree scopes) but honored in protected scopes as an allowlist of paths that can be trusted as if owned by the current user even when they are not.
 
-### Being investigated: Gitoxide in installers run from from partly untrusted directories
+### Being investigated: git-antioxidant in installers run from partly untrusted directories
 
-In some use cases, an application's own containing directory is an untrusted search path. On Windows, that may be relevant if gitoxide library crates are used as part of an installer. If the user downloads the installer to their `Downloads` directory, then through our use of `std::process::Command`, subprocesses of the installer will be searched for in that directory, possibly picking up malicious programs that have been downloaded but not examined or previously run.
+In some use cases, an application's own containing directory is an untrusted search path. On Windows, that may be relevant if git-antioxidant's library crates are used as part of an installer. If the user downloads the installer to their `Downloads` directory, then through our use of `std::process::Command`, subprocesses of the installer will be searched for in that directory, possibly picking up malicious programs that have been downloaded but not examined or previously run.
 
 - This is slightly mitigated by how programs in `Downloads` often have the "mark of the web" alternate data stream data, prompting the user; but the user may interpret the prompt as pertaining to the installer they deliberately just ran and allow it. This is entirely separate from the issue where we must not trust the current working directory--this is about the directory that contains the executable itself.
 

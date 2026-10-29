@@ -3,7 +3,8 @@ lints.workspace = true
 [package]
 name = "gix-trace"
 description = "A crate to provide minimal `tracing` support that can be turned off to zero cost"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 version = "0.3.1"
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]
 license = "MIT OR Apache-2.0"

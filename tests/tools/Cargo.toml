@@ -2,7 +2,9 @@ lints.workspace = true
 
 [package]
 name = "gix-testtools"
-description = "Shared code for gitoxide crates to facilitate testing"
+description = "Shared code for the crates of git-antioxidant to facilitate testing"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 version = "0.22.0"
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]
 edition = "2024"

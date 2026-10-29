@@ -3,7 +3,8 @@ lints.workspace = true
 [package]
 name = "gix-hashtable"
 version = "0.18.1"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 license = "MIT OR Apache-2.0"
 description = "A crate that provides hashtable based data structures optimized to utilize ObjectId keys"
 authors = ["Pascal Kuthe <pascal.kuthe@semimod.de>"]

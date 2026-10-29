@@ -1,23 +1,23 @@
-# Threat Model for Gitoxide - *Provisional*
+# Threat Model for git-antioxidant - *Provisional*
 
-This document outlines the current understanding of the threat model for the Gitoxide project.
+This document outlines the current understanding of the threat model for git-antioxidant.
 
 **Note on Scope:** This document is a work in progress and currently provisional in nature. While it will be updated as we learn and refine our processes, a more comprehensive threat model awaits a deeper, component-by-component analysis of all crates and their features.
 
 ## 1. Core Security Philosophy & Assets
 
-The primary goal of the Gitoxide project is to provide a safe, correct, and high-performance implementation of Git, in Rust. Our security posture is built on the assumption that we must safely handle untrusted data from multiple sources.
+The primary goal of git-antioxidant is to provide a safe, correct, and high-performance implementation of Git, in Rust. Our security posture is built on the assumption that we must safely handle untrusted data from multiple sources.
 
 The key assets we aim to protect are:
 
-- **Integrity and Confidentiality of the Host System:** Preventing Gitoxide from being used as a vector to execute arbitrary code, or to read or write files outside of intended directories.
-- **Availability of the Host Application:** Ensuring that processing malicious data does not cause the application using Gitoxide to crash, hang, or suffer from resource exhaustion.
+- **Integrity and Confidentiality of the Host System:** Preventing git-antioxidant from being used as a vector to execute arbitrary code, or to read or write files outside of intended directories.
+- **Availability of the Host Application:** Ensuring that processing malicious data does not cause the application using git-antioxidant to crash, hang, or suffer from resource exhaustion.
 - **Integrity of Git Operations:** Ensuring all operations are correct and that an attacker cannot corrupt the repository state in a way that violates Git's security model (e.g., via hash collisions).
-- **The Trust of our Users:** The trust of our users is built on designing and implementing Gitoxide as robustly as we can, continuously improving it, and on a commitment to transparency when issues are found and fixed.
+- **The Trust of our Users:** The trust of our users is built on designing and implementing git-antioxidant as robustly as we can, continuously improving it, and on fixing issues promptly when they are found.
 
-## 2. The Gitoxide Threat Landscape
+## 2. The git-antioxidant Threat Landscape
 
-The security considerations for Gitoxide are similar to those of Git itself, and [the SECURITY section of the git(1) manual page](https://git-scm.com/docs/git#_security) is a key reference. However, there are important distinctions arising from Gitoxide's nature as a library. The following sections detail the core principles and specific areas of concern that shape our threat model.
+The security considerations for git-antioxidant are similar to those of Git itself, and [the SECURITY section of the git(1) manual page](https://git-scm.com/docs/git#_security) is a key reference. However, there are important distinctions arising from git-antioxidant's nature as a library. The following sections detail the core principles and specific areas of concern that shape our threat model.
 
 ### 2.1. Data Trust Boundaries
 
@@ -25,7 +25,7 @@ The security considerations for Gitoxide are similar to those of Git itself, and
 
 Remote repositories and the servers that host them are generally treated as untrusted. We assume they may serve malicious, malformed, or unexpected data.
 
-- **Sanitization:** Gitoxide must sanitize all data from remotes. We never automatically install or run hooks provided by a repository we clone. We must also protect against directory traversal attacks during checkout, which includes handling sensitive tree entry filenames (e.g., `..`, `.git`), and malformed or platform-unsupported filenames containing separators or prohibited characters (e.g., `a/../b`, `a\..\b`, `C:x`). Similarly, ref names must be validated to conform to Git's naming rules, and on Windows, they must be prohibited from having reserved names (e.g., `COM1`).
+- **Sanitization:** git-antioxidant must sanitize all data from remotes. We never automatically install or run hooks provided by a repository we clone. We must also protect against directory traversal attacks during checkout, which includes handling sensitive tree entry filenames (e.g., `..`, `.git`), and malformed or platform-unsupported filenames containing separators or prohibited characters (e.g., `a/../b`, `a\..\b`, `C:x`). Similarly, ref names must be validated to conform to Git's naming rules, and on Windows, they must be prohibited from having reserved names (e.g., `COM1`).
 - **Protocol-Level Attacks:** The server may send malicious data that does not conform to expected protocols (e.g., `git-upload-pack` commands or HTTP responses).
 - **Data Transported via Insecure Protocols:** Data transported via protocols that inherently do not guarantee integrity (like `http://` or `git://`) is vulnerable to MITM attacks. While we cannot secure the underlying protocol, we must preserve other security guarantees, such as SHA-1 collision detection.
 
@@ -33,11 +33,11 @@ Remote repositories and the servers that host them are generally treated as untr
 
 A local repository on the filesystem is not inherently more trustworthy than a remote one. For example, a user might unpack a malicious repository from an archive. Cloning such a repository (even via the filesystem) is a valid way to sanitize it, as the clone operation itself is designed to be safe. Therefore, any repository used as a *source* for a clone must be treated with the same level of scrutiny as a network remote.
 
-- **"Dubious Ownership":** For "dubiously owned" repos, unless allowlisted in a value of `safe.directory` set in a protected scope, Gitoxide must operate in a restricted mode. Our model differs slightly from Git: we will read the repository's `.git/config` file but treat its contents as **untrusted**, refusing to execute any commands or perform other dangerous actions based on its configuration. This allows for broader library use cases without requiring users to unsafely take ownership of untrusted files.
+- **"Dubious Ownership":** For "dubiously owned" repos, unless allowlisted in a value of `safe.directory` set in a protected scope, git-antioxidant must operate in a restricted mode. Our model differs slightly from Git: we will read the repository's `.git/config` file but treat its contents as **untrusted**, refusing to execute any commands or perform other dangerous actions based on its configuration or on other files in its Git directory, such as hooks and the todo lists of rebases. This allows for broader library use cases without requiring users to unsafely take ownership of untrusted files.
 
 #### 2.1.3. Untrusted Environment & Filesystem Locations
 
-The environment in which Gitoxide runs is not fully trusted.
+The environment in which git-antioxidant runs is not fully trusted.
 
 - **Working Tree:** The contents of a repository's working tree are untrusted, as they are derived from (untrusted) repository history.
 - **Current Working Directory (CWD):** The CWD is an untrusted search path for executing external programs. We do not execute programs from the CWD unless their path explicitly indicates a local execution (e.g., prefixed with `./`).
@@ -49,7 +49,7 @@ The environment in which Gitoxide runs is not fully trusted.
 
 ## 3. Formal Threat Analysis (STRIDE Summary)
 
-The following table summarizes the primary threats to Gitoxide using the STRIDE framework. The "Details" column references the relevant section in the narrative landscape above.
+The following table summarizes the primary threats to git-antioxidant using the STRIDE framework. The "Details" column references the relevant section in the narrative landscape above.
 
 | Interaction / Component | Threat & Summary | STRIDE Category | Details |
 | :--- | :--- | :--- | :--- |

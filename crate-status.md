@@ -141,7 +141,8 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
     * **Objects**
         * [x] lookup
         * [x] peel to object kind
-        * [ ] create [signed commits and tags](https://github.com/GitoxideLabs/gitoxide/issues/12)
+        * [x] create signed commits, with `Repository::commit_index()`
+        * [ ] create signed tags
         * **trees**
             * [x] lookup path
             * [x] edit
@@ -1014,11 +1015,11 @@ The git staging area.
 
 ### gix-tempfile
 
-See its [README.md](https://github.com/GitoxideLabs/gitoxide/blob/main/gix-tempfile/README.md).
+See its [README.md](gix-tempfile/README.md).
 
 ### gix-lock
 
-See its [README.md](https://github.com/GitoxideLabs/gitoxide/blob/main/gix-lock/README.md).
+See its [README.md](gix-lock/README.md).
 
 ### gix-config-value
 * **parse**

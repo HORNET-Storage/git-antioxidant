@@ -2,8 +2,9 @@ lints.workspace = true
 
 [package]
 name = "gix-zlib"
-description = "Zlib-rs streaming compression and decompression utilities used by gitoxide"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+description = "Zlib-rs streaming compression and decompression utilities used by git-antioxidant"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 version = "0.4.0"
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]
 license = "MIT OR Apache-2.0"

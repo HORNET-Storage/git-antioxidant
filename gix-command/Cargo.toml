@@ -3,9 +3,10 @@ lints.workspace = true
 [package]
 name = "gix-command"
 version = "0.12.1"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 license = "MIT OR Apache-2.0"
-description = "A crate of the gitoxide project handling internal git command execution"
+description = "A crate of git-antioxidant handling internal git command execution"
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]
 edition = "2024"
 rust-version = "1.88"

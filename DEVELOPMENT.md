@@ -1,33 +1,13 @@
 # Development Guide
 
-See the [contribution guide] for requirements to meet before beginning implementation.
+See the [contribution guide](CONTRIBUTING.md) for how changes are made.
 Follow the [repository-wide development rules](AGENTS.md); this guide provides additional workflow, tooling, and design background.
-
-[contribution guide]: https://github.com/GitoxideLabs/gitoxide/blob/main/CONTRIBUTING.md
 
 ## Common commands
 
 Run `just` to browse commands grouped by purpose, with everyday development tasks
 first. Use `just --groups` to list the groups, or filter the overview with, for
 example, `just --list --group 'Dependencies and SBOMs'`.
-
-## Release source paths
-
-The GitHub release workflow builds `gix` and `ein` through
-`etc/scripts/remap-release-paths.sh`. It appends rustc's `--remap-path-prefix`
-flags for all target crates, including dependencies, using stable virtual roots:
-`/gitoxide` for the checkout, `/cargo` for Cargo sources, `/rust` for the selected
-Rust toolchain, and `/generated` for build output. Home, Rustup, and temporary
-paths are also remapped. Native host paths, canonical aliases, Windows separator
-variants, and `cross` container mounts are covered. Normal
-local development builds are unchanged.
-
-To opt into the same policy locally, run these commands from the workspace root:
-
-```sh
-bash etc/scripts/remap-release-paths.sh build cargo build --release --locked -p gitoxide --bins
-bash etc/scripts/remap-release-paths.sh check target/release/gix target/release/ein
-```
 
 ## Practices
 
@@ -37,16 +17,12 @@ bash etc/scripts/remap-release-paths.sh check target/release/gix target/release/
  * **benchmarks**
    * benchmark performance-sensitive changes before and after implementation.
    * use representative inputs and compare against git when applicable.
- * Adhere to the [stability guide](https://github.com/GitoxideLabs/gitoxide/blob/main/STABILITY.md)
+ * Adhere to the [stability guide](STABILITY.md)
 
 ## Commit History
 
-We use feature branches and pull requests to take advantage of CI and GitHub review tools, and merge with merge commits
-to make individual efforts stand out. There is no requirement to squash commits or linearize history.
-However, commits may be squashed when the history is too messy to review, and commit titles may receive minor edits.
-
-Use Tix to organize topic-oriented commit stacks. See the [Tix workflow](.agents/skills/tix/SKILL.md) for history edits
-and preservation of review state.
+Every commit on `main` is self-contained and passes CI on its own, and a breaking change shares its commit with the
+adaptations it requires. Commit messages follow the [development rules](AGENTS.md). History on `main` isn't rewritten.
 
 ## Configuration and overrides
 
@@ -60,7 +36,7 @@ by calling methods or by obtaining a data structure that can be set as a whole u
 Note that without any of that, one should document that with `config_snapshot_mut()` any of the relevant configuration can be
 changed in memory before invoking a method in order to affect it.
 
-Parameters which are not available in git or specific to `gitoxide` or the needs of the caller can be passed as parameters or via
+Parameters which are not available in git or specific to `gix` or the needs of the caller can be passed as parameters or via
 `Options` or `Context` structures as needed.
 
 ## Software bills of materials (SBOMs)
@@ -194,7 +170,7 @@ _plumbing_ or _porcelain_. _Plumbing_ prioritizes composition, whereas _porcelai
   * Proper command-line parsing with Clap.
   * Examples must compile; add focused tests where behavior or correctness warrants them. Elaborate test suites are not required.
   * No progress.
-  * High quality Rust code along with idiomatic `gitoxide` usage so people can learn from it.
+  * High quality Rust code along with idiomatic `gix` usage so people can learn from it.
 * **Plumbing CLI (like `gix`)**
   * Use Clap for command-line parsing, including small builds.
   * Journey tests only if it's proven valuable
@@ -211,12 +187,8 @@ _plumbing_ or _porcelain_. _Plumbing_ prioritizes composition, whereas _porcelai
 
 Run `just --list --group 'Maintenance'` to browse maintenance tasks. The `Makefile` retains specific build and fixture-generation targets used by CI.
 
-## Creating a release
-
-Use `just release` to publish crates with the repository's release defaults. Additional release-tool arguments can be passed to this recipe.
-
-`just roll-release <cargo-smart-release-args>` runs the release command and then triggers the GitHub binary workflow for the unique `v*` tag at `HEAD`.
-To trigger only that workflow, use `just run-release-workflow`. Workflow commands require an authenticated `gh` CLI.
+The crates aren't published, and the repository has no releases: applications use it at an exact commit, as the
+[stability guide](STABILITY.md) describes.
 
 ## Git compatibility checks
 

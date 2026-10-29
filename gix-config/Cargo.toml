@@ -3,8 +3,9 @@ lints.workspace = true
 [package]
 name = "gix-config"
 version = "0.62.2"
-repository = "https://github.com/GitoxideLabs/gitoxide"
-description = "A git-config file parser and editor from the gitoxide project"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
+description = "A git-config file parser and editor of git-antioxidant"
 license = "MIT OR Apache-2.0"
 authors = ["Edward Shen <code@eddie.sh>"]
 edition = "2024"

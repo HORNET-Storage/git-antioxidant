@@ -3,9 +3,10 @@ lints.workspace = true
 [package]
 name = "gix-transport"
 version = "0.62.0"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 license = "MIT OR Apache-2.0"
-description = "A crate of the gitoxide project dedicated to implementing the git transport layer"
+description = "A crate of git-antioxidant dedicated to implementing the git transport layer"
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]
 edition = "2024"
 include = ["/src/**/*", "/LICENSE-*"]

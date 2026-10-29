@@ -3,9 +3,10 @@ lints.workspace = true
 [package]
 name = "gix-worktree"
 version = "0.59.0"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 license = "MIT OR Apache-2.0"
-description = "A crate of the gitoxide project for shared worktree related types and utilities."
+description = "A crate of git-antioxidant for shared worktree related types and utilities."
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]
 edition = "2024"
 include = ["/src/**/*", "/LICENSE-*"]

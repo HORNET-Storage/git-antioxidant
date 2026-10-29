@@ -2,8 +2,9 @@ lints.workspace = true
 
 [package]
 name = "gix-parallel"
-description = "Serial and parallel computation helpers and shared ownership primitives for gitoxide"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+description = "Serial and parallel computation helpers and shared ownership primitives for git-antioxidant"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 version = "0.50.1"
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]
 license = "MIT OR Apache-2.0"

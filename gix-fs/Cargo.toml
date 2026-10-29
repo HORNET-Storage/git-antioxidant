@@ -3,9 +3,10 @@ lints.workspace = true
 [package]
 name = "gix-fs"
 version = "0.24.1"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 license = "MIT OR Apache-2.0"
-description = "A crate providing file system specific utilities to `gitoxide`"
+description = "A crate providing file system specific utilities to git-antioxidant"
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]
 edition = "2024"
 rust-version = "1.88"

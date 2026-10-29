@@ -1,24 +1,23 @@
-# Repository Development Rules for Gitoxide
+# Repository Development Rules for git-antioxidant
 
-This repository contains `gitoxide` - a pure Rust implementation of Git. These development rules apply to all contributors, both humans and agents, regardless of the tools they use.
+This repository contains git-antioxidant, an implementation of Git in Rust. These development rules apply to all contributors, both humans and agents, regardless of the tools they use.
 
 ## Project Overview
 
 - **Language**: Rust (MSRV documented in gix/Cargo.toml)
 - **Structure**: Cargo workspace with multiple crates (gix-\*, gitoxide-core, etc.)
-- **Main crates**: `gix` (library entrypoint), `gitoxide` binary (CLI tools: `gix` and `ein`)
+- **Main crates**: `gix` (library entrypoint), the `gitoxide` package (CLI tools: `gix` and `ein`)
 - **Purpose**: Provide a high-performance, safe Git implementation with both library and CLI interfaces
+- **Independence**: git-antioxidant began as a fork of gitoxide and is a project of its own. It doesn't merge gitoxide or
+  send changes to it; fixes, security fixes included, are made here. The crates keep their names and aren't published.
 
 ## Development Practices
 
-### AI Agent Communication
+### Crate-Specific Rules
 
-- AI agents communicating through a person's account must identify themselves, for example in issue or PR descriptions and comments.
-- Agents creating a PR must state the underlying motivation in its description, such as the project that will benefit
-  or where the bug was first discovered. Any motivation is valid; explain why the work was pursued rather than
-  restating what the PR does. "Want to fix a bug" is insufficient because that is already evident from the PR itself.
-- AI assistance that does not replace the person as the speaker, such as proofreading or wording polish, does not require identification.
-- Attributing AI assistance in commit metadata, for example with an `Assisted-by:` or `Co-authored-by:` trailer, is welcome but not required.
+- `gix-date`: parser fixes and improvements aren't breaking changes, even when they change which inputs are accepted or
+  how they are interpreted. Don't mark them as breaking in commit messages.
+- `gix-tix`: follow [`gix-tix/AGENTS.md`](gix-tix/AGENTS.md).
 
 ### Test-First Development
 
@@ -94,9 +93,9 @@ Follow "purposeful conventional commits" style:
   - Enclose anything that occurs in code, as well as crate names and shell commands, in backticks.
   - Use Markdown generously whenever markup helps readers understand or navigate the prose.
   - Use the body to share everything known about what motivated the change, not merely what changed.
-- Use conventional commit prefixes ONLY if message should appear in changelog
-- Every Conventional Commit title MUST include a _scope_ naming the crate that should receive the changelog entry, even when the commit touches only that crate. If it touches paths outside that crate or multiple crates, still scope it to the crate whose changelog should receive the entry.
-- Breaking changes MUST appear in the changelog and use `!` after the scope and before the colon: `change(gix)!:`, `remove(gix)!:`, `rename(gix)!:`, or `feat(gix-odb)!:`
+- Use conventional commit prefixes ONLY for changes that users of the crates notice
+- Every Conventional Commit title MUST include a _scope_ naming the crate the change concerns, even when the commit touches only that crate. If it touches paths outside that crate or multiple crates, scope it to the crate whose users are affected most.
+- Breaking changes MUST use `!` after the scope and before the colon, and say in the body what callers have to change: `change(gix)!:`, `remove(gix)!:`, `rename(gix)!:`, or `feat(gix-odb)!:`
 - Features/fixes visible to users: `feat(gix):`, `fix(gix):`
 - Refactors/chores: no prefix (don't affect users). If a refactor changes the API, use `feat`, `change`, `rename`, or `remove` with the appropriate scope and breaking-change marker instead.
 - Examples:
@@ -228,13 +227,13 @@ Follow "purposeful conventional commits" style:
 - Stability guide: STABILITY.md
 - Always update docs if directly related to code changes
 
-## CI and Releases
+## CI
 
 - Ubuntu-latest git version is the compatibility target, while maintaining backwards compatibility
 - Every commit must be self-contained and pass CI independently
    - Feel free to run `etc/scripts/ci-check-local.sh --thorough` until it passes as proxy, as running every commit against CI isn't feasible.
-- Keep breaking changes and all adaptations required to build and test the workspace in the same commit. Do not split them merely to route changelog entries.
-- Every Conventional Commit title must have a _scope_ naming the crate whose changelog should receive the entry, including when the commit touches multiple crates
+- Keep breaking changes and all adaptations required to build and test the workspace in the same commit.
+- Every Conventional Commit title must have a _scope_ naming a crate, including when the commit touches multiple crates
 
 ## When Suggesting Changes
 

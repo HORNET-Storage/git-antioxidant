@@ -3,10 +3,11 @@ lints.workspace = true
 [package]
 name = "gix-sequencer"
 version = "0.0.0"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 license = "MIT OR Apache-2.0"
-description = "A crate of the gitoxide project handling sequences of human-aided operations"
-authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]
+description = "A crate of git-antioxidant handling sequences of human-aided operations"
+authors = ["Colby Serpa", "Sebastian Thiel <sebastian.thiel@icloud.com>"]
 edition = "2024"
 rust-version = "1.88"
 include = ["/src/**/*", "/LICENSE-*"]

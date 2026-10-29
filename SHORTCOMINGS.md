@@ -4,7 +4,7 @@ This file is for tracking features that are less well implemented or less powerf
 
 ### gix-index
 
-* The `link` extension can be read, but won't be written. This effectively disables the use of a split index once a mutating operation is run on it with `gitoxide`.
+* The `link` extension can be read, but won't be written. This effectively disables the use of a split index once a mutating operation is run on it with `gix`.
 
 ### gix-protocol
 

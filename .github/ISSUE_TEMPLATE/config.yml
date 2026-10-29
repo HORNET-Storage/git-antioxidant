@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Propose a feature
-    url: https://github.com/GitoxideLabs/gitoxide/discussions/categories/feature-proposal
-    about: Search existing proposals or start a discussion to hash out new features
+  - name: Report a vulnerability
+    url: https://github.com/HORNET-Storage/git-antioxidant/security/advisories/new
+    about: Report vulnerabilities privately, never in a public issue

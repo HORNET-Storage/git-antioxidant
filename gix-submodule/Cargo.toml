@@ -3,9 +3,10 @@ lints.workspace = true
 [package]
 name = "gix-submodule"
 version = "0.36.1"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 license = "MIT OR Apache-2.0"
-description = "A crate of the gitoxide project dealing git submodules"
+description = "A crate of git-antioxidant dealing with git submodules"
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]
 edition = "2024"
 rust-version = "1.88"

@@ -1,7 +1,7 @@
 # Security process documents
 
 > [!NOTE]
-> To *report* a vulnerability, see the [**security policy**](https://github.com/GitoxideLabs/gitoxide/security/policy), which can also be read in the top-level [`SECURITY.md`](https://github.com/GitoxideLabs/gitoxide/blob/main/SECURITY.md).
+> To *report* a vulnerability, see the [**security policy**](https://github.com/HORNET-Storage/git-antioxidant/security/policy), which can also be read in the top-level [`SECURITY.md`](../../SECURITY.md).
 
 ## Table of Contents
 

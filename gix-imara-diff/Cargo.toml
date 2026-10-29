@@ -9,8 +9,9 @@ authors = ["pascalkuthe <pascalkuthe@pm.me>", "Sebastian Thiel <sebastian.thiel@
 rust-version = "1.88"
 license = "Apache-2.0"
 
-description = "A high performance library for computing diffs, maintained as a modified copy of upstream imara-diff for gitoxide."
-repository = "https://github.com/GitoxideLabs/gitoxide"
+description = "A high performance library for computing diffs, maintained as a modified copy of upstream imara-diff for git-antioxidant."
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 keywords = ["diff", "difference", "myers", "compare", "changes"]
 readme = "README.md"
 include = ["/src/**/*", "/LICENSE", "/README.md", "!/src/tests.rs"]

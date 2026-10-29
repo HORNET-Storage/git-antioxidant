@@ -3,9 +3,10 @@ lints.workspace = true
 [package]
 name = "gix-config-value"
 version = "0.21.1"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 license = "MIT OR Apache-2.0"
-description = "A crate of the gitoxide project providing git-config value parsing"
+description = "A crate of git-antioxidant providing git-config value parsing"
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]
 edition = "2024"
 rust-version = "1.88"

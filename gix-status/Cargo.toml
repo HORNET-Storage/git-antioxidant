@@ -3,9 +3,10 @@ lints.workspace = true
 [package]
 name = "gix-status"
 version = "0.37.0"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 license = "MIT OR Apache-2.0"
-description = "A crate of the gitoxide project dealing with 'git status'-like functionality"
+description = "A crate of git-antioxidant dealing with 'git status'-like functionality"
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>", "Pascal Kuthe <pascal.kuthe@semimod.de>"]
 edition = "2024"
 include = ["/src/**/*", "/LICENSE-*"]

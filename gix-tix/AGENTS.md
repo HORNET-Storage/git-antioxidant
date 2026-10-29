@@ -24,20 +24,7 @@
   committer, signing, editor, and date defaults; pass only behavior-specific
   overrides to `open_with()`, which take precedence over those defaults.
 
-### Provisional Commits
-
-- Before changing tracked worktree files for a task, start from a clean
-  worktree and create an empty provisional commit authored as
-  `🚧WIP🚧 <wip@invalid>`. Give it the purposeful subject the completed change
-  is expected to use so an interrupted session remains identifiable; do not use
-  a `WIP:` prefix.
-- When the task is complete, stage the intended changes and amend that
-  provisional commit. Replace the WIP author with the responsible agent's own
-  name and email, and update the subject and descriptive body to match what was
-  actually completed. The final commit must contain the complete task and leave
-  the worktree clean; never leave the provisional author in finished history.
-
-## Commit authorship
+## Commits
 
 - Create one commit per semantically distinct change. Do not combine independent
   behavior changes merely because they were requested together.
@@ -48,23 +35,6 @@
   the conversation that produced it.
 - Keep each change's implementation, tests, snapshots, and corresponding
   `spec.md` updates in that change's commit.
-- A commit created or materially rewritten by an AI agent must use that agent's
-  own name and email as its author. Set it explicitly when necessary, for example
-  with `tix reword --author "Agent Name <agent@example.com>"`; do not silently
-  inherit the repository owner's configured identity.
-- Never impersonate the repository owner, user, or another person when authoring
-  an agent-created or materially agent-rewritten commit.
-- The explicit exception is any tracked change outside `gix-tix/`: isolate such
-  changes in a dedicated commit containing no `gix-tix/` files, author it as
-  `Byron <sebastian.thiel@icloud.com>`, and immediately mark it for review with
-  `tix enrich commit todo <commit>`. This makes the outstanding human review
-  visible in tix even when the outside change is required by gix-tix work.
-- Preserve the author of an existing commit when the agent is not responsible for its contents.
-- Keep this provenance in commit metadata so reviewers can distinguish agent-authored changes without relying on commit-message trailers.
-- If follow-up work semantically belongs to an existing local commit, amend it
-  into that commit instead of adding a corrective commit at the tip. Use
-  `tix travel <commit>` when suitable to edit it while retaining its descendants,
-  then return through the saved branch after the descendants are rebased.
 
 ## Repository lifetime
 

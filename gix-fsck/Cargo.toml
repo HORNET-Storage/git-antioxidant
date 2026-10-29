@@ -3,7 +3,8 @@ lints.workspace = true
 [package]
 name = "gix-fsck"
 version = "0.27.1"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 authors = ["Cameron Esfahani <cesfahani@gmail.com>", "Sebastian Thiel <sebastian.thiel@icloud.com>"]
 license = "MIT OR Apache-2.0"
 description = "Verifies the connectivity and validity of objects in the database"

@@ -3,7 +3,8 @@ lints.workspace = true
 [package]
 name = "gix-commitgraph"
 version = "0.42.0"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 documentation = "https://git-scm.com/docs/commit-graph"
 license = "MIT OR Apache-2.0"
 description = "Read-only access to the git commitgraph file format"

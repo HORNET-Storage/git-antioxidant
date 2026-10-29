@@ -3,7 +3,8 @@ lints.workspace = true
 [package]
 name = "gix-revwalk"
 version = "0.38.0"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 license = "MIT OR Apache-2.0"
 description = "A crate providing utilities for walking the revision graph"
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]

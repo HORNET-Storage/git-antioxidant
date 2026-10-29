@@ -3,7 +3,8 @@ lints.workspace = true
 [package]
 name = "gix-tempfile"
 version = "26.0.1"
-repository = "https://github.com/GitoxideLabs/gitoxide"
+repository = "https://github.com/HORNET-Storage/git-antioxidant"
+publish = false
 license = "MIT OR Apache-2.0"
 description = "A tempfile implementation with a global registry to assure cleanup"
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]
