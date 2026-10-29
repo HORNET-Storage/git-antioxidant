@@ -19,7 +19,9 @@
 //! no hook runs. The other programs of a rebase, the sequence editor that edits the todo list, the editor that edits the
 //! messages of `reword` and `squash` and the commands of `exec`, only start with [`Programs::Allow`], through
 //! `gix_command` as [`Repository::editor_command()`](crate::Repository::editor_command()) starts the editor. With
-//! [`Programs::Deny`], the todo list is used as made and messages as prepared, as with the editor `:`.
+//! [`Programs::Deny`], the todo list is used as made and messages as prepared, as with the editor `:`. The commands of
+//! `exec` also need a [fully trusted](crate::Repository::git_dir_trust()) Git directory, as hooks do: the todo list in
+//! it names them, and another owner of the repository could have written it.
 //!
 //! ### Deviation
 //!
@@ -110,7 +112,8 @@ pub enum Programs {
     /// rebase stops with an error before an `exec` command, which stays in the todo list.
     #[default]
     Deny,
-    /// Start them as Git does.
+    /// Start them as Git does. The commands of `exec` only start if the Git directory is
+    /// [fully trusted](crate::Repository::git_dir_trust()), as the todo list in it names them.
     Allow,
 }
 
@@ -294,6 +297,9 @@ pub enum Error {
     NothingToDo,
     /// A program would have to start that [`Programs::Deny`] doesn't allow: the command of an `exec` or of `--exec`.
     ProgramsDenied,
+    /// The command of an `exec` or of `--exec` would have to start in a repository whose Git directory isn't fully
+    /// trusted, where another owner could have written the todo list that names it. Hooks don't run there either.
+    ProgramsUntrusted,
 }
 
 impl std::fmt::Display for Error {
@@ -351,6 +357,9 @@ impl std::fmt::Display for Error {
             Error::ProgramsDenied => {
                 f.write_str("the commands of `exec` can't run as the programs of the rebase aren't allowed to start")
             }
+            Error::ProgramsUntrusted => {
+                f.write_str("the commands of `exec` only run in repositories whose Git directory is fully trusted")
+            }
         }
     }
 }
@@ -374,6 +383,7 @@ impl std::error::Error for Error {
             | Error::UsedByWorktree { .. }
             | Error::DirtyWorktree { .. }
             | Error::UnresolvedConflicts => Some(const { &ClassificationMarker::CONFLICT }),
+            Error::ProgramsUntrusted => Some(const { &ClassificationMarker::PERMISSION_DENIED }),
             Error::PreRebaseHookRefused => None,
         }
     }

@@ -10,7 +10,13 @@ use std::{
 };
 
 use super::Sequencer;
-use crate::{Repository, Result, bstr::BStr, config::tree::Sequence, error::message, rebase::Programs};
+use crate::{
+    Repository, Result,
+    bstr::BStr,
+    config::tree::Sequence,
+    error::{bail, message},
+    rebase::{Error, Programs},
+};
 
 /// What an editor did with the file it edited.
 pub(super) enum Edited {
@@ -58,6 +64,17 @@ impl Sequencer<'_> {
             success,
             dirty: changes.unstaged || changes.uncommitted,
         })
+    }
+}
+
+/// Fail unless the commands of `exec` lines may start in `repo` with `programs`: programs have to be allowed, and the
+/// Git directory has to be fully trusted, as the todo list in it names the commands, which another owner of the
+/// repository could have written, and as hooks only run in such repositories as well.
+pub(super) fn allow_exec(repo: &Repository, programs: Programs) -> Result<()> {
+    match programs {
+        Programs::Deny => bail!(Error::ProgramsDenied),
+        Programs::Allow if repo.git_dir_trust() != gix_sec::Trust::Full => bail!(Error::ProgramsUntrusted),
+        Programs::Allow => Ok(()),
     }
 }
 

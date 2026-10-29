@@ -15,13 +15,15 @@ use gix_sequencer::{
 use super::{
     Sequencer,
     commit::{Committed, Flags, MERGE_MSG, read_file, remove_file, write_file},
-    message_from_subject, skip_blank_lines, subject_line,
+    message_from_subject,
+    programs::allow_exec,
+    skip_blank_lines, subject_line,
 };
 use crate::{
     Result,
     bstr::{BStr, BString, ByteSlice},
     error::{ResultExt, bail, message},
-    rebase::{Error, Outcome, Programs, Stop, StopReason},
+    rebase::{Outcome, Stop, StopReason},
 };
 
 /// What a command of the todo list came to.
@@ -71,8 +73,8 @@ impl Sequencer<'_> {
                 .lines
                 .get(progress.current)
                 .and_then(|line| line.item.command());
-            if next == Some(Command::Exec) && self.programs == Programs::Deny {
-                bail!(Error::ProgramsDenied);
+            if next == Some(Command::Exec) {
+                allow_exec(self.repo, self.programs)?;
             }
             let Some(begun) = self.dir.begin(progress)? else {
                 break;

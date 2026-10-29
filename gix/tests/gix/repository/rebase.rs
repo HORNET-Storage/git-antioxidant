@@ -70,6 +70,14 @@ fn rebase(scenario: &Scenario, options: Options) -> gix::Result<Outcome> {
     scenario.repo.rebase(options, &AtomicBool::new(false))
 }
 
+/// Open the repository of `scenario` again as one whose Git directory isn't fully trusted.
+fn untrusted(scenario: &Scenario) -> crate::Result<gix::Repository> {
+    Ok(gix::open_opts(
+        scenario.path(),
+        scenario.repo.open_options().clone().with(gix_sec::Trust::Reduced),
+    )?)
+}
+
 /// Return where `outcome` stopped, which it has to.
 fn stopped(outcome: Outcome) -> Stop {
     match outcome {
@@ -406,6 +414,53 @@ fn exec_needs_programs() -> crate::Result {
     let err = rebase(&scenario, options).expect_err("the commands of `exec` can't run without programs");
     assert_eq!(err.downcast_any_ref::<Error>(), Some(&Error::ProgramsDenied));
     assert_eq!(rebase_state(scenario.path())?, BTreeMap::new(), "no rebase started");
+    Ok(())
+}
+
+#[test]
+#[parallel]
+fn exec_needs_a_fully_trusted_git_directory() -> crate::Result {
+    let scenario = scenario("exec")?;
+    let options = Options {
+        exec: vec!["echo ran >>.git/exec-records".into()],
+        ..onto("main")
+    };
+    let err = untrusted(&scenario)?
+        .rebase(options, &AtomicBool::new(false))
+        .expect_err("the commands of `exec` don't run where another owner could have written the todo list");
+    assert_eq!(err.downcast_any_ref::<Error>(), Some(&Error::ProgramsUntrusted));
+    assert!(err.is_permission_denied(), "{err:?}");
+    assert_eq!(rebase_state(scenario.path())?, BTreeMap::new(), "no rebase started");
+    Ok(())
+}
+
+#[test]
+#[parallel]
+fn exec_lines_of_a_rebase_in_progress_need_a_fully_trusted_git_directory() -> crate::Result {
+    let scenario = scenario("break")?;
+    let stop = stopped(rebase(&scenario, interactive("main"))?);
+    assert_eq!(stop.reason, StopReason::Break, "the rebase stops for `break`");
+    let todo = scenario
+        .path()
+        .join(".git")
+        .join("rebase-merge")
+        .join("git-rebase-todo");
+    let mut list = b"exec echo ran >>.git/exec-records\n".to_vec();
+    list.extend(std::fs::read(&todo)?);
+    std::fs::write(&todo, list)?;
+
+    let err = untrusted(&scenario)?
+        .rebase_continue(step(), &AtomicBool::new(false))
+        .expect_err("the command of an `exec` line that another owner could have written doesn't run");
+    assert_eq!(err.downcast_any_ref::<Error>(), Some(&Error::ProgramsUntrusted));
+    assert!(
+        !scenario.path().join(".git").join("exec-records").exists(),
+        "the command didn't run"
+    );
+    assert!(
+        std::fs::read(&todo)?.starts_with(b"exec echo ran"),
+        "the `exec` line stays in the todo list"
+    );
     Ok(())
 }
 

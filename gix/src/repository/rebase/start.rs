@@ -14,6 +14,7 @@ use gix_sequencer::{
 use super::{
     Sequencer,
     commit::remove_file,
+    programs::allow_exec,
     refs::{attach_head, detach_head},
     state_dir,
     todo::{Completion, resolve_commit},
@@ -83,8 +84,8 @@ pub(super) fn rebase(repo: &Repository, options: Options, should_interrupt: &Ato
             bail!(message("empty exec command").validation_error());
         }
     }
-    if !options.exec.is_empty() && options.programs == Programs::Deny {
-        bail!(Error::ProgramsDenied);
+    if !options.exec.is_empty() {
+        allow_exec(repo, options.programs)?;
     }
 
     let interactive = options.interactive;
