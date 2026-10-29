@@ -146,12 +146,12 @@ is usable to some extent.
 * **very early**  _(possibly without any documentation and many rough edges)_
   * [gix-blame](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-blame)
   * [gix-hook](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-hook)
+  * [gix-sequencer](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-sequencer)
 * **idea** _(just a name placeholder)_
   * [gix-note](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-note)
   * [gix-fetchhead](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-fetchhead)
   * [gix-lfs](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-lfs)
   * [gix-rebase](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-rebase)
-  * [gix-sequencer](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-sequencer)
   * [gix-tui](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-tui)
   * [gix-tix](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-tix)
   * [gix-bundle](https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md#gix-bundle)

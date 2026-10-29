@@ -2521,6 +2521,21 @@ dependencies = [
 [[package]]
 name = "gix-sequencer"
 version = "0.0.0"
+dependencies = [
+ "bstr",
+ "gix-config",
+ "gix-error",
+ "gix-fs",
+ "gix-hash",
+ "gix-object",
+ "gix-odb",
+ "gix-ref",
+ "gix-sequencer",
+ "gix-tempfile",
+ "gix-testtools",
+ "gix-validate",
+ "pretty_assertions",
+]
 
 [[package]]
 name = "gix-shallow"

@@ -805,11 +805,14 @@ mailbox parsing from patch application.
 
 Handle human-aided operations which cannot be completed in one command invocation.
 
-* [ ] shared state machine with `continue`, `skip`, `abort` and `quit`
+* [x] parse and write todo lists as Git does, with the help that Git adds and `rebase.missingCommitsCheck`
+* [x] read and write the state of rebases in `.git/rebase-merge` and of cherry-pick and revert sequences in `.git/sequencer`
+* [x] shared state machine with `continue`, `skip`, `abort` and `quit`, which tells the caller what to commit and reset
 * [ ] cherry-pick and revert sequences
 * [ ] mailbox apply / `git am` sequence support
     * [ ] consume parsed mailbox messages from `gix-mailbox`
-* [ ] common reflog messages and state refs like [`CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, `ORIG_HEAD`](https://git-scm.com/docs/gitrevisions) and bisect refs
+* [x] common reflog messages and state refs like [`CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, `ORIG_HEAD`](https://git-scm.com/docs/gitrevisions), as reference edits that the caller applies
+    * [ ] bisect refs
 
 ### gix-rerere
 
