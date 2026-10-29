@@ -2,7 +2,10 @@ use std::io::Read;
 
 use gix_error::{ErrorExt, Result, ResultExt, message};
 
-use crate::helper::{Action, Context, NextAction, Outcome};
+use crate::{
+    helper::{Action, Context, NextAction, Outcome},
+    program::{Run, store},
+};
 
 impl Action {
     /// Send ourselves to the given `write` which is expected to be credentials-helper compatible
@@ -11,7 +14,10 @@ impl Action {
             Action::Get(ctx) => ctx.write_to(write),
             Action::Store(last) | Action::Erase(last) => {
                 write.write_all(last).ok();
-                write.write_all(b"\n").ok();
+                // End the last line as Git does, but don't add an empty line after it.
+                if !last.ends_with(b"\n") {
+                    write.write_all(b"\n").ok();
+                }
                 Ok(())
             }
         }
@@ -62,7 +68,11 @@ impl std::error::Error for HelperFailure {
 
 pub(crate) fn raw(helper: &mut crate::Program, action: &Action) -> Result<Option<Vec<u8>>> {
     let communication_error = || message("An IO error occurred while communicating to the credentials helper");
-    let (mut stdin, stdout) = helper.start(action).or_raise(communication_error)?;
+    let cmd = match helper.to_run(action).or_raise(communication_error)? {
+        Run::Command(cmd) => cmd,
+        Run::Store(options) => return run_store(&options, action),
+    };
+    let (mut stdin, stdout) = helper.start(cmd, action).or_raise(communication_error)?;
     if let (Action::Get(_), None) = (&action, &stdout) {
         panic!("BUG: `Helper` impls must return an output handle to read output from if Action::Get is provided")
     }
@@ -87,4 +97,20 @@ pub(crate) fn raw(helper: &mut crate::Program, action: &Action) -> Result<Option
         None => Ok(None),
         Some(stdout) => Ok(Some(stdout)),
     }
+}
+
+/// Perform `action` as Git's `credential-store` does with `options`, in this process, and return its output if it's
+/// [`Action::Get`].
+///
+/// Its failures permit trying the next helper, as Git's do, without containing the credentials or lines of its files.
+fn run_store(options: &store::Options, action: &Action) -> Result<Option<Vec<u8>>> {
+    let mut input = Vec::new();
+    action
+        .send(&mut input)
+        .or_raise(|| message("An IO error occurred while communicating to the credentials helper"))?;
+    let operation = action.as_arg(true);
+    gix_trace::debug!(operation = ?operation, "running Git's credential-store in this process");
+    let output =
+        store::run(options, operation, &input).map_err(|err| HelperFailure(std::io::Error::other(err)).raise())?;
+    Ok(matches!(action, Action::Get(_)).then_some(output))
 }

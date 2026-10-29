@@ -1,0 +1,7 @@
+# `make_named_helper_records.sh` and `make_credential_store_records.sh` record what the installed `git` sends to the
+# credential helpers and writes to credentials files, which the tests compare with gix, so these fixtures are made with
+# the `git` of each host instead of being archived.
+make_named_helper_records.tar
+make_named_helper_records_sha256.tar
+make_credential_store_records.tar
+make_credential_store_records_sha256.tar

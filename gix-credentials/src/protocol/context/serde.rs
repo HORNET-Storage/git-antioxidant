@@ -35,15 +35,22 @@ mod write {
                 // credential helper invocation chain.
                 quit: _,
             } = self;
-            for (key, value) in [("url", url), ("path", path)] {
+            if let Some(value) = url {
+                validate("url", value.as_slice().into(), *protect_protocol).map_err(std::io::Error::other)?;
+                write_key(&mut out, "url", value.as_ref()).ok();
+            }
+            // The other fields follow in the order of Git's `credential_write()`.
+            for (key, value) in [("protocol", protocol), ("host", host)] {
                 if let Some(value) = value {
-                    validate(key, value.as_slice().into(), *protect_protocol).map_err(std::io::Error::other)?;
-                    write_key(&mut out, key, value.as_ref()).ok();
+                    validate(key, value.as_str().into(), *protect_protocol).map_err(std::io::Error::other)?;
+                    write_key(&mut out, key, value.as_bytes().as_bstr()).ok();
                 }
             }
+            if let Some(value) = path {
+                validate("path", value.as_slice().into(), *protect_protocol).map_err(std::io::Error::other)?;
+                write_key(&mut out, "path", value.as_ref()).ok();
+            }
             for (key, value) in [
-                ("protocol", protocol),
-                ("host", host),
                 ("username", username),
                 ("password", password),
                 ("oauth_refresh_token", oauth_refresh_token),

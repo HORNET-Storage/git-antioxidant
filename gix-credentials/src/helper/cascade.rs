@@ -89,23 +89,13 @@ impl Cascade {
         if let Some(ctx) = action.context_mut() {
             ctx.options = self.context_options;
             ctx.write_to(std::io::sink()).or_error()?;
+            // Like Git, helpers receive the parts of the URL, but not the URL itself.
+            let ctx = ctx.destructure_url_in_place(self.use_http_path)?;
+            ctx.url = None;
+            if self.query_user_only && ctx.password.is_none() {
+                ctx.password = Some("".into());
+            }
         }
-        let mut url = action
-            .context_mut()
-            .map(|ctx| {
-                #[expect(
-                    clippy::manual_inspect,
-                    reason = "the suggested rewrite is a false positive for this mutation"
-                )] /* false positive */
-                ctx.destructure_url_in_place(self.use_http_path).map(|ctx| {
-                    if self.query_user_only && ctx.password.is_none() {
-                        ctx.password = Some("".into());
-                    }
-                    ctx
-                })
-            })
-            .transpose()?
-            .and_then(|ctx| ctx.url.take());
 
         for program in &mut self.programs {
             program.stderr = self.stderr;
@@ -146,7 +136,7 @@ impl Cascade {
                         }
                         if let Some(src) = ctx_url {
                             dst_ctx.url = Some(src);
-                            url = dst_ctx.destructure_url_in_place(self.use_http_path)?.url.take();
+                            dst_ctx.destructure_url_in_place(self.use_http_path)?.url = None;
                         }
                         if dst_ctx
                             .password_expiry_utc
@@ -177,7 +167,6 @@ impl Cascade {
         if prompt.mode != gix_prompt::Mode::Disable
             && let Some(ctx) = action.context_mut()
         {
-            ctx.url = url;
             if ctx.username.is_none() {
                 let message = ctx.to_prompt("Username");
                 prompt.mode = gix_prompt::Mode::Visible;

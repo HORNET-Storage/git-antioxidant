@@ -713,7 +713,10 @@ A basic crate for comon error types and utilities, changed as needed to replace 
   - [x] built-in `git credential` program
   - [x] as scripts
   - [x] as absolute paths to programs with optional arguments
-  - [x] program name with optional arguments, transformed into `git credential-<name>`
+  - [x] program name with optional arguments, run as the program `git-credential-<name>` found in `GIT_EXEC_PATH`, Git's
+    program directories and `PATH`, or as `git credential-<name>` if it isn't found there
+  - [x] `store`, Git's builtin `credential-store`, in this process
+  - [ ] `cache`, Git's builtin `credential-cache`, which still runs as `git credential-cache`
 * [x] `helper::main()` for easy custom credential helper programs written in Rust
 * [ ] (correctness/security) select helpers against rewritten or redirected URLs
   - If a remote URL is rewritten via [`url.<base>.insteadOf|pushInsteadOf`](https://git-scm.com/docs/git-config#Documentation/git-config.txt-urlltbasegtinsteadOf), or an HTTP request is redirected to another host,

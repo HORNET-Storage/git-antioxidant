@@ -242,6 +242,27 @@ mod invoke {
     }
 
     #[test]
+    fn the_url_is_not_stored_even_if_prompting_is_allowed() -> TestResult {
+        let actual = Cascade::default()
+            .extend(fixtures(["custom-helper"]))
+            .invoke(
+                Action::get_for_url("https://example.com/org/repo.git"),
+                gix_prompt::Options {
+                    mode: gix_prompt::Mode::Visible,
+                    askpass: None,
+                },
+            )?
+            .expect("the helper supplies a complete credential, so nothing is prompted");
+        let store = actual.next.store();
+        assert_eq!(
+            store.payload().expect("store action has a payload"),
+            "protocol=https\nhost=example.com\nusername=user-script\npassword=pass-script\n",
+            "like Git, helpers receive the parts of the URL in Git's order, but not the URL itself"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn helpers_can_set_any_context_value() -> TestResult {
         let actual = invoke_cascade(
             ["all-but-credentials", "custom-helper"],
