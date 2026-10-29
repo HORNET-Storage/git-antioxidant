@@ -6,7 +6,7 @@ use gix_ref::FullName;
 use gix_sequencer::{
     rebase::{AuthorScript, Changes, Commit, Dir, Options, State, Stop, UpdateRef, name, reflog_message},
     refs,
-    todo::{ById, Command, Format, default_comment},
+    todo::{ById, Command, Flags, Format, default_comment},
 };
 use gix_testtools::TestResult;
 use pretty_assertions::assert_eq;
@@ -411,7 +411,7 @@ fn failed_fixup_stops_in_its_chain_with_the_state_that_git_writes() -> TestResul
     progress.current += 1;
     ours.begin(&mut progress)?.ok_or("the squash begins")?;
     write_author_script(&case, &ours, "b")?;
-    ours.add_current_fixup(Command::Squash, b)?;
+    ours.add_current_fixup(Command::Squash, Flags::default(), b)?;
     ours.record_rewritten(b, progress.peek_command(1), None)?;
     progress.current += 1;
     // `fixup c` adds itself to the chain and its message, which the caller makes, before its merge conflicts.
@@ -420,7 +420,7 @@ fn failed_fixup_stops_in_its_chain_with_the_state_that_git_writes() -> TestResul
         .read_file(name::SQUASH_MESSAGE)?
         .ok_or("Git wrote the messages so far")?;
     ours.write_file(name::SQUASH_MESSAGE, &squash_message)?;
-    ours.add_current_fixup(Command::Fixup, c)?;
+    ours.add_current_fixup(Command::Fixup, Flags::default(), c)?;
     write_author_script(&case, &ours, "c")?;
     ours.write_failed_squash_messages()?;
     let (_, message) = case.author_and_message("c")?;
@@ -475,11 +475,10 @@ fn failed_fixup_stops_in_its_chain_with_the_state_that_git_writes() -> TestResul
     assert_eq!(ours.current_fixups()?, [(Command::Squash, b)]);
     let mut expected = BString::from("squash ");
     expected.extend_from_slice(b.to_hex().to_string().as_bytes());
-    expected.push(b'\n');
     assert_eq!(
         ours.read_file(name::CURRENT_FIXUPS)?.map(BString::from),
         Some(expected),
-        "Git keeps the line feed after the remaining command"
+        "Git 2.56 removes the line feed before the skipped command, which leaves none after the remaining one"
     );
     Ok(())
 }

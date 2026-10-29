@@ -27,7 +27,7 @@ use gix_ref::{
 
 use crate::{
     file, refs,
-    todo::{Command, Format, Item, List, ParseOptions, Resolve},
+    todo::{Command, Flags, Format, Item, List, ParseOptions, Resolve},
 };
 
 mod author_script;
@@ -802,7 +802,8 @@ impl Dir {
         file::write(&merge_message, &squash_message)
     }
 
-    /// Return the `fixup` and `squash` commands of the current chain from `current-fixups`, each with its commit.
+    /// Return the `fixup` and `squash` commands of the current chain from `current-fixups`, each with its commit. A
+    /// `fixup -c`, which Git records with its option, is a `fixup` here.
     pub fn current_fixups(&self) -> Result<Vec<(Command, ObjectId)>> {
         let content = self.read_file(name::CURRENT_FIXUPS)?.unwrap_or_default();
         content
@@ -810,6 +811,7 @@ impl Dir {
             .filter(|line| !line.is_empty())
             .map(|line| {
                 let parsed = line.split_once_str(" ").and_then(|(command, id)| {
+                    let id = id.strip_prefix(b"-c ").filter(|_| command == b"fixup").unwrap_or(id);
                     let command = match command {
                         b"fixup" => Command::Fixup,
                         b"squash" => Command::Squash,
@@ -826,9 +828,10 @@ impl Dir {
             .collect()
     }
 
-    /// Add `command`, a `fixup` or `squash` of `commit`, to the current chain in `current-fixups`, as
-    /// `update_squash_messages()` records it: the commands are separated by line feeds, and the last one has none.
-    pub fn add_current_fixup(&self, command: Command, commit: ObjectId) -> Result<()> {
+    /// Add `command`, a `fixup` or `squash` of `commit` with `flags`, to the current chain in `current-fixups`, as
+    /// `update_squash_messages()` records it: the commands are separated by line feeds, and the last one has none. A
+    /// `fixup -c` is recorded with its option, which makes `git rebase --continue` open the editor when the chain ends.
+    pub fn add_current_fixup(&self, command: Command, flags: Flags, commit: ObjectId) -> Result<()> {
         let mut content = self
             .read_file(name::CURRENT_FIXUPS)?
             .map(BString::from)
@@ -837,6 +840,9 @@ impl Dir {
             content.push(b'\n');
         }
         content.extend_from_slice(command.name().as_bytes());
+        if command == Command::Fixup && flags.edit_fixup_message {
+            content.extend_from_slice(b" -c");
+        }
         content.push(b' ');
         file::push_hex(&mut content, &commit);
         self.write_file(name::CURRENT_FIXUPS, &content)
@@ -1024,14 +1030,20 @@ impl Dir {
                     fixup_count = 0;
                 }
             } else {
-                // The rebase stopped in a chain, at a command whose commit it skips.
+                // The rebase stopped in a chain, at a command whose commit it skips, which leaves the chain without its
+                // last command and the line feed before it.
                 fixup_count -= 1;
-                let kept = current_fixups.rfind_byte(b'\n').map_or(0, |end| end + 1);
+                let kept = current_fixups.rfind_byte(b'\n').unwrap_or(0);
                 current_fixups.truncate(kept);
                 self.write_file(name::CURRENT_FIXUPS, &current_fixups)?;
                 if fixup_count > 0 && !next_is_fixup {
                     final_fixup = true;
-                    if !current_fixups.starts_with(b"squash ") && current_fixups.find(b"\nsquash ").is_none() {
+                    let seen = |command: &[u8]| {
+                        let mut line_start = BString::from("\n");
+                        line_start.extend_from_slice(command);
+                        current_fixups.starts_with(command) || current_fixups.find(&line_start).is_some()
+                    };
+                    if !seen(b"squash") && !seen(b"fixup -c") {
                         edit_message = false;
                         cleanup_message = true;
                     }
