@@ -1,0 +1,6 @@
+Error: Failed to resolve 'unknown' as a valid tree.
+
+Caused by:
+    0: couldn't parse revision, input="unknown"
+    1: Reference "unknown" could not be found
+    2: The ref partially named "unknown" could not be found

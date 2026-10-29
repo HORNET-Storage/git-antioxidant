@@ -1,0 +1,5 @@
+pre-push refuses
+Error: failed to push some refs to '../remote.git'
+
+Caused by:
+    0: The pre-push hook failed with code 1, so nothing was pushed

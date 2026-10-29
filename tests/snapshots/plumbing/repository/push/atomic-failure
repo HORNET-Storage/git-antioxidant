@@ -1,0 +1,9 @@
+To ../remote.git
+!	HEAD~1:refs/heads/main	[rejected] (non-fast-forward)
+!	refs/heads/other:refs/heads/other	[rejected] (atomic push failed)
+Done
+hint: Updates were rejected because the tip of your current branch is behind
+hint: its remote counterpart. If you want to integrate the remote changes,
+hint: use 'git pull' before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+Error: failed to push some refs to '../remote.git'

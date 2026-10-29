@@ -1,0 +1,3 @@
+warning: --mixed with paths is deprecated; use 'git reset -- <paths>' instead.
+Unstaged changes after reset:
+M	b

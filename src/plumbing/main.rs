@@ -20,7 +20,7 @@ use crate::{
     plumbing::{
         options::{
             Args, Subcommands, attributes, branch, commit, commitgraph, config, credential, exclude, free, fsck, index,
-            mailmap, merge, odb, revision, tag, tree, worktree,
+            mailmap, merge, odb, reset, revision, tag, tree, worktree,
         },
         show_progress,
     },
@@ -590,6 +590,44 @@ pub fn main() -> Result<()> {
                 },
             )
         }
+        #[cfg(feature = "gitoxide-core-blocking-client")]
+        Subcommands::Push(crate::plumbing::options::push::Platform {
+            force,
+            force_with_lease,
+            atomic,
+            tags,
+            follow_tags,
+            delete,
+            dry_run,
+            no_verify,
+            push_options,
+            no_thin,
+            repository: remote,
+            refspecs,
+        }) => {
+            let opts = core::repository::push::Options {
+                repository: remote,
+                refspecs,
+                force,
+                force_with_lease,
+                atomic,
+                tags,
+                follow_tags,
+                delete,
+                dry_run,
+                no_verify,
+                push_options,
+                no_thin,
+            };
+            prepare_and_run(
+                "push",
+                auto_verbose,
+                core::repository::push::PROGRESS_RANGE,
+                move |progress, out, err| {
+                    core::repository::push(repository(Mode::LenientWithGitInstallConfig)?, progress, out, err, opts)
+                },
+            )
+        }
         Subcommands::ConfigTree => {
             prepare_and_run("config-tree", false, None, move |_progress, _out, _err| show_progress())
         }
@@ -1132,18 +1170,43 @@ pub fn main() -> Result<()> {
         Subcommands::Cat { revspec } => prepare_and_run("cat", verbose, None, move |_progress, out, _err| {
             core::repository::cat(repository(Mode::Lenient)?, &revspec, out)
         }),
-        Subcommands::Commit(cmd) => match cmd {
-            commit::Subcommands::Verify { rev_spec } => {
+        Subcommands::Commit(commit::Platform {
+            message,
+            file,
+            amend,
+            allow_empty,
+            allow_empty_message,
+            no_verify,
+            cleanup,
+            cmds,
+        }) => match cmds {
+            None => prepare_and_run("commit", verbose, None, move |_progress, out, err| {
+                core::repository::commit::index(
+                    repository(Mode::LenientWithGitInstallConfig)?,
+                    out,
+                    err,
+                    core::repository::commit::index::Options {
+                        messages: message,
+                        file,
+                        amend,
+                        allow_empty,
+                        allow_empty_message,
+                        no_verify,
+                        cleanup,
+                    },
+                )
+            }),
+            Some(commit::Subcommands::Verify { rev_spec }) => {
                 prepare_and_run("commit-verify", auto_verbose, None, move |_progress, _out, _err| {
                     core::repository::commit::verify(repository(Mode::Lenient)?, rev_spec.as_deref())
                 })
             }
-            commit::Subcommands::Sign { rev_spec } => {
+            Some(commit::Subcommands::Sign { rev_spec }) => {
                 prepare_and_run("commit-sign", auto_verbose, None, move |_progress, out, _err| {
                     core::repository::commit::sign(repository(Mode::Lenient)?, rev_spec.as_deref(), out)
                 })
             }
-            commit::Subcommands::Describe {
+            Some(commit::Subcommands::Describe {
                 annotated_tags,
                 all_refs,
                 first_parent,
@@ -1153,7 +1216,7 @@ pub fn main() -> Result<()> {
                 max_candidates,
                 rev_spec,
                 dirty_suffix,
-            } => prepare_and_run("commit-describe", verbose, None, move |_progress, out, err| {
+            }) => prepare_and_run("commit-describe", verbose, None, move |_progress, out, err| {
                 core::repository::commit::describe(
                     repository(Mode::Strict)?,
                     rev_spec.as_deref(),
@@ -1179,6 +1242,31 @@ pub fn main() -> Result<()> {
                 })
             }
         },
+        Subcommands::Reset(reset::Platform {
+            soft,
+            mixed,
+            hard,
+            merge,
+            keep,
+            args,
+            paths,
+        }) => prepare_and_run("reset", verbose, None, move |_progress, out, err| {
+            let mode = [
+                (soft, gix::reset::Mode::Soft),
+                (mixed, gix::reset::Mode::Mixed),
+                (hard, gix::reset::Mode::Hard),
+                (merge, gix::reset::Mode::Merge),
+                (keep, gix::reset::Mode::Keep),
+            ]
+            .into_iter()
+            .find_map(|(given, mode)| given.then_some(mode));
+            core::repository::reset(
+                repository(Mode::LenientWithGitInstallConfig)?,
+                out,
+                err,
+                core::repository::reset::Options { mode, args, paths },
+            )
+        }),
         Subcommands::Tree(cmd) => match cmd {
             tree::Subcommands::Entries {
                 treeish,
@@ -1447,6 +1535,91 @@ mod tests {
                 "removed option {flag} stays unavailable"
             );
         }
+    }
+
+    #[test]
+    fn commit_runs_without_subcommand_and_keeps_its_subcommands() {
+        use clap::Parser;
+
+        let args =
+            Args::try_parse_from(["gix", "commit", "-m", "first", "--message=second", "--amend"]).expect("valid");
+        let Subcommands::Commit(commit::Platform {
+            message, amend, cmds, ..
+        }) = args.cmd
+        else {
+            panic!("commit")
+        };
+        assert_eq!(message, ["first", "second"]);
+        assert!(amend);
+        assert!(cmds.is_none(), "committing needs no subcommand");
+
+        let args = Args::try_parse_from(["gix", "commit", "verify", "HEAD"]).expect("valid");
+        assert!(matches!(
+            args.cmd,
+            Subcommands::Commit(commit::Platform {
+                cmds: Some(commit::Subcommands::Verify { .. }),
+                ..
+            })
+        ));
+        assert!(
+            Args::try_parse_from(["gix", "commit", "-m", "message", "verify"]).is_err(),
+            "options of committing don't apply to subcommands"
+        );
+    }
+
+    #[test]
+    fn reset_takes_the_last_mode_and_paths_after_double_dash() {
+        use clap::Parser;
+
+        let args =
+            Args::try_parse_from(["gix", "reset", "--hard", "--soft", "HEAD~1", "file", "--", "path"]).expect("valid");
+        let Subcommands::Reset(reset::Platform {
+            soft,
+            mixed,
+            hard,
+            merge,
+            keep,
+            args,
+            paths,
+        }) = args.cmd
+        else {
+            panic!("reset")
+        };
+        assert_eq!((soft, mixed, hard, merge, keep), (true, false, false, false, false));
+        assert_eq!(args, ["HEAD~1", "file"]);
+        assert_eq!(paths, ["path"]);
+    }
+
+    #[cfg(feature = "gitoxide-core-blocking-client")]
+    #[test]
+    fn push_takes_leases_with_and_without_value() {
+        use clap::Parser;
+
+        let args = Args::try_parse_from([
+            "gix",
+            "push",
+            "--force-with-lease",
+            "--force-with-lease=main:HEAD",
+            "-o",
+            "ci.skip",
+            "origin",
+            "main",
+        ])
+        .expect("valid");
+        let Subcommands::Push(crate::plumbing::options::push::Platform {
+            force_with_lease,
+            push_options,
+            repository,
+            refspecs,
+            ..
+        }) = args.cmd
+        else {
+            panic!("push")
+        };
+        assert_eq!(force_with_lease, ["", "main:HEAD"]);
+        assert_eq!(push_options, ["ci.skip"]);
+        assert_eq!(repository, Some("origin".into()));
+        assert_eq!(refspecs, ["main"]);
     }
 
     #[test]

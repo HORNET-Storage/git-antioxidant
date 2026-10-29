@@ -98,12 +98,13 @@ pub enum Subcommands {
     /// Interact with tree objects.
     #[clap(subcommand)]
     Tree(tree::Subcommands),
-    /// Interact with commit objects.
-    #[clap(subcommand)]
-    Commit(commit::Subcommands),
+    /// Commit the index like `git commit` does without an editor, or interact with commit objects.
+    Commit(commit::Platform),
     /// Interact with tag objects.
     #[clap(visible_alias = "tags")]
     Tag(tag::Platform),
+    /// Reset `HEAD`, the index and the worktree to a commit, or index entries to a tree, like `git reset`.
+    Reset(reset::Platform),
     /// Verify the integrity of the entire repository
     Verify {
         #[clap(flatten)]
@@ -121,6 +122,9 @@ pub enum Subcommands {
     /// Clone a repository into a new directory.
     #[cfg(feature = "gitoxide-core-blocking-client")]
     Clone(clone::Platform),
+    /// Update references of a remote along with the objects they need, and report like `git push --porcelain`.
+    #[cfg(feature = "gitoxide-core-blocking-client")]
+    Push(push::Platform),
     /// Interact with the mailmap.
     #[clap(subcommand)]
     Mailmap(mailmap::Subcommands),
@@ -823,6 +827,77 @@ pub mod fetch {
 }
 
 #[cfg(feature = "gitoxide-core-blocking-client")]
+pub mod push {
+    use gix::bstr::BString;
+
+    #[derive(Debug, clap::Parser)]
+    pub struct Platform {
+        /// Update remote references even if the updates aren't fast-forwards or a lease doesn't hold.
+        #[clap(long, short = 'f')]
+        pub force: bool,
+
+        /// Update remote references only if they point to what is expected: the object that `<expect>` names, no object
+        /// if `<expect>` is empty, or what the remote-tracking reference of `<refname>` points to if it's left out.
+        ///
+        /// Without value, all remote references are expected to point to what their remote-tracking references point to.
+        /// Can be given more than once.
+        #[clap(
+            long,
+            value_name = "REFNAME[:EXPECT]",
+            num_args = 0..=1,
+            require_equals = true,
+            default_missing_value = "",
+            value_parser = crate::shared::AsBString
+        )]
+        pub force_with_lease: Vec<BString>,
+
+        /// Update all remote references or none of them.
+        #[clap(long)]
+        pub atomic: bool,
+
+        /// Push all tags along with what the refspecs push.
+        #[clap(long)]
+        pub tags: bool,
+
+        /// Also push the annotated tags that point into what the remote has after the push.
+        #[clap(long)]
+        pub follow_tags: bool,
+
+        /// Delete the remote references that the refspecs name.
+        #[clap(long, short = 'd')]
+        pub delete: bool,
+
+        /// Do everything but update the remote.
+        #[clap(long, short = 'n')]
+        pub dry_run: bool,
+
+        /// Don't run the `pre-push` hook.
+        #[clap(long)]
+        pub no_verify: bool,
+
+        /// Send this string to the hooks of the remote. Can be given more than once.
+        #[clap(long = "push-option", short = 'o', value_name = "OPTION", value_parser = crate::shared::AsBString)]
+        pub push_options: Vec<BString>,
+
+        /// Don't send deltas against objects that only the remote has.
+        #[clap(long)]
+        pub no_thin: bool,
+
+        /// The name of the remote to push to, or its URL.
+        ///
+        /// If unset, the configuration of the current branch determines the remote.
+        #[clap(value_parser = crate::shared::AsBString)]
+        pub repository: Option<BString>,
+
+        /// The refspecs to push, like `main`, `HEAD:refs/heads/topic` or `:refs/heads/old`.
+        ///
+        /// If unset, the push refspecs of the remote are used, or the one that `push.default` implies.
+        #[clap(value_parser = crate::shared::AsBString)]
+        pub refspecs: Vec<BString>,
+    }
+}
+
+#[cfg(feature = "gitoxide-core-blocking-client")]
 pub mod clone {
     use std::{ffi::OsString, num::NonZeroU32, path::PathBuf};
 
@@ -1077,6 +1152,47 @@ pub mod tree {
 }
 
 pub mod commit {
+    use gix::bstr::BString;
+
+    #[derive(Debug, clap::Parser)]
+    #[clap(args_conflicts_with_subcommands = true)]
+    pub struct Platform {
+        /// Use the given message as the commit message.
+        ///
+        /// If given more than once, the messages are concatenated as separate paragraphs.
+        #[clap(long, short = 'm', value_name = "MESSAGE", value_parser = crate::shared::AsBString)]
+        pub message: Vec<BString>,
+
+        /// Take the commit message from the given file, or from standard input if it is `-`.
+        #[clap(long, short = 'F', value_name = "FILE")]
+        pub file: Option<std::path::PathBuf>,
+
+        /// Replace the tip of the current branch with a new commit, which keeps its message unless one is given.
+        #[clap(long)]
+        pub amend: bool,
+
+        /// Allow a commit with the same tree as its parent.
+        #[clap(long)]
+        pub allow_empty: bool,
+
+        /// Allow a commit with an empty message.
+        #[clap(long)]
+        pub allow_empty_message: bool,
+
+        /// Don't run the `pre-commit` and `commit-msg` hooks.
+        #[clap(long, short = 'n')]
+        pub no_verify: bool,
+
+        /// How to clean up the commit message: `strip`, `whitespace`, `verbatim`, `scissors` or `default`.
+        ///
+        /// If unset, `commit.cleanup` decides.
+        #[clap(long, value_name = "MODE")]
+        pub cleanup: Option<String>,
+
+        #[clap(subcommand)]
+        pub cmds: Option<Subcommands>,
+    }
+
     #[derive(Debug, clap::Subcommand)]
     pub enum Subcommands {
         /// Verify the signature of a commit.
@@ -1128,6 +1244,44 @@ pub mod commit {
             /// A specification of the revision to use, or the current `HEAD` if unset.
             rev_spec: Option<String>,
         },
+    }
+}
+
+pub mod reset {
+    use gix::bstr::BString;
+
+    #[derive(Debug, clap::Parser)]
+    pub struct Platform {
+        /// Only move `HEAD`, and keep the index and the worktree.
+        #[clap(long, overrides_with_all = ["mixed", "hard", "merge", "keep"])]
+        pub soft: bool,
+
+        /// Move `HEAD` and reset the index, but keep the worktree. This is the default.
+        #[clap(long, overrides_with_all = ["soft", "hard", "merge", "keep"])]
+        pub mixed: bool,
+
+        /// Move `HEAD`, and reset the index and the worktree, discarding the changes of tracked files.
+        #[clap(long, overrides_with_all = ["soft", "mixed", "merge", "keep"])]
+        pub hard: bool,
+
+        /// Move `HEAD`, reset the index and the files that differ between `HEAD` and the commit, and keep the unstaged
+        /// changes of other files, but refuse if a file to reset has unstaged changes.
+        #[clap(long, overrides_with_all = ["soft", "mixed", "hard", "keep"])]
+        pub merge: bool,
+
+        /// Move `HEAD`, reset the index and the files that differ between `HEAD` and the commit, and keep the local
+        /// changes of other files, but refuse if a file to reset has local changes.
+        #[clap(long, overrides_with_all = ["soft", "mixed", "hard", "merge"])]
+        pub keep: bool,
+
+        /// The commit to reset to, or with paths the tree-ish to take their index entries from, which defaults to `HEAD`,
+        /// followed by the paths whose index entries to reset if they can't be mistaken for a revision.
+        #[clap(value_parser = crate::shared::AsBString)]
+        pub args: Vec<BString>,
+
+        /// The paths whose index entries to reset, after `--`.
+        #[clap(last = true, value_parser = crate::shared::AsBString)]
+        pub paths: Vec<BString>,
     }
 }
 

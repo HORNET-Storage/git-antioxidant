@@ -1,0 +1,4 @@
+To ../remote.git
+!	refs/heads/main:refs/heads/main	[rejected] (stale info)
+Done
+Error: failed to push some refs to '../remote.git'

@@ -1,0 +1,4 @@
+To ../remote.git
+ 	refs/heads/main:refs/heads/main	4b9d06b..b71df04
+*	refs/tags/v2:refs/tags/v2	[new tag]
+Done

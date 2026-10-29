@@ -419,6 +419,374 @@ title "gix (with repository)"
     )
   )
   fi
+
+  title "gix commit"
+  (when "running 'commit'"
+    snapshot="$snapshot/commit"
+    (sandbox
+      git init -q
+      echo content >file
+      git add file
+
+      it "refuses to amend without a commit" && {
+        WITH_SNAPSHOT="$snapshot/amend-without-commit-failure" \
+        expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose commit --amend -m "amended"
+      }
+      it "refuses an empty message" && {
+        WITH_SNAPSHOT="$snapshot/empty-message-failure" \
+        expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose commit -m ""
+      }
+      it "refuses a message from both -m and -F" && {
+        WITH_SNAPSHOT="$snapshot/message-and-file-failure" \
+        expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose commit -m "subject" -F file
+      }
+      it "refuses an unknown cleanup mode" && {
+        WITH_SNAPSHOT="$snapshot/unknown-cleanup-mode-failure" \
+        expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose commit --cleanup=unknown -m "subject"
+      }
+      it "makes the root commit with a paragraph for each -m" && {
+        WITH_SNAPSHOT="$snapshot/root-commit" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose commit -m "first" --message "the body"
+      }
+      it "joins the paragraphs as Git joins them" && {
+        WITH_SNAPSHOT="$snapshot/root-commit-message" \
+        expect_run $SUCCESSFULLY git log -1 --format=%B
+      }
+      it "refuses to commit the tree of the parent" && {
+        WITH_SNAPSHOT="$snapshot/nothing-to-commit-failure" \
+        expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose commit -m "nothing"
+      }
+      it "commits the tree of the parent with --allow-empty" && {
+        WITH_SNAPSHOT="$snapshot/allow-empty" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose commit --allow-empty -m "empty"
+      }
+      it "commits an empty message with --allow-empty-message" && {
+        WITH_SNAPSHOT="$snapshot/allow-empty-message" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose commit --allow-empty --allow-empty-message -m ""
+      }
+      it "takes the message from a file with -F" && {
+        echo second >>file
+        git add file
+        printf 'from a file\n\nwith a body\n' >.git/message-file
+        WITH_SNAPSHOT="$snapshot/message-from-file" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose commit -F .git/message-file
+      }
+      it "takes the message from standard input with --file -" && {
+        echo third >>file
+        git add file
+        WITH_SNAPSHOT="$snapshot/message-from-stdin" \
+        expect_run_sh $SUCCESSFULLY "echo 'from standard input' | \"$exe_plumbing\" --no-verbose commit --file -"
+      }
+      it "amends the commit of HEAD and keeps its message" && {
+        echo amended >>file
+        git add file
+        WITH_SNAPSHOT="$snapshot/amend" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose commit --amend
+      }
+      it "amends the commit of HEAD with a new message" && {
+        WITH_SNAPSHOT="$snapshot/amend-with-message" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose commit --amend -m "amended"
+      }
+      it "shows the author if it isn't the committer" && {
+        echo other >>file
+        git add file
+        WITH_SNAPSHOT="$snapshot/other-author" \
+        expect_run $SUCCESSFULLY env GIT_AUTHOR_NAME="Other Author" GIT_AUTHOR_EMAIL="other@example.com" \
+          "$exe_plumbing" --no-verbose commit -m "by another author"
+      }
+      it "summarizes additions, renames, mode changes and deletions" && {
+        mkdir dir
+        echo one >dir/old
+        echo two >removed
+        git add dir removed
+        git commit -q -m "more files"
+        git mv dir/old dir/new
+        git rm -q removed
+        echo three >added
+        chmod +x file
+        git add added file
+        WITH_SNAPSHOT="$snapshot/summary" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose commit -m "changes"
+      }
+      it "strips comments with --cleanup=strip" && {
+        WITH_SNAPSHOT="$snapshot/cleanup-strip" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose commit --allow-empty --cleanup=strip -m "kept" -m "# dropped"
+      }
+      it "commits the stripped message" && {
+        WITH_SNAPSHOT="$snapshot/cleanup-strip-message" \
+        expect_run $SUCCESSFULLY git log -1 --format=%B
+      }
+      it "keeps the message as it is with --cleanup=verbatim" && {
+        WITH_SNAPSHOT="$snapshot/cleanup-verbatim" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose commit --allow-empty --cleanup=verbatim -m "  kept  " -m "# kept"
+      }
+      it "commits the message as it is" && {
+        WITH_SNAPSHOT="$snapshot/cleanup-verbatim-commit" \
+        expect_run $SUCCESSFULLY git cat-file commit HEAD
+      }
+      it "commits on a detached HEAD" && {
+        git checkout -q --detach
+        WITH_SNAPSHOT="$snapshot/detached-head" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose commit --allow-empty -m "detached"
+        git checkout -q main
+      }
+      (with "a failing pre-commit hook"
+        mkdir -p .git/hooks
+        printf '#!/bin/sh\necho "pre-commit refuses" >&2\nexit 1\n' >.git/hooks/pre-commit
+        chmod +x .git/hooks/pre-commit
+        echo hooked >>file
+        git add file
+        it "doesn't commit" && {
+          WITH_SNAPSHOT="$snapshot/pre-commit-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose commit -m "hooked"
+        }
+        it "commits without running it with -n" && {
+          WITH_SNAPSHOT="$snapshot/no-verify" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose commit -n -m "hooked"
+        }
+        rm .git/hooks/pre-commit
+      )
+      (with "a merge with a conflict"
+        git checkout -q -b side
+        echo side >conflict
+        git add conflict
+        git commit -q -m "side"
+        git checkout -q main
+        echo main >conflict
+        git add conflict
+        git commit -q -m "main"
+        git merge -q side &>/dev/null || true
+        it "refuses to commit unmerged entries" && {
+          WITH_SNAPSHOT="$snapshot/unmerged-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose commit -m "merged"
+        }
+        it "concludes the merge with its message once the conflict is resolved" && {
+          echo merged >conflict
+          git add conflict
+          WITH_SNAPSHOT="$snapshot/merge" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose commit
+        }
+      )
+    )
+  )
+
+  title "gix reset"
+  (when "running 'reset'"
+    snapshot="$snapshot/reset"
+    (small-repo-in-sandbox
+      git tag third
+
+      it "moves only HEAD with --soft" && {
+        WITH_SNAPSHOT="$snapshot/soft" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose reset --soft HEAD~1
+      }
+      it "keeps the index and the worktree with --soft" && {
+        WITH_SNAPSHOT="$snapshot/soft-status" \
+        expect_run $SUCCESSFULLY git status --porcelain
+      }
+      it "resets the index to HEAD by default and lists the files that differ from it" && {
+        WITH_SNAPSHOT="$snapshot/mixed" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose reset
+      }
+      it "resets the index and the worktree with --hard" && {
+        WITH_SNAPSHOT="$snapshot/hard" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose reset --hard third
+      }
+      it "leaves no changes after --hard" && {
+        WITH_SNAPSHOT="$snapshot/hard-status" \
+        expect_run $SUCCESSFULLY git status --porcelain
+      }
+      (with "local changes"
+        echo local >>a
+        echo local >>b
+        it "refuses to reset a changed file with --keep" && {
+          WITH_SNAPSHOT="$snapshot/keep-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose reset --keep HEAD~1
+        }
+        it "refuses to reset a file with unstaged changes with --merge" && {
+          WITH_SNAPSHOT="$snapshot/merge-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose reset --merge HEAD~1
+        }
+        it "keeps the unstaged changes of other files with --merge" && {
+          git checkout -- b
+          WITH_SNAPSHOT="$snapshot/merge" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose reset --merge HEAD~1
+        }
+        it "keeps the local changes of other files with --keep" && {
+          WITH_SNAPSHOT="$snapshot/keep" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose reset --keep third
+        }
+        it "leaves the local changes" && {
+          WITH_SNAPSHOT="$snapshot/keep-status" \
+          expect_run $SUCCESSFULLY git status --porcelain
+        }
+      )
+      (with "paths"
+        git reset -q --hard third
+        echo change >>b
+        git add b
+        it "resets the index entries of the paths after --" && {
+          WITH_SNAPSHOT="$snapshot/paths" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose reset -- b
+        }
+        it "resets the index entries of the paths to those of a tree-ish" && {
+          WITH_SNAPSHOT="$snapshot/paths-from-tree-ish" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose reset annotated b
+        }
+        it "warns about --mixed with paths" && {
+          WITH_SNAPSHOT="$snapshot/mixed-with-paths" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose reset --mixed -- b
+        }
+        it "refuses --hard with paths" && {
+          WITH_SNAPSHOT="$snapshot/hard-with-paths-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose reset --hard -- b
+        }
+        it "refuses --soft with paths" && {
+          WITH_SNAPSHOT="$snapshot/soft-with-paths-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose reset --soft HEAD -- b
+        }
+        it "refuses an argument that names a revision and a file" && {
+          touch dev
+          WITH_SNAPSHOT="$snapshot/ambiguous-argument-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose reset dev
+          rm dev
+        }
+        it "refuses an argument that names neither a revision nor a file" && {
+          WITH_SNAPSHOT="$snapshot/unknown-argument-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose reset unknown
+        }
+        it "refuses a tree-ish that doesn't resolve" && {
+          WITH_SNAPSHOT="$snapshot/unknown-tree-ish-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose reset unknown -- b
+        }
+      )
+    )
+    (sandbox
+      git init -q
+      touch file
+      git add file
+      it "removes all entries from the index on an unborn branch" && {
+        WITH_SNAPSHOT="$snapshot/unborn" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose reset
+      }
+      it "leaves their files untracked" && {
+        WITH_SNAPSHOT="$snapshot/unborn-status" \
+        expect_run $SUCCESSFULLY git status --porcelain
+      }
+    )
+  )
+
+  if test "$kind" = "max" || test "$kind" = "max-pure"; then
+  title "gix push"
+  (when "running 'push'"
+    snapshot="$snapshot/push"
+    (sandbox
+      git init -q --bare remote.git
+      git init -q local
+      cd local
+      git commit -q --allow-empty -m "first"
+      git remote add origin ../remote.git
+
+      it "creates a branch" && {
+        WITH_SNAPSHOT="$snapshot/new-branch" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose push origin main
+      }
+      it "updates a branch" && {
+        git commit -q --allow-empty -m "second"
+        WITH_SNAPSHOT="$snapshot/updated-branch" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose push origin main
+      }
+      it "reports a branch that is up to date" && {
+        WITH_SNAPSHOT="$snapshot/up-to-date" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose push origin main
+      }
+      it "rejects an update that isn't a fast-forward" && {
+        git reset -q --hard HEAD~1
+        git commit -q --allow-empty -m "diverged"
+        WITH_SNAPSHOT="$snapshot/rejected" \
+        expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose push origin main
+      }
+      it "rejects an update if the remote reference isn't where the lease expects it" && {
+        WITH_SNAPSHOT="$snapshot/stale-lease" \
+        expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose push --force-with-lease=main:HEAD origin main
+      }
+      it "forces an update if the remote reference is where its remote-tracking reference is" && {
+        WITH_SNAPSHOT="$snapshot/forced-with-lease" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose push --force-with-lease origin main
+      }
+      it "forces an update with --force" && {
+        git reset -q --hard HEAD~1
+        git commit -q --allow-empty -m "forced"
+        WITH_SNAPSHOT="$snapshot/forced" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose push --force origin main
+      }
+      it "deletes a branch" && {
+        git push -q origin main:topic
+        WITH_SNAPSHOT="$snapshot/deleted" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose push --delete origin topic
+      }
+      it "reports what it would push in a dry run" && {
+        WITH_SNAPSHOT="$snapshot/dry-run" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose push --dry-run origin main:dry-run
+      }
+      it "doesn't change the remote in a dry run" && {
+        expect_run $WITH_FAILURE git -C ../remote.git rev-parse --verify -q refs/heads/dry-run
+      }
+      it "pushes all tags with --tags" && {
+        git tag v1
+        WITH_SNAPSHOT="$snapshot/tags" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose push --tags origin
+      }
+      it "pushes the annotated tags of what it pushes with --follow-tags" && {
+        git commit -q --allow-empty -m "tagged"
+        git tag -a -m "annotated" v2
+        WITH_SNAPSHOT="$snapshot/follow-tags" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose push --follow-tags origin main
+      }
+      it "updates no reference with --atomic if one is rejected" && {
+        git branch other
+        WITH_SNAPSHOT="$snapshot/atomic-failure" \
+        expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose push --atomic origin other HEAD~1:main
+      }
+      (with "a failing pre-push hook"
+        mkdir -p .git/hooks
+        printf '#!/bin/sh\necho "pre-push refuses" >&2\nexit 1\n' >.git/hooks/pre-push
+        chmod +x .git/hooks/pre-push
+        it "doesn't push" && {
+          WITH_SNAPSHOT="$snapshot/pre-push-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose push origin other
+        }
+        it "pushes without running it with --no-verify" && {
+          WITH_SNAPSHOT="$snapshot/no-verify" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose push --no-verify origin other
+        }
+        rm .git/hooks/pre-push
+      )
+      (with "push options"
+        it "refuses them if the remote doesn't support them" && {
+          WITH_SNAPSHOT="$snapshot/push-option-unsupported-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose push -o ci.skip origin main:with-option
+        }
+        git -C ../remote.git config receive.advertisePushOptions true
+        mkdir -p ../remote.git/hooks
+        printf '#!/bin/sh\nprintf "%%s\\n" "$GIT_PUSH_OPTION_COUNT" "$GIT_PUSH_OPTION_0" >push-options\n' >../remote.git/hooks/post-receive
+        chmod +x ../remote.git/hooks/post-receive
+        it "sends them to the hooks of the remote" && {
+          WITH_SNAPSHOT="$snapshot/push-option" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose push --push-option ci.skip --no-thin origin main:with-option
+        }
+        it "passes them to the hooks" && {
+          WITH_SNAPSHOT="$snapshot/push-option-received" \
+          expect_run $SUCCESSFULLY cat ../remote.git/push-options
+        }
+      )
+      it "refuses a repository that names a branch of a remote" && {
+        WITH_SNAPSHOT="$snapshot/ref-like-repository-failure" \
+        expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose push origin/main
+      }
+    )
+  )
+  fi
 )
 
 title "gix attributes"

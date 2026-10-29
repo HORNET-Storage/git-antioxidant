@@ -36,6 +36,10 @@ pub mod fetch;
 pub use clone::function::clone;
 #[cfg(feature = "blocking-client")]
 pub use fetch::function::fetch;
+#[cfg(feature = "blocking-client")]
+pub mod push;
+#[cfg(feature = "blocking-client")]
+pub use push::function::push;
 
 pub mod commitgraph;
 mod fsck;
@@ -48,6 +52,8 @@ pub use merge_base::merge_base;
 pub mod merge;
 pub mod odb;
 pub mod remote;
+pub mod reset;
+pub use reset::function::reset;
 pub mod revision;
 pub mod status;
 pub mod submodule;
@@ -63,6 +69,12 @@ pub fn init(directory: Option<PathBuf>) -> Result<gix::discover::repository::Pat
         gix::create::Options::default(),
     )
     .or_raise(|| message("Repository initialization failed"))
+}
+
+/// Return the action that `GIT_REFLOG_ACTION` sets in front of the messages of reflog entries, as `git commit` and
+/// `git reset` read it from their environment.
+fn reflog_action() -> Option<BString> {
+    std::env::var_os("GIT_REFLOG_ACTION").and_then(|action| gix::path::os_string_into_bstring(action).ok())
 }
 
 pub enum PathsOrPatterns {

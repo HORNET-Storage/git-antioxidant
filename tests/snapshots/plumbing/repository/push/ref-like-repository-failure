@@ -1,0 +1,3 @@
+hint: Did you mean to use: git push origin main?
+hint: Disable this message with "git config set advice.pushRepoLooksLikeRef false"
+Error: 'origin/main' is not a valid push target
