@@ -41,20 +41,20 @@ What follows is a high-level list of features and those which are planned:
 
 * [x] clone
 * [x] fetch
-* [ ] push
+* [x] push
 * [x] blame (*plumbing*)
 * [x] status
 * [x] blob and tree-diff
-* [ ] merge
+* [x] merge
     - [x] blobs
     - [x] trees
-    - [ ] commits
+    - [x] commits
 * [x] commit
-    - [ ] hooks
+    - [x] hooks
 * [x] commit-graph traversal
-* [ ] rebase
+* [x] rebase
 * [x] worktree checkout and worktree stream
-* [ ] reset
+* [x] reset
 * [x] reading and writing of objects
 * [x] reading and writing of refs
 * [x] reading and writing of `.git/index`
