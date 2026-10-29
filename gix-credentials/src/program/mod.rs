@@ -76,7 +76,8 @@ pub enum Kind {
     ///
     /// - `store` runs Git's builtin `credential-store` in this process, with the file of `--file=<path>` or the
     ///   default files `~/.git-credentials` and `$XDG_CONFIG_HOME/git/credentials`, or `~/.config/git/credentials`
-    ///   if `XDG_CONFIG_HOME` isn't set.
+    ///   if `XDG_CONFIG_HOME` isn't set. It waits a second for the lock of a file it changes, the default of
+    ///   `credentialStore.lockTimeoutMS`, which isn't read.
     /// - Other names run the program `git-credential-<name> [args]`, through a shell only if the arguments need one.
     ///   Like Git, it's found in `GIT_EXEC_PATH` if that's set, in the
     ///   [directories of Git's programs](gix_path::env::git_program_dirs()), and in `PATH`.
