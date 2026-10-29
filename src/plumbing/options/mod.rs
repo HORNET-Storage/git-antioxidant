@@ -105,6 +105,8 @@ pub enum Subcommands {
     Tag(tag::Platform),
     /// Reset `HEAD`, the index and the worktree to a commit, or index entries to a tree, like `git reset`.
     Reset(reset::Platform),
+    /// Rebase a branch onto another commit like `git rebase` does with its merge backend.
+    Rebase(rebase::Platform),
     /// Verify the integrity of the entire repository
     Verify {
         #[clap(flatten)]
@@ -480,6 +482,9 @@ pub mod corpus {
 }
 
 pub mod merge {
+    use std::path::PathBuf;
+
+    use gitoxide_core::repository::merge::into_head::MessagePart;
     use gix::bstr::BString;
 
     #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
@@ -555,10 +560,126 @@ pub mod merge {
     }
 
     #[derive(Debug, clap::Parser)]
-    #[command(about = "Perform merges of various kinds")]
+    #[command(about = "Merge a commit into `HEAD` like `git merge` does, or perform merges of various kinds")]
+    #[clap(args_conflicts_with_subcommands = true)]
     pub struct Platform {
+        /// Fast-forward if `HEAD` is an ancestor of the commit, and make a merge commit otherwise.
+        ///
+        /// This is the default unless `merge.ff` says otherwise.
+        #[clap(long, overrides_with_all = ["no_ff", "ff_only"])]
+        pub ff: bool,
+
+        /// Make a merge commit even if `HEAD` could be fast-forwarded.
+        #[clap(long, overrides_with_all = ["ff", "ff_only"])]
+        pub no_ff: bool,
+
+        /// Fast-forward if `HEAD` is an ancestor of the commit, and refuse to merge otherwise.
+        #[clap(long, overrides_with_all = ["ff", "no_ff"])]
+        pub ff_only: bool,
+
+        /// Change the index and the worktree as the merge does, but neither make a commit nor move `HEAD`.
+        #[clap(long)]
+        pub squash: bool,
+
+        /// Stop before the merge commit, which `--continue` makes then.
+        #[clap(long)]
+        pub no_commit: bool,
+
+        #[clap(flatten)]
+        pub message: Message,
+
+        /// How to clean up the message: `strip`, `whitespace`, `verbatim`, `scissors` or `default`.
+        ///
+        /// If unset, `commit.cleanup` decides.
+        #[clap(long, value_name = "MODE")]
+        pub cleanup: Option<String>,
+
+        /// Don't run the `pre-merge-commit` and `commit-msg` hooks.
+        #[clap(long)]
+        pub no_verify: bool,
+
+        /// Merge a commit that shares no history with `HEAD`.
+        #[clap(long)]
+        pub allow_unrelated_histories: bool,
+
+        /// Conclude the merge in progress with its commit once its conflicts are resolved.
+        #[clap(long = "continue")]
+        pub continue_merge: bool,
+
+        /// Abort the merge in progress and go back to the state before it.
+        #[clap(long)]
+        pub abort: bool,
+
+        /// Forget the merge in progress, and keep the index and the worktree as they are.
+        #[clap(long)]
+        pub quit: bool,
+
+        /// The commit to merge into `HEAD`, or the upstream of the current branch if unset. A commit whose name is that of
+        /// a subcommand is merged if `--` comes before it, as in `gix merge -- tree`.
+        #[clap(value_name = "COMMIT", value_parser = crate::shared::AsBString)]
+        pub commit: Option<BString>,
+
         #[clap(subcommand)]
-        pub cmd: SubCommands,
+        pub cmd: Option<SubCommands>,
+    }
+
+    /// The parts of the message of a merge, as `-m` and `-F` give them, in the order of the command line.
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    pub struct Message(pub Vec<MessagePart>);
+
+    impl clap::FromArgMatches for Message {
+        fn from_arg_matches(matches: &clap::ArgMatches) -> Result<Self, clap::Error> {
+            let mut parts = Vec::new();
+            if let (Some(indices), Some(paragraphs)) =
+                (matches.indices_of("message"), matches.get_many::<BString>("message"))
+            {
+                parts.extend(indices.zip(paragraphs.cloned().map(MessagePart::Paragraph)));
+            }
+            if let (Some(indices), Some(files)) = (matches.indices_of("file"), matches.get_many::<PathBuf>("file")) {
+                parts.extend(indices.zip(files.cloned().map(MessagePart::File)));
+            }
+            parts.sort_by_key(|(index, _)| *index);
+            Ok(Message(parts.into_iter().map(|(_, part)| part).collect()))
+        }
+
+        fn update_from_arg_matches(&mut self, matches: &clap::ArgMatches) -> Result<(), clap::Error> {
+            *self = Self::from_arg_matches(matches)?;
+            Ok(())
+        }
+    }
+
+    impl clap::Args for Message {
+        fn augment_args(command: clap::Command) -> clap::Command {
+            command
+                .arg(
+                    clap::Arg::new("message")
+                        .long("message")
+                        .short('m')
+                        .value_name("MESSAGE")
+                        .value_parser(crate::shared::AsBString)
+                        .action(clap::ArgAction::Append)
+                        .help("Use the given message as the message of the merge commit")
+                        .long_help(
+                            "Use the given message as the message of the merge commit.\n\nIf given more than once, the messages are concatenated as separate paragraphs, and with `--file`, in the order of the command line.",
+                        ),
+                )
+                .arg(
+                    clap::Arg::new("file")
+                        .long("file")
+                        .short('F')
+                        .value_name("FILE")
+                        .value_parser(clap::value_parser!(PathBuf))
+                        .action(clap::ArgAction::Append)
+                        .help("Read the message of the merge commit from the given file")
+                        .long_help(
+                            "Read the message of the merge commit from the given file.\n\nWith `--message` or more than once, the contents follow what comes before them on the command line on a line of their own.",
+                        ),
+                )
+        }
+
+        fn augment_args_for_update(command: clap::Command) -> clap::Command {
+            Self::augment_args(command)
+        }
     }
 
     #[derive(Debug, clap::Subcommand)]
@@ -1282,6 +1403,145 @@ pub mod reset {
         /// The paths whose index entries to reset, after `--`.
         #[clap(last = true, value_parser = crate::shared::AsBString)]
         pub paths: Vec<BString>,
+    }
+}
+
+pub mod rebase {
+    use gix::bstr::BString;
+
+    /// Which commits `--rebase-merges` rebases besides the descendants of the upstream.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+    pub enum RebaseMerges {
+        /// Keep the commits that don't descend from the upstream on their original base.
+        NoRebaseCousins,
+        /// Rebase the commits that don't descend from the upstream onto it as well.
+        RebaseCousins,
+    }
+
+    /// What a rebase does with a commit that becomes empty.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+    pub enum Empty {
+        /// Leave it out.
+        Drop,
+        /// Make an empty commit of it.
+        Keep,
+        /// Stop for the user to decide.
+        Stop,
+    }
+
+    #[derive(Debug, clap::Parser)]
+    pub struct Platform {
+        /// Replay the commits onto this revision instead of the upstream.
+        #[clap(long, value_name = "NEWBASE", value_parser = crate::shared::AsBString)]
+        pub onto: Option<BString>,
+
+        /// Replay the commits onto the merge base of the upstream and the branch.
+        #[clap(long)]
+        pub keep_base: bool,
+
+        /// Replay all commits of the branch, onto `--onto` or onto a new root commit.
+        ///
+        /// The first argument is the branch to rebase then.
+        #[clap(long)]
+        pub root: bool,
+
+        /// Let the sequence editor edit the list of commands to perform.
+        #[clap(long, short = 'i')]
+        pub interactive: bool,
+
+        /// Run this command with the shell after each commit, and stop if it fails. Can be given more than once.
+        #[clap(long, short = 'x', value_name = "CMD", value_parser = crate::shared::AsBString)]
+        pub exec: Vec<BString>,
+
+        /// Move the commits whose subjects start with `fixup!`, `squash!` or `amend!` after the commits they name.
+        #[clap(long, overrides_with = "no_autosquash")]
+        pub autosquash: bool,
+
+        /// Don't move the commits whose subjects start with `fixup!`, `squash!` or `amend!`.
+        #[clap(long, overrides_with = "autosquash")]
+        pub no_autosquash: bool,
+
+        /// Update the branches that point to the commits that are rebased.
+        #[clap(long, overrides_with = "no_update_refs")]
+        pub update_refs: bool,
+
+        /// Don't update the branches that point to the commits that are rebased.
+        #[clap(long, overrides_with = "update_refs")]
+        pub no_update_refs: bool,
+
+        /// Keep the merges and the shape of the history, instead of replaying it as one line.
+        #[clap(
+            long,
+            short = 'r',
+            value_name = "MODE",
+            num_args = 0..=1,
+            require_equals = true,
+            default_missing_value = "no-rebase-cousins",
+            overrides_with = "no_rebase_merges"
+        )]
+        pub rebase_merges: Option<RebaseMerges>,
+
+        /// Replay the commits of merged branches as one line of history, even if `rebase.rebaseMerges` says otherwise.
+        #[clap(long, overrides_with = "rebase_merges")]
+        pub no_rebase_merges: bool,
+
+        /// Leave out the commits that the reference log of the upstream had.
+        ///
+        /// This is the default without upstream unless `rebase.forkPoint` is `false`.
+        #[clap(long, overrides_with = "no_fork_point")]
+        pub fork_point: bool,
+
+        /// Replay all commits that the upstream doesn't have.
+        #[clap(long, overrides_with = "fork_point")]
+        pub no_fork_point: bool,
+
+        /// Replay all commits, even those whose parents wouldn't change.
+        #[clap(long, short = 'f')]
+        pub force_rebase: bool,
+
+        /// What to do with commits that become empty: `drop`, `keep` or `stop`.
+        ///
+        /// If unset, they stop an interactive rebase, are kept with `--exec`, and dropped otherwise.
+        #[clap(long, value_name = "MODE", ignore_case = true)]
+        pub empty: Option<Empty>,
+
+        /// Keep the commits that start empty, which is the default.
+        #[clap(long, short = 'k')]
+        pub keep_empty: bool,
+
+        /// Don't run the `pre-rebase` hook.
+        #[clap(long)]
+        pub no_verify: bool,
+
+        /// Put a failed `exec` command back into the todo list, to run again once the rebase continues.
+        #[clap(long)]
+        pub reschedule_failed_exec: bool,
+
+        /// Commit the staged changes, and continue the rebase in progress.
+        #[clap(long = "continue", exclusive = true)]
+        pub continue_rebase: bool,
+
+        /// Leave out the commit at which the rebase in progress stopped, and continue.
+        #[clap(long, exclusive = true)]
+        pub skip: bool,
+
+        /// Abort the rebase in progress, and go back to the branch as it was before it.
+        #[clap(long, exclusive = true)]
+        pub abort: bool,
+
+        /// Forget the rebase in progress, and keep `HEAD`, the index and the worktree as they are.
+        #[clap(long, exclusive = true)]
+        pub quit: bool,
+
+        /// The revision whose history isn't replayed, or the upstream of the current branch if unset.
+        ///
+        /// With `--root`, the branch to rebase.
+        #[clap(value_name = "UPSTREAM", value_parser = crate::shared::AsBString)]
+        pub upstream: Option<BString>,
+
+        /// The branch or commit to check out and rebase, or `HEAD` if unset.
+        #[clap(value_name = "BRANCH", value_parser = crate::shared::AsBString)]
+        pub branch: Option<BString>,
     }
 }
 

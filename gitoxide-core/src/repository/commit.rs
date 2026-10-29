@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     io::{IsTerminal, Read, Write},
     path::Path,
 };
@@ -8,9 +7,6 @@ use gix::{
     Result,
     bstr::{BStr, BString, ByteSlice},
     error::{OptionExt, ResultExt, bail, message},
-    object::tree::diff::ChangeDetached,
-    objs::tree::EntryMode,
-    prelude::TreeDiffChangeExt,
 };
 
 /// Note that this is a quick implementation of commit signature verification that ignores a lot of what
@@ -183,7 +179,7 @@ pub mod index {
 }
 
 /// Parse `value` as `--cleanup` takes it, failing with Git's message as `get_cleanup_mode()` in its `sequencer.c` does.
-fn cleanup_mode(value: &str) -> Result<gix::commit::message::Cleanup> {
+pub(crate) fn cleanup_mode(value: &str) -> Result<gix::commit::message::Cleanup> {
     use gix::commit::message::Cleanup;
     Ok(match value {
         "default" => Cleanup::Default,
@@ -234,7 +230,7 @@ fn read_message(file: &Path, err: &mut dyn std::io::Write) -> Result<BString> {
 /// after `git commit`: its branch, abbreviated id and subject, its author unless that is the committer, the date of the
 /// author after `--amend`, and unless it is a merge, the short statistics and the summary of its changes against its
 /// first parent, with renames found as `git diff -M` finds them.
-fn print_summary(
+pub(crate) fn print_summary(
     repo: &gix::Repository,
     outcome: &gix::commit::index::Outcome,
     amend: bool,
@@ -288,122 +284,7 @@ fn print_summary(
         Some(parent_id) => repo.find_commit(parent_id)?.tree()?,
         None => repo.empty_tree(),
     };
-    let new_tree = commit.tree()?;
-    let mut options = gix::diff::Options::default();
-    options.track_rewrites(Some(gix::diff::Rewrites::default()));
-    let mut changes = repo.diff_tree_to_tree(&old_tree, &new_tree, options)?;
-    changes.retain(|change| !change.entry_mode().is_tree());
-    if changes.is_empty() {
-        return Ok(());
-    }
-    changes.sort_by(|a, b| a.location().cmp(b.location()));
-
-    let mut resource_cache = repo.diff_resource_cache_for_tree_diff()?;
-    let (mut insertions, mut deletions) = (0_u64, 0_u64);
-    for change in &changes {
-        let (source_mode, _) = change.source_entry_mode_and_id();
-        if !(change.entry_mode().is_blob_or_symlink() && source_mode.is_blob_or_symlink()) {
-            continue;
-        }
-        if let Some(counts) = change.attach(repo, repo).diff(&mut resource_cache)?.line_counts()? {
-            insertions += u64::from(counts.insertions);
-            deletions += u64::from(counts.removals);
-        }
-        resource_cache.clear_resource_cache_keep_allocation();
-    }
-    let files = changes.len();
-    write!(out, " {files} file{} changed", if files == 1 { "" } else { "s" }).or_error()?;
-    if insertions != 0 || deletions == 0 {
-        write!(
-            out,
-            ", {insertions} insertion{}(+)",
-            if insertions == 1 { "" } else { "s" }
-        )
-        .or_error()?;
-    }
-    if deletions != 0 || insertions == 0 {
-        write!(
-            out,
-            ", {deletions} deletion{}(-)",
-            if deletions == 1 { "" } else { "s" }
-        )
-        .or_error()?;
-    }
-    writeln!(out).or_error()?;
-
-    let quote_path = repo.config_snapshot().boolean("core.quotePath").unwrap_or(true);
-    for change in &changes {
-        out.write_all(&change_summary(change, quote_path)).or_error()?;
-    }
-    Ok(())
-}
-
-/// Return the lines that `diff_summary()` in Git's `diff.c` writes for `change` with `git diff --summary`, with paths
-/// quoted as `core.quotePath` says with `quote_path`.
-fn change_summary(change: &ChangeDetached, quote_path: bool) -> BString {
-    let mut lines = BString::default();
-    match change {
-        ChangeDetached::Addition {
-            location, entry_mode, ..
-        } => {
-            lines.extend_from_slice(format!(" create mode {:06o} ", entry_mode.value()).as_bytes());
-            lines.extend_from_slice(&quote_c_style(location.as_bstr(), quote_path));
-            lines.push(b'\n');
-        }
-        ChangeDetached::Deletion {
-            location, entry_mode, ..
-        } => {
-            lines.extend_from_slice(format!(" delete mode {:06o} ", entry_mode.value()).as_bytes());
-            lines.extend_from_slice(&quote_c_style(location.as_bstr(), quote_path));
-            lines.push(b'\n');
-        }
-        ChangeDetached::Modification {
-            location,
-            previous_entry_mode,
-            entry_mode,
-            ..
-        } => mode_change(
-            &mut lines,
-            *previous_entry_mode,
-            *entry_mode,
-            Some(location.as_bstr()),
-            quote_path,
-        ),
-        ChangeDetached::Rewrite {
-            source_location,
-            source_entry_mode,
-            location,
-            entry_mode,
-            diff,
-            copy,
-            ..
-        } => {
-            let similarity = diff.map_or(100, |diff| (diff.similarity * 100.0) as u32);
-            lines.extend_from_slice(if *copy { " copy " } else { " rename " }.as_bytes());
-            lines.extend_from_slice(&pprint_rename(
-                source_location.as_bstr(),
-                location.as_bstr(),
-                quote_path,
-            ));
-            lines.extend_from_slice(format!(" ({similarity}%)\n").as_bytes());
-            mode_change(&mut lines, *source_entry_mode, *entry_mode, None, quote_path);
-        }
-    }
-    lines
-}
-
-/// Append the line that `show_mode_change()` in Git's `diff.c` writes if `old` and `new` differ to `lines`, followed by
-/// `path` if it is given.
-fn mode_change(lines: &mut BString, old: EntryMode, new: EntryMode, path: Option<&BStr>, quote_path: bool) {
-    if old == new {
-        return;
-    }
-    lines.extend_from_slice(format!(" mode change {:06o} => {:06o}", old.value(), new.value()).as_bytes());
-    if let Some(path) = path {
-        lines.push(b' ');
-        lines.extend_from_slice(&quote_c_style(path, quote_path));
-    }
-    lines.push(b'\n');
+    super::diffstat::write_shortstat_and_summary(repo, &old_tree, &commit.tree()?, out)
 }
 
 /// Return the subject of a commit with `message`, as `format_subject()` in Git's `pretty.c` makes it for `%s` and
@@ -433,90 +314,4 @@ fn trim_end_space(line: &[u8]) -> &[u8] {
         .rposition(|byte| !matches!(byte, b' ' | b'\t' | b'\n' | b'\r'))
         .map_or(0, |position| position + 1);
     &line[..end]
-}
-
-/// Return `path` as `quote_c_style()` in Git's `quote.c` writes it: unchanged if it needs no quotes, and otherwise in
-/// double quotes, with C escapes for `"`, `\` and the control characters that have them, and octal escapes for the other
-/// control characters and, if `quote_path` is set as `core.quotePath` is by default, for the bytes above 0x7f.
-fn quote_c_style(path: &BStr, quote_path: bool) -> Cow<'_, BStr> {
-    let needs_quote = |byte: u8| byte < 0x20 || matches!(byte, b'"' | b'\\' | 0x7f) || (quote_path && byte >= 0x80);
-    if !path.iter().any(|byte| needs_quote(*byte)) {
-        return Cow::Borrowed(path);
-    }
-    let mut quoted = BString::from("\"");
-    for &byte in path.iter() {
-        if !needs_quote(byte) {
-            quoted.push(byte);
-            continue;
-        }
-        quoted.push(b'\\');
-        match byte {
-            0x07 => quoted.push(b'a'),
-            0x08 => quoted.push(b'b'),
-            b'\t' => quoted.push(b't'),
-            b'\n' => quoted.push(b'n'),
-            0x0b => quoted.push(b'v'),
-            0x0c => quoted.push(b'f'),
-            b'\r' => quoted.push(b'r'),
-            b'"' | b'\\' => quoted.push(byte),
-            _ => quoted.extend_from_slice(&[b'0' + (byte >> 6), b'0' + ((byte >> 3) & 7), b'0' + (byte & 7)]),
-        }
-    }
-    quoted.push(b'"');
-    Cow::Owned(quoted)
-}
-
-/// Return the source `a` and the destination `b` of a rename as `pprint_rename()` in Git's `diff.c` writes them: with
-/// their common leading directories and trailing path components written once, as in `dir/{old => new}/file`, unless
-/// one of them needs quotes.
-fn pprint_rename(a: &BStr, b: &BStr, quote_path: bool) -> BString {
-    let (quoted_a, quoted_b) = (quote_c_style(a, quote_path), quote_c_style(b, quote_path));
-    if matches!(quoted_a, Cow::Owned(_)) || matches!(quoted_b, Cow::Owned(_)) {
-        let mut names = quoted_a.into_owned();
-        names.extend_from_slice(b" => ");
-        names.extend_from_slice(&quoted_b);
-        return names;
-    }
-
-    let mut prefix = 0;
-    for (index, (x, y)) in a.iter().zip(b.iter()).enumerate() {
-        if x != y {
-            break;
-        }
-        if *x == b'/' {
-            prefix = index + 1;
-        }
-    }
-    // Compare from the ends, which match as both strings end there, down to the slash of the common prefix if there is
-    // one. The suffix starts at a slash.
-    let byte_at = |path: &BStr, index: usize| path.get(index).copied().unwrap_or(0);
-    let floor = prefix.saturating_sub(1);
-    let (mut i, mut j) = (a.len(), b.len());
-    let mut suffix = 0;
-    while i >= floor && j >= floor && byte_at(a, i) == byte_at(b, j) {
-        if byte_at(a, i) == b'/' {
-            suffix = a.len() - i;
-        }
-        if i == 0 || j == 0 {
-            break;
-        }
-        i -= 1;
-        j -= 1;
-    }
-
-    let a_middle = a.len().saturating_sub(prefix + suffix);
-    let b_middle = b.len().saturating_sub(prefix + suffix);
-    let mut names = BString::default();
-    if prefix + suffix > 0 {
-        names.extend_from_slice(&a[..prefix]);
-        names.push(b'{');
-    }
-    names.extend_from_slice(&a[prefix..prefix + a_middle]);
-    names.extend_from_slice(b" => ");
-    names.extend_from_slice(&b[prefix..prefix + b_middle]);
-    if prefix + suffix > 0 {
-        names.push(b'}');
-        names.extend_from_slice(&a[a.len() - suffix..]);
-    }
-    names
 }

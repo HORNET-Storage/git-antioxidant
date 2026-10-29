@@ -1,0 +1,4 @@
+Error: execution failed: false
+You can fix the problem, and then run
+
+  git rebase --continue

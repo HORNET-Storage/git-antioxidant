@@ -43,6 +43,7 @@ pub(crate) mod function {
     };
 
     use super::Options;
+    use crate::repository::{advice_enabled, advise, advise_if_enabled};
 
     /// Push as `git push --porcelain` does with `options`, and print what it prints: `To <url>` and a line for each
     /// remote reference as `print_one_push_report()` in Git's `transport.c` prints them, and `Done`, as
@@ -175,10 +176,10 @@ pub(crate) mod function {
     ];
 
     /// Write the hint that `push_with_options()` in Git's `builtin/push.c` gives about the rejected `updates` to `err`, as
-    /// `advise()` in Git's `advice.c` writes it, unless `advice.pushUpdateRejected`, its alias
-    /// `advice.pushNonFastForward` or the advice of the hint is disabled. As `transport_print_push_status()` in Git's
-    /// `transport.c` decides, an update is of the current branch if the remote reference has the name of the branch
-    /// that `HEAD` points to.
+    /// `advise()` in Git's `advice.c` writes it, unless `GIT_ADVICE` turns advice off or `advice.pushUpdateRejected`, its
+    /// alias `advice.pushNonFastForward` or the advice of the hint is disabled, as `advice_enabled()` decides. As
+    /// `transport_print_push_status()` in Git's `transport.c` decides, an update is of the current branch if the remote
+    /// reference has the name of the branch that `HEAD` points to.
     fn advise_on_rejections(
         repo: &gix::Repository,
         updates: &[push::Update],
@@ -204,15 +205,11 @@ pub(crate) mod function {
         let Some((advice, hint)) = hint.map(|index| REJECTION_HINTS[index]) else {
             return Ok(());
         };
-        let config = repo.config_snapshot();
         if ["pushUpdateRejected", "pushNonFastForward", advice]
             .iter()
-            .any(|name| config.boolean(format!("advice.{name}").as_str()) == Some(false))
+            .all(|key| advice_enabled(repo, key))
         {
-            return Ok(());
-        }
-        for line in hint.lines() {
-            writeln!(err, "hint: {line}").or_error()?;
+            advise(hint, &mut err)?;
         }
         Ok(())
     }
@@ -248,11 +245,10 @@ pub(crate) mod function {
     }
 
     /// Refuse `name`, the repository to push to, as `die_if_repo_looks_like_ref()` in Git's `builtin/push.c` refuses it
-    /// since Git 2.56 unless `advice.pushRepoLooksLikeRef` is disabled: if it isn't a configured remote and isn't an
-    /// existing path, but looks like `<remote>/<branch>` for a configured remote. Write Git's hints to `err` before.
+    /// since Git 2.56 unless the advice `pushRepoLooksLikeRef` is disabled: if it isn't a configured remote and isn't an
+    /// existing path, but looks like `<remote>/<branch>` for a configured remote. Write Git's hint to `err` before.
     fn refuse_ref_like_target(repo: &gix::Repository, name: &BStr, mut err: impl std::io::Write) -> Result<()> {
-        let advice = repo.config_snapshot().boolean("advice.pushRepoLooksLikeRef");
-        if advice == Some(false) {
+        if !advice_enabled(repo, "pushRepoLooksLikeRef") {
             return Ok(());
         }
         let Some(slash) = name.find_byte(b'/') else {
@@ -267,14 +263,12 @@ pub(crate) mod function {
         {
             return Ok(());
         }
-        writeln!(err, "hint: Did you mean to use: git push {remote} {branch}?").or_error()?;
-        if advice.is_none() {
-            writeln!(
-                err,
-                "hint: Disable this message with \"git config set advice.pushRepoLooksLikeRef false\""
-            )
-            .or_error()?;
-        }
+        advise_if_enabled(
+            repo,
+            "pushRepoLooksLikeRef",
+            &format!("Did you mean to use: git push {remote} {branch}?"),
+            &mut err,
+        )?;
         bail!("'{name}' is not a valid push target".validation())
     }
 

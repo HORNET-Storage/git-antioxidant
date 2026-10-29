@@ -676,6 +676,363 @@ title "gix (with repository)"
     )
   )
 
+  title "gix merge"
+  (when "running 'merge'"
+    snapshot="$snapshot/merge"
+    (sandbox
+      git init -q -b main
+      printf 'one\ntwo\nthree\n' >file
+      git add file
+      git commit -q -m "base"
+      git checkout -q -b topic
+      echo four >>file
+      echo new >added
+      git add added file
+      git commit -q -m "topic"
+      git checkout -q main
+
+      it "fast-forwards and shows the statistics of the changes" && {
+        WITH_SNAPSHOT="$snapshot/fast-forward" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose merge topic
+      }
+      it "says that HEAD contains the commit already" && {
+        WITH_SNAPSHOT="$snapshot/up-to-date" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose merge topic
+      }
+      it "makes a merge commit with --no-ff" && {
+        git checkout -q -b no-ff
+        echo five >>file
+        git commit -q -am "no-ff"
+        git checkout -q main
+        WITH_SNAPSHOT="$snapshot/no-ff" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose merge --no-ff no-ff
+      }
+      it "gives the merge commit the default message" && {
+        WITH_SNAPSHOT="$snapshot/no-ff-message" \
+        expect_run $SUCCESSFULLY git log -1 --format=%B
+      }
+      (with "a branch that diverged"
+        git checkout -q -b side main~1
+        echo side >side
+        git add side
+        git commit -q -m "side"
+        git checkout -q main
+        it "refuses to merge it with --ff-only" && {
+          WITH_SNAPSHOT="$snapshot/ff-only-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose merge --ff-only side
+        }
+        it "merges it with a merge commit" && {
+          WITH_SNAPSHOT="$snapshot/merge-commit" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose merge side
+        }
+        it "names the branch in the default message" && {
+          WITH_SNAPSHOT="$snapshot/merge-commit-message" \
+          expect_run $SUCCESSFULLY git log -1 --format=%B
+        }
+      )
+      (with "the messages of -m and -F"
+        git checkout -q -b with-message main~1
+        echo with-message >with-message
+        git add with-message
+        git commit -q -m "with message"
+        git checkout -q main
+        printf 'from a file\n' >.git/message-file
+        it "merges with the message" && {
+          WITH_SNAPSHOT="$snapshot/message" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose merge -m "first" -F .git/message-file -m "third" with-message
+        }
+        it "joins the messages as Git joins them" && {
+          WITH_SNAPSHOT="$snapshot/message-commit" \
+          expect_run $SUCCESSFULLY git log -1 --format=%B
+        }
+      )
+      (with "--squash"
+        git checkout -q -b squashed main~1
+        echo squashed >squashed
+        git add squashed
+        git commit -q -m "squashed"
+        git checkout -q main
+        it "applies the changes without commit" && {
+          WITH_SNAPSHOT="$snapshot/squash" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose merge --squash squashed
+        }
+        it "leaves the changes staged" && {
+          WITH_SNAPSHOT="$snapshot/squash-status" \
+          expect_run $SUCCESSFULLY git status --porcelain
+        }
+        git reset -q --hard
+      )
+      (with "--no-commit"
+        git checkout -q -b uncommitted main~1
+        echo uncommitted >uncommitted
+        git add uncommitted
+        git commit -q -m "uncommitted"
+        git checkout -q main
+        it "stops before the merge commit" && {
+          WITH_SNAPSHOT="$snapshot/no-commit" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose merge --no-commit uncommitted
+        }
+        it "refuses --continue with other arguments" && {
+          WITH_SNAPSHOT="$snapshot/continue-with-argument-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose merge --continue --no-verify
+        }
+        it "makes the merge commit with --continue" && {
+          WITH_SNAPSHOT="$snapshot/no-commit-continue" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose merge --continue
+        }
+      )
+      (with "a conflict"
+        git checkout -q -b conflicting
+        printf 'one\nconflicting\nthree\nfour\nfive\n' >file
+        git commit -q -am "conflicting"
+        git checkout -q main
+        printf 'one\nmain\nthree\nfour\nfive\n' >file
+        git commit -q -am "main"
+        it "fails and leaves the conflict to be resolved" && {
+          WITH_SNAPSHOT="$snapshot/conflict-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose merge conflicting
+        }
+        it "leaves the conflict in the index" && {
+          WITH_SNAPSHOT="$snapshot/conflict-status" \
+          expect_run $SUCCESSFULLY git status --porcelain
+        }
+        it "refuses to continue while the conflict isn't resolved" && {
+          WITH_SNAPSHOT="$snapshot/continue-unresolved-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose merge --continue
+        }
+        it "concludes the merge with --continue once the conflict is resolved" && {
+          echo resolved >file
+          git add file
+          WITH_SNAPSHOT="$snapshot/conflict-continue" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose merge --continue
+        }
+      )
+      (with "a conflict to abort"
+        git checkout -q -b aborted
+        echo aborted >file
+        git commit -q -am "aborted"
+        git checkout -q main
+        echo main >file
+        git commit -q -am "main again"
+        it "fails at the conflict" && {
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose merge aborted
+        }
+        it "goes back to the state before the merge with --abort" && {
+          WITH_SNAPSHOT="$snapshot/abort" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose merge --abort
+        }
+        it "leaves no changes" && {
+          WITH_SNAPSHOT="$snapshot/abort-status" \
+          expect_run $SUCCESSFULLY git status --porcelain
+        }
+        it "refuses --abort without merge" && {
+          WITH_SNAPSHOT="$snapshot/abort-without-merge-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose merge --abort
+        }
+      )
+      (with "a branch named like a subcommand"
+        git checkout -q -b tree
+        echo tree >tree-file
+        git add tree-file
+        git commit -q -m "tree"
+        git checkout -q main
+        it "merges it after --" && {
+          WITH_SNAPSHOT="$snapshot/double-dash" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose merge -- tree
+        }
+      )
+      (with "an upstream"
+        git checkout -q -b upstream
+        echo upstream >upstream
+        git add upstream
+        git commit -q -m "upstream"
+        git checkout -q main
+        git config branch.main.remote .
+        git config branch.main.merge refs/heads/upstream
+        it "merges it without commit" && {
+          WITH_SNAPSHOT="$snapshot/upstream" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose merge
+        }
+        git config --unset branch.main.merge
+        it "refuses to merge without commit and upstream" && {
+          WITH_SNAPSHOT="$snapshot/no-upstream-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose merge
+        }
+      )
+    )
+    (small-repo-in-sandbox
+      it "still merges files with 'file'" && {
+        printf 'one\ntwo\nthree\n' >base.txt
+        printf 'ONE\ntwo\nthree\n' >ours.txt
+        printf 'one\ntwo\nTHREE\n' >theirs.txt
+        WITH_SNAPSHOT="$snapshot/file" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose merge file ours.txt base.txt theirs.txt
+      }
+      it "still merges trees with 'tree'" && {
+        WITH_SNAPSHOT="$snapshot/tree" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose merge tree main unannotated dev
+      }
+      it "still merges commits with 'commit'" && {
+        WITH_SNAPSHOT="$snapshot/commit" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose merge commit main dev
+      }
+    )
+  )
+
+  title "gix rebase"
+  (when "running 'rebase'"
+    snapshot="$snapshot/rebase"
+    (sandbox
+      git init -q -b main
+      printf 'one\ntwo\nthree\n' >file
+      git add file
+      git commit -q -m "base"
+      git checkout -q -b topic
+      echo t1 >t1
+      git add t1
+      git commit -q -m "t1"
+      echo t2 >t2
+      git add t2
+      git commit -q -m "t2"
+      git checkout -q main
+      echo m1 >m1
+      git add m1
+      git commit -q -m "m1"
+      git checkout -q topic
+
+      it "replays the commits of the branch onto the upstream" && {
+        WITH_SNAPSHOT="$snapshot/upstream" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose rebase main
+      }
+      it "puts them on top of the upstream" && {
+        WITH_SNAPSHOT="$snapshot/upstream-log" \
+        expect_run $SUCCESSFULLY git log --format=%s
+      }
+      it "says that the branch is up to date" && {
+        WITH_SNAPSHOT="$snapshot/up-to-date" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose rebase main
+      }
+      it "replays the commits after a revision onto another with --onto" && {
+        git branch old-main main
+        git checkout -q main
+        echo m2 >m2
+        git add m2
+        git commit -q -m "m2"
+        git checkout -q topic
+        WITH_SNAPSHOT="$snapshot/onto" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose rebase --onto main old-main topic
+      }
+      it "puts them on top of the new base" && {
+        WITH_SNAPSHOT="$snapshot/onto-log" \
+        expect_run $SUCCESSFULLY git log --format=%s
+      }
+      it "replays all commits of the branch with --root" && {
+        WITH_SNAPSHOT="$snapshot/root" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose rebase --root
+      }
+      it "keeps their history" && {
+        WITH_SNAPSHOT="$snapshot/root-log" \
+        expect_run $SUCCESSFULLY git log --format=%s
+      }
+      (with "a conflict"
+        git checkout -q -b conflicting main
+        printf 'one\nconflicting\nthree\n' >file
+        git commit -q -am "conflicting"
+        echo after >after
+        git add after
+        git commit -q -m "after"
+        git checkout -q main
+        printf 'one\nmain\nthree\n' >file
+        git commit -q -am "main"
+        git checkout -q conflicting
+        it "stops at the commit that doesn't apply" && {
+          WITH_SNAPSHOT="$snapshot/conflict-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose rebase main
+        }
+        it "refuses to continue while the conflict isn't resolved" && {
+          WITH_SNAPSHOT="$snapshot/continue-unresolved-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose rebase --continue
+        }
+        it "continues once the conflict is resolved" && {
+          echo resolved >file
+          git add file
+          WITH_SNAPSHOT="$snapshot/conflict-continue" \
+          expect_run $SUCCESSFULLY env GIT_EDITOR=: "$exe_plumbing" --no-verbose rebase --continue
+        }
+        it "keeps the resolution and the commits after it" && {
+          WITH_SNAPSHOT="$snapshot/conflict-continue-log" \
+          expect_run $SUCCESSFULLY git log --format=%s
+        }
+      )
+      (with "a conflict to skip"
+        git checkout -q -b skipped main~1
+        printf 'one\nskipped\nthree\n' >file
+        git commit -q -am "skipped"
+        echo kept >kept
+        git add kept
+        git commit -q -m "kept"
+        it "stops at the commit that doesn't apply" && {
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose rebase main
+        }
+        it "leaves the commit out with --skip" && {
+          WITH_SNAPSHOT="$snapshot/skip" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose rebase --skip
+        }
+        it "replays the commits after it" && {
+          WITH_SNAPSHOT="$snapshot/skip-log" \
+          expect_run $SUCCESSFULLY git log --format=%s
+        }
+      )
+      (with "a conflict to abort"
+        git checkout -q -b aborted main~1
+        printf 'one\naborted\nthree\n' >file
+        git commit -q -am "aborted"
+        it "stops at the commit that doesn't apply" && {
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose rebase main
+        }
+        it "goes back to the branch as it was with --abort" && {
+          WITH_SNAPSHOT="$snapshot/abort" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose rebase --abort
+        }
+        it "restores the branch, its commits and the worktree" && {
+          WITH_SNAPSHOT="$snapshot/abort-status" \
+          expect_run_sh $SUCCESSFULLY 'git branch --show-current && git log --format=%s && git status --porcelain'
+        }
+        it "refuses --abort without rebase" && {
+          WITH_SNAPSHOT="$snapshot/abort-without-rebase-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose rebase --abort
+        }
+      )
+      (with "an interactive rebase"
+        git checkout -q -b interactive main~1
+        echo i1 >i1
+        git add i1
+        git commit -q -m "i1"
+        echo i2 >i2
+        git add i2
+        git commit -q -m "i2"
+        it "performs the todo list as the sequence editor leaves it" && {
+          WITH_SNAPSHOT="$snapshot/interactive" \
+          expect_run $SUCCESSFULLY env GIT_SEQUENCE_EDITOR="sed -i.bak -e 1d" "$exe_plumbing" --no-verbose rebase -i main
+        }
+        it "leaves out the commit whose line the editor removed" && {
+          WITH_SNAPSHOT="$snapshot/interactive-log" \
+          expect_run $SUCCESSFULLY git log --format=%s
+        }
+      )
+      (with "--exec"
+        it "runs the command after each commit" && {
+          WITH_SNAPSHOT="$snapshot/exec" \
+          expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose rebase --force-rebase --exec "echo executed" main
+        }
+        it "stops where the command fails" && {
+          WITH_SNAPSHOT="$snapshot/exec-failure" \
+          expect_run $WITH_FAILURE "$exe_plumbing" --no-verbose rebase --force-rebase --exec false main
+        }
+      )
+    )
+  )
+
   if test "$kind" = "max" || test "$kind" = "max-pure"; then
   title "gix push"
   (when "running 'push'"

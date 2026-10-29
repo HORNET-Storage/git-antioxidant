@@ -23,6 +23,7 @@ pub mod clean;
 #[cfg(feature = "clean")]
 pub use clean::function::clean;
 pub mod diff;
+mod diffstat;
 pub mod dirty;
 pub mod dirwalk;
 mod editor;
@@ -51,6 +52,8 @@ mod merge_base;
 pub use merge_base::merge_base;
 pub mod merge;
 pub mod odb;
+pub mod rebase;
+pub use rebase::function::rebase;
 pub mod remote;
 pub mod reset;
 pub use reset::function::reset;
@@ -71,10 +74,51 @@ pub fn init(directory: Option<PathBuf>) -> Result<gix::discover::repository::Pat
     .or_raise(|| message("Repository initialization failed"))
 }
 
-/// Return the action that `GIT_REFLOG_ACTION` sets in front of the messages of reflog entries, as `git commit` and
-/// `git reset` read it from their environment.
+/// Return the action that `GIT_REFLOG_ACTION` sets in front of the messages of reflog entries, as `git commit`,
+/// `git reset`, `git merge` and `git rebase` read it from their environment.
 fn reflog_action() -> Option<BString> {
     std::env::var_os("GIT_REFLOG_ACTION").and_then(|action| gix::path::os_string_into_bstring(action).ok())
+}
+
+/// Return whether Git gives the advice `key`, as `advice_enabled()` in Git's `advice.c` decides: unless `GIT_ADVICE`
+/// turns all advice off or `advice.<key>` is `false`.
+fn advice_enabled(repo: &gix::Repository, key: &str) -> bool {
+    let enabled = std::env::var_os("GIT_ADVICE")
+        .and_then(|value| gix::config::Boolean::try_from(value).ok())
+        .is_none_or(|value| value.0);
+    enabled && repo.config_snapshot().boolean(format!("advice.{key}").as_str()) != Some(false)
+}
+
+/// Write `advice` to `err` unless the advice `key` is disabled, as `advise_if_enabled()` in Git's `advice.c` writes it:
+/// followed by how to disable it unless `advice.<key>` is set.
+fn advise_if_enabled(repo: &gix::Repository, key: &str, advice: &str, err: &mut dyn std::io::Write) -> Result<()> {
+    if !advice_enabled(repo, key) {
+        return Ok(());
+    }
+    if repo
+        .config_snapshot()
+        .boolean(format!("advice.{key}").as_str())
+        .is_some()
+    {
+        return advise(advice, err);
+    }
+    advise(
+        &format!("{advice}\nDisable this message with \"git config set advice.{key} false\""),
+        err,
+    )
+}
+
+/// Write each line of `advice` to `err` after `hint: `, or as `hint:` if it is empty, as `vadvise()` in Git's `advice.c`
+/// writes it.
+fn advise(advice: &str, err: &mut dyn std::io::Write) -> Result<()> {
+    for line in advice.split_terminator('\n') {
+        if line.is_empty() {
+            writeln!(err, "hint:").or_error()?;
+        } else {
+            writeln!(err, "hint: {line}").or_error()?;
+        }
+    }
+    Ok(())
 }
 
 pub enum PathsOrPatterns {

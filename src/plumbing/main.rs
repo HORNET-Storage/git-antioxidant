@@ -20,7 +20,7 @@ use crate::{
     plumbing::{
         options::{
             Args, Subcommands, attributes, branch, commit, commitgraph, config, credential, exclude, free, fsck, index,
-            mailmap, merge, odb, reset, revision, tag, tree, worktree,
+            mailmap, merge, odb, rebase, reset, revision, tag, tree, worktree,
         },
         show_progress,
     },
@@ -143,13 +143,55 @@ pub fn main() -> Result<()> {
         ),
         Subcommands::Env => prepare_and_run("env", verbose, None, move |_progress, out, _err| core::env(out, format)),
         Subcommands::Editor { paths } => core::repository::editor(repository(Mode::Lenient)?, paths),
-        Subcommands::Merge(merge::Platform { cmd }) => match cmd {
-            merge::SubCommands::File {
+        Subcommands::Merge(merge::Platform {
+            ff,
+            no_ff,
+            ff_only,
+            squash,
+            no_commit,
+            message,
+            cleanup,
+            no_verify,
+            allow_unrelated_histories,
+            continue_merge,
+            abort,
+            quit,
+            commit,
+            cmd,
+        }) => match cmd {
+            None => prepare_and_run("merge", verbose, None, move |_progress, out, err| {
+                let fast_forward = [
+                    (ff, gix::merge::into_head::FastForward::Allow),
+                    (no_ff, gix::merge::into_head::FastForward::Never),
+                    (ff_only, gix::merge::into_head::FastForward::Only),
+                ]
+                .into_iter()
+                .find_map(|(given, fast_forward)| given.then_some(fast_forward));
+                core::repository::merge::into_head(
+                    repository(Mode::LenientWithGitInstallConfig)?,
+                    out,
+                    err,
+                    core::repository::merge::into_head::Options {
+                        commit,
+                        fast_forward,
+                        squash,
+                        no_commit,
+                        message: message.0,
+                        cleanup,
+                        no_verify,
+                        allow_unrelated_histories,
+                        continue_merge,
+                        abort,
+                        quit,
+                    },
+                )
+            }),
+            Some(merge::SubCommands::File {
                 resolve_with,
                 ours,
                 base,
                 theirs,
-            } => prepare_and_run("merge-file", verbose, None, move |_progress, out, _err| {
+            }) => prepare_and_run("merge-file", verbose, None, move |_progress, out, _err| {
                 core::repository::merge::file(
                     repository(Mode::Lenient)?,
                     out,
@@ -160,7 +202,7 @@ pub fn main() -> Result<()> {
                     theirs,
                 )
             }),
-            merge::SubCommands::Tree {
+            Some(merge::SubCommands::Tree {
                 opts:
                     merge::SharedOptions {
                         in_memory,
@@ -173,7 +215,7 @@ pub fn main() -> Result<()> {
                 ours,
                 base,
                 theirs,
-            } => prepare_and_run("merge-tree", verbose, None, move |_progress, out, err| {
+            }) => prepare_and_run("merge-tree", verbose, None, move |_progress, out, err| {
                 core::repository::merge::tree(
                     repository(Mode::Lenient)?,
                     out,
@@ -192,7 +234,7 @@ pub fn main() -> Result<()> {
                     },
                 )
             }),
-            merge::SubCommands::Commit {
+            Some(merge::SubCommands::Commit {
                 opts:
                     merge::SharedOptions {
                         in_memory,
@@ -202,7 +244,7 @@ pub fn main() -> Result<()> {
                     },
                 ours,
                 theirs,
-            } => prepare_and_run("merge-commit", verbose, None, move |_progress, out, err| {
+            }) => prepare_and_run("merge-commit", verbose, None, move |_progress, out, err| {
                 core::repository::merge::commit(
                     repository(Mode::Lenient)?,
                     out,
@@ -1267,6 +1309,78 @@ pub fn main() -> Result<()> {
                 core::repository::reset::Options { mode, args, paths },
             )
         }),
+        Subcommands::Rebase(rebase::Platform {
+            onto,
+            keep_base,
+            root,
+            interactive,
+            exec,
+            autosquash,
+            no_autosquash,
+            update_refs,
+            no_update_refs,
+            rebase_merges,
+            no_rebase_merges,
+            fork_point,
+            no_fork_point,
+            force_rebase,
+            empty,
+            // Commits that start empty are kept anyway.
+            keep_empty: _keep_empty,
+            no_verify,
+            reschedule_failed_exec,
+            continue_rebase,
+            skip,
+            abort,
+            quit,
+            upstream,
+            branch,
+        }) => prepare_and_run("rebase", verbose, None, move |_progress, out, err| {
+            use core::repository::rebase::Action;
+            use gix::rebase::{Merges, plumbing::script::RebaseMerges};
+
+            let action = [
+                (continue_rebase, Action::Continue),
+                (skip, Action::Skip),
+                (abort, Action::Abort),
+                (quit, Action::Quit),
+            ]
+            .into_iter()
+            .find_map(|(given, action)| given.then_some(action));
+            let rebase_merges = match rebase_merges {
+                Some(rebase::RebaseMerges::NoRebaseCousins) => Merges::Rebase(RebaseMerges::NoRebaseCousins),
+                Some(rebase::RebaseMerges::RebaseCousins) => Merges::Rebase(RebaseMerges::RebaseCousins),
+                None if no_rebase_merges => Merges::Drop,
+                None => Merges::AsConfigured,
+            };
+            core::repository::rebase(
+                repository(Mode::LenientWithGitInstallConfig)?,
+                out,
+                err,
+                core::repository::rebase::Options {
+                    upstream,
+                    branch,
+                    onto,
+                    keep_base,
+                    root,
+                    interactive,
+                    exec,
+                    autosquash: flag(autosquash, no_autosquash),
+                    update_refs: flag(update_refs, no_update_refs),
+                    rebase_merges,
+                    fork_point: flag(fork_point, no_fork_point),
+                    force_rebase,
+                    empty: empty.map(|empty| match empty {
+                        rebase::Empty::Drop => gix::rebase::Empty::Drop,
+                        rebase::Empty::Keep => gix::rebase::Empty::Keep,
+                        rebase::Empty::Stop => gix::rebase::Empty::Stop,
+                    }),
+                    no_verify,
+                    reschedule_failed_exec,
+                    action,
+                },
+            )
+        }),
         Subcommands::Tree(cmd) => match cmd {
             tree::Subcommands::Entries {
                 treeish,
@@ -1520,6 +1634,15 @@ fn verify_mode(decode: bool, re_encode: bool) -> verify::Mode {
     }
 }
 
+/// Return `Some(true)` if the flag was `given`, `Some(false)` if its negation was, and `None` if neither was.
+fn flag(given: bool, negated: bool) -> Option<bool> {
+    match (given, negated) {
+        (true, _) => Some(true),
+        (false, true) => Some(false),
+        (false, false) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1588,6 +1711,155 @@ mod tests {
         assert_eq!((soft, mixed, hard, merge, keep), (true, false, false, false, false));
         assert_eq!(args, ["HEAD~1", "file"]);
         assert_eq!(paths, ["path"]);
+    }
+
+    #[test]
+    fn merge_takes_a_commit_and_keeps_its_subcommands() {
+        use clap::Parser;
+        use gitoxide_core::repository::merge::into_head::MessagePart;
+
+        let args = Args::try_parse_from([
+            "gix",
+            "merge",
+            "--ff-only",
+            "--no-ff",
+            "-m",
+            "first",
+            "-F",
+            "file",
+            "--message=second",
+            "topic",
+        ])
+        .expect("valid");
+        let Subcommands::Merge(merge::Platform {
+            ff,
+            no_ff,
+            ff_only,
+            message,
+            commit,
+            cmd,
+            ..
+        }) = args.cmd
+        else {
+            panic!("merge")
+        };
+        assert_eq!(
+            (ff, no_ff, ff_only),
+            (false, true, false),
+            "the last way to fast-forward wins"
+        );
+        assert_eq!(
+            message.0,
+            [
+                MessagePart::Paragraph("first".into()),
+                MessagePart::File("file".into()),
+                MessagePart::Paragraph("second".into())
+            ],
+            "-m and -F keep the order of the command line"
+        );
+        assert_eq!(commit, Some("topic".into()));
+        assert!(cmd.is_none(), "merging into HEAD needs no subcommand");
+
+        let args = Args::try_parse_from(["gix", "merge"]).expect("valid");
+        assert!(
+            matches!(
+                args.cmd,
+                Subcommands::Merge(merge::Platform {
+                    commit: None,
+                    cmd: None,
+                    ..
+                })
+            ),
+            "without commit, the upstream is merged"
+        );
+
+        let args = Args::try_parse_from(["gix", "merge", "tree", "ours", "base", "theirs"]).expect("valid");
+        assert!(matches!(
+            args.cmd,
+            Subcommands::Merge(merge::Platform {
+                commit: None,
+                cmd: Some(merge::SubCommands::Tree { .. }),
+                ..
+            })
+        ));
+
+        let args = Args::try_parse_from(["gix", "merge", "--", "tree"]).expect("valid");
+        let Subcommands::Merge(merge::Platform { commit, cmd, .. }) = args.cmd else {
+            panic!("merge")
+        };
+        assert_eq!(
+            commit,
+            Some("tree".into()),
+            "after `--`, a commit named like a subcommand is merged"
+        );
+        assert!(cmd.is_none());
+    }
+
+    #[test]
+    fn rebase_takes_negations_and_an_optional_mode_for_merges() {
+        use clap::Parser;
+
+        let args = Args::try_parse_from([
+            "gix",
+            "rebase",
+            "--autosquash",
+            "--no-autosquash",
+            "-r",
+            "--exec",
+            "make",
+            "-x",
+            "true",
+            "main",
+            "topic",
+        ])
+        .expect("valid");
+        let Subcommands::Rebase(rebase::Platform {
+            autosquash,
+            no_autosquash,
+            rebase_merges,
+            exec,
+            upstream,
+            branch,
+            ..
+        }) = args.cmd
+        else {
+            panic!("rebase")
+        };
+        assert_eq!(
+            (autosquash, no_autosquash),
+            (false, true),
+            "the last of a flag and its negation wins"
+        );
+        assert_eq!(rebase_merges, Some(rebase::RebaseMerges::NoRebaseCousins));
+        assert_eq!(exec, ["make", "true"]);
+        assert_eq!((upstream, branch), (Some("main".into()), Some("topic".into())));
+
+        let args = Args::try_parse_from([
+            "gix",
+            "rebase",
+            "--rebase-merges=rebase-cousins",
+            "--empty=STOP",
+            "main",
+        ])
+        .expect("valid");
+        let Subcommands::Rebase(rebase::Platform {
+            rebase_merges,
+            empty,
+            upstream,
+            ..
+        }) = args.cmd
+        else {
+            panic!("rebase")
+        };
+        assert_eq!(rebase_merges, Some(rebase::RebaseMerges::RebaseCousins));
+        assert_eq!(empty, Some(rebase::Empty::Stop));
+        assert_eq!(upstream, Some("main".into()), "the mode of --rebase-merges needs `=`");
+
+        assert!(Args::try_parse_from(["gix", "rebase", "--continue", "--skip"]).is_err());
+        assert!(
+            Args::try_parse_from(["gix", "rebase", "--abort", "main"]).is_err(),
+            "the steps of a rebase in progress take no arguments"
+        );
     }
 
     #[cfg(feature = "gitoxide-core-blocking-client")]
