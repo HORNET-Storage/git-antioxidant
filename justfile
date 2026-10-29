@@ -51,6 +51,9 @@ check-auditable:
 doc $RUSTDOCFLAGS='-D warnings':
     cargo doc --workspace --no-deps
     cargo doc --features=max,lean,small --workspace --no-deps
+    # Document `gix` on its own as well, so that no other member of the workspace enables the features its links need.
+    cargo doc -p gix --no-deps --no-default-features --features sha1
+    cargo doc -p gix --no-deps --features async-network-client,sha256
 
 # Run all unit tests
 [group('Tests')]

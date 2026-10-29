@@ -488,7 +488,7 @@ impl crate::Repository {
         Ok(id.object()?.into_commit())
     }
 
-    /// Return an empty tree object, suitable for [getting changes](Tree::changes()).
+    /// Return an empty tree object, suitable for getting changes with `Tree::changes()`.
     ///
     /// Note that the returned object is special and doesn't necessarily physically exist in the object database.
     /// This means that this object can be used in an uninitialized, empty repository which would report to have no objects at all.

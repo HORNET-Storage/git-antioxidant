@@ -33,7 +33,7 @@
 //!
 //! ### The prelude and extensions
 //!
-//! With `use git_repository::prelude::*` you should be ready to go as it pulls in various extension traits to make functionality
+//! With `use gix::prelude::*` you should be ready to go as it pulls in various extension traits to make functionality
 //! available on objects that may use it.
 //!
 //! The method signatures are still complex and may require various arguments for configuration and cache control.
@@ -84,15 +84,15 @@
 //!
 //! #### `WorkingTree` and `WorkTree`
 //!
-//! When reading the documentation of the canonical gix-worktree program one gets the impression work tree and working tree are used
-//! interchangeably. We use the term _work tree_ only and try to do so consistently as its shorter and assumed to be the same.
+//! When reading the documentation of Git's `git worktree` command one gets the impression work tree and working tree are used
+//! interchangeably. We use the term _work tree_ only and try to do so consistently as it's shorter and assumed to be the same.
 //!
 //! ### Plumbing Crates
 //!
 //! To make using  _sub-crates_ and their types easier, these are re-exported into the root of this crate. Here we list how to access nested plumbing
 //! crates which are otherwise harder to discover:
 //!
-//! **`git_repository::`**
+//! **`gix::`**
 //! * [`odb`]
 //!   * [`pack`][odb::pack]
 //! * [`protocol`]
@@ -107,12 +107,12 @@
 //! What follows is a list of methods you might be missing, along with workarounds if available.
 //! * [`git2::Repository::open_bare()`](https://docs.rs/git2/*/git2/struct.Repository.html#method.open_bare) ➡ ❌ - use [`open()`] and discard if it is not bare.
 //! * [`git2::build::CheckoutBuilder::disable_filters()`](https://docs.rs/git2/*/git2/build/struct.CheckoutBuilder.html#method.disable_filters) ➡ ❌ *(filters are always applied during checkouts)*
-//! * [`git2::Repository::submodule_status()`](https://docs.rs/git2/*/git2/struct.Repository.html#method.submodule_status) ➡ [`Submodule::state()`] - status provides more information and conveniences though, and an actual worktree status isn't performed.
+//! * [`git2::Repository::submodule_status()`](https://docs.rs/git2/*/git2/struct.Repository.html#method.submodule_status) ➡ `Submodule::state()` of the `attributes` feature - status provides more information and conveniences though, and an actual worktree status isn't performed.
 //!
 //! #### Integrity checks
 //!
 //! `git2` by default performs integrity checks via [`strict_hash_verification()`](https://docs.rs/git2/latest/git2/opts/fn.strict_hash_verification.html) and
-//! [`strict_object_creation`](https://docs.rs/git2/latest/git2/opts/fn.strict_object_creation.html) which `gitoxide` *currently* **does not have**.
+//! [`strict_object_creation`](https://docs.rs/git2/latest/git2/opts/fn.strict_object_creation.html) which `gix` *currently* **does not have**.
 //!
 //! ### Feature Flags
 #![cfg_attr(
@@ -344,8 +344,7 @@ pub fn init_bare(directory: impl AsRef<std::path::Path>) -> Result<Repository> {
 ///
 /// Like `git clone --bare`, branches are stored in `refs/heads/`, with no default fetch refspec,
 /// remote-tracking `HEAD`, or branch upstream configuration. For a non-bare clone without checkout
-/// (like `git clone --no-checkout`), use [`prepare_clone()`] followed by
-/// [`fetch_only()`][clone::PrepareFetch::fetch_only()]
+/// (like `git clone --no-checkout`), use [`prepare_clone()`] followed by `clone::PrepareFetch::fetch_only()`
 /// with the `blocking-network-client` or `async-network-client-async-std` feature enabled.
 /// This creates `path/.git` and fetches the repository without populating the working tree.
 ///

@@ -92,7 +92,7 @@ impl crate::Repository {
     /// unless `TERM` is unset or `dumb`, in which case there is no usable editor.
     /// Return an error if the selected editor cannot be represented as a native program name.
     ///
-    /// Use [`editor_command()`](Self::editor_command) to obtain a command prepared for execution.
+    /// With the `command` feature, `editor_command()` returns this editor as a command prepared for execution.
     pub fn editor(&self) -> Result<Option<OsString>> {
         use crate::config::tree::{Core, Gitoxide};
 
