@@ -220,18 +220,16 @@ pub type Boolean = Any<validate::Boolean>;
 
 /// A key that represents an executable program, shell script or shell commands.
 ///
-/// Once obtained with [trusted_program()](crate::config::Snapshot::trusted_program())
-/// one can run it with [command::prepare()](gix_command::prepare), possibly after
-/// [obtaining](crate::Repository::command_context) and [setting](gix_command::Prepare::with_context)
-/// a git [command context](gix_command::Context) (depending on the commands needs).
+/// Once obtained with [program()](crate::config::Snapshot::program()), it can run through `gix::command::prepare()` of the
+/// `command` feature, possibly after obtaining a Git command context with `Repository::command_context()` and setting it
+/// with `Prepare::with_context()`, depending on the needs of the command.
 pub type Program = Any<validate::Program>;
 
 /// A key that represents an executable program as identified by name or path.
 ///
-/// Once obtained with [trusted_program()](crate::config::Snapshot::trusted_program())
-/// one can run it with [command::prepare()](gix_command::prepare), possibly after
-/// [obtaining](crate::Repository::command_context) and [setting](gix_command::Prepare::with_context)
-/// a git [command context](gix_command::Context) (depending on the commands needs).
+/// Once obtained with [program()](crate::config::Snapshot::program()), it can run through `gix::command::prepare()` of the
+/// `command` feature, possibly after obtaining a Git command context with `Repository::command_context()` and setting it
+/// with `Prepare::with_context()`, depending on the needs of the command.
 pub type Executable = Any<validate::Executable>;
 
 /// A key that represents a path (to a resource).

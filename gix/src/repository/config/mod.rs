@@ -98,12 +98,12 @@ impl crate::Repository {
 
         let config = self.config_snapshot();
         let terminal_is_dumb = config.string(Gitoxide::TERM).is_none_or(|terminal| terminal == "dumb");
-        let mut editor = config.trusted_program(Core::EDITOR)?;
+        let mut editor = config.program(Core::EDITOR)?;
         if editor.is_none() && !terminal_is_dumb {
-            editor = config.trusted_program(Gitoxide::VISUAL)?;
+            editor = config.program(Gitoxide::VISUAL)?;
         }
         if editor.is_none() {
-            editor = config.trusted_program(Gitoxide::EDITOR)?;
+            editor = config.program(Gitoxide::EDITOR)?;
         }
         Ok(editor
             .or_else(|| {

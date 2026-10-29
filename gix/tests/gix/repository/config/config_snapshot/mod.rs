@@ -353,13 +353,13 @@ fn reload_reapplies_per_file_safe_directory_trust() -> TestResult {
             .with(gix_sec::Trust::Reduced),
     )?;
     assert_eq!(
-        repo.config_snapshot().trusted_program(Core::SSH_COMMAND)?,
+        repo.config_snapshot().program(Core::SSH_COMMAND)?,
         Some("trusted-ssh".into())
     );
 
     repo.reload()?;
     assert_eq!(
-        repo.config_snapshot().trusted_program(Core::SSH_COMMAND)?,
+        repo.config_snapshot().program(Core::SSH_COMMAND)?,
         Some("trusted-ssh".into()),
         "reopening repeats per-file trust promotion"
     );

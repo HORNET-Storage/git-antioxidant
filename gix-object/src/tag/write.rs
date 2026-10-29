@@ -8,8 +8,8 @@ use crate::{Kind, Tag, TagRef, encode, encode::NL};
 
 impl crate::WriteTo for Tag {
     fn write_to(&self, out: &mut dyn io::Write) -> io::Result<()> {
-        encode::trusted_header_id(b"object", &self.target, out)?;
-        encode::trusted_header_field(b"type", self.target_kind.as_bytes(), out)?;
+        encode::header_id(b"object", &self.target, out)?;
+        encode::header_field_unchecked(b"type", self.target_kind.as_bytes(), out)?;
         encode::header_field(
             b"tag",
             validated_name(self.name.as_ref()).map_err(io::Error::other)?,
@@ -17,7 +17,7 @@ impl crate::WriteTo for Tag {
         )?;
         if let Some(tagger) = &self.tagger {
             let mut buf = TimeBuf::default();
-            encode::trusted_header_signature(b"tagger", &tagger.to_ref(&mut buf), out)?;
+            encode::header_signature(b"tagger", &tagger.to_ref(&mut buf), out)?;
         }
 
         if !self.message.iter().all(|b| *b == b'\n') {
@@ -50,11 +50,11 @@ impl crate::WriteTo for Tag {
 
 impl crate::WriteTo for TagRef<'_> {
     fn write_to(&self, mut out: &mut dyn io::Write) -> io::Result<()> {
-        encode::trusted_header_field(b"object", self.target, &mut out)?;
-        encode::trusted_header_field(b"type", self.target_kind.as_bytes(), &mut out)?;
+        encode::header_field_unchecked(b"object", self.target, &mut out)?;
+        encode::header_field_unchecked(b"type", self.target_kind.as_bytes(), &mut out)?;
         encode::header_field(b"tag", validated_name(self.name).map_err(io::Error::other)?, &mut out)?;
         if let Some(tagger) = self.tagger {
-            encode::trusted_header_field(b"tagger", tagger.as_ref(), &mut out)?;
+            encode::header_field_unchecked(b"tagger", tagger.as_ref(), &mut out)?;
         }
 
         if !self.message.iter().all(|b| *b == b'\n') {

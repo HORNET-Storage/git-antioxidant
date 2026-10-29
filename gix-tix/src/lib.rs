@@ -7494,7 +7494,7 @@ fn prepare_file_diff_content(
     }
     let global_command = repository
         .config_snapshot()
-        .trusted_program(gix::config::tree::Diff::EXTERNAL)?
+        .program(gix::config::tree::Diff::EXTERNAL)?
         .map(gix::path::os_string_into_bstring)
         .transpose()
         .or_raise(|| message("external diff command is not representable on this platform"))?;
@@ -7575,7 +7575,7 @@ fn prepare_file_diff_content(
 }
 
 fn prepare_pager(repository: &gix::Repository, diff: BuiltInDiff) -> Result<FileDiff> {
-    let Some(program) = repository.config_snapshot().trusted_program("core.pager")? else {
+    let Some(program) = repository.config_snapshot().program("core.pager")? else {
         return Ok(FileDiff::BuiltIn(diff));
     };
     if program.is_empty() || program == "cat" {

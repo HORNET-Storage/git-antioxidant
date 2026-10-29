@@ -7,13 +7,13 @@ use crate::{Commit, CommitRef, Kind, encode, encode::NL};
 impl crate::WriteTo for Commit {
     /// Serializes this instance to `out` in the git serialization format.
     fn write_to(&self, mut out: &mut dyn io::Write) -> io::Result<()> {
-        encode::trusted_header_id(b"tree", &self.tree, &mut out)?;
+        encode::header_id(b"tree", &self.tree, &mut out)?;
         for parent in &self.parents {
-            encode::trusted_header_id(b"parent", parent, &mut out)?;
+            encode::header_id(b"parent", parent, &mut out)?;
         }
         let mut buf = gix_date::parse::TimeBuf::default();
-        encode::trusted_header_signature(b"author", &self.author.to_ref(&mut buf), &mut out)?;
-        encode::trusted_header_signature(b"committer", &self.committer.to_ref(&mut buf), &mut out)?;
+        encode::header_signature(b"author", &self.author.to_ref(&mut buf), &mut out)?;
+        encode::header_signature(b"committer", &self.committer.to_ref(&mut buf), &mut out)?;
         if let Some(encoding) = self.encoding.as_ref() {
             encode::header_field(b"encoding", encoding, &mut out)?;
         }
@@ -54,12 +54,12 @@ impl crate::WriteTo for Commit {
 impl crate::WriteTo for CommitRef<'_> {
     /// Serializes this instance to `out` in the git serialization format.
     fn write_to(&self, mut out: &mut dyn io::Write) -> io::Result<()> {
-        encode::trusted_header_id(b"tree", &self.tree(), &mut out)?;
+        encode::header_id(b"tree", &self.tree(), &mut out)?;
         for parent in self.parents() {
-            encode::trusted_header_id(b"parent", &parent, &mut out)?;
+            encode::header_id(b"parent", &parent, &mut out)?;
         }
-        encode::trusted_header_field(b"author", self.author.as_ref(), &mut out)?;
-        encode::trusted_header_field(b"committer", self.committer.as_ref(), &mut out)?;
+        encode::header_field_unchecked(b"author", self.author.as_ref(), &mut out)?;
+        encode::header_field_unchecked(b"committer", self.committer.as_ref(), &mut out)?;
         if let Some(encoding) = self.encoding.as_ref() {
             encode::header_field(b"encoding", encoding, &mut out)?;
         }

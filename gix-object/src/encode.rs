@@ -36,14 +36,16 @@ pub(crate) fn header_field_multi_line(name: &[u8], value: &[u8], out: &mut dyn i
     Ok(())
 }
 
-pub(crate) fn trusted_header_field(name: &[u8], value: &[u8], out: &mut dyn io::Write) -> io::Result<()> {
+/// Serialize a header field whose value is known to be valid: neither empty nor containing a newline.
+pub(crate) fn header_field_unchecked(name: &[u8], value: &[u8], out: &mut dyn io::Write) -> io::Result<()> {
     out.write_all(name)?;
     out.write_all(SPACE)?;
     out.write_all(value)?;
     out.write_all(NL)
 }
 
-pub(crate) fn trusted_header_signature(
+/// Serialize a header field with a signature, which validates its name and email as it writes them.
+pub(crate) fn header_signature(
     name: &[u8],
     value: &gix_actor::SignatureRef<'_>,
     out: &mut dyn io::Write,
@@ -54,11 +56,8 @@ pub(crate) fn trusted_header_signature(
     out.write_all(NL)
 }
 
-pub(crate) fn trusted_header_id(
-    name: &[u8],
-    value: &gix_hash::ObjectId,
-    mut out: &mut dyn io::Write,
-) -> io::Result<()> {
+/// Serialize a header field with an object id in hexadecimal.
+pub(crate) fn header_id(name: &[u8], value: &gix_hash::ObjectId, mut out: &mut dyn io::Write) -> io::Result<()> {
     out.write_all(name)?;
     out.write_all(SPACE)?;
     value.write_hex_to(&mut out)?;
@@ -76,7 +75,7 @@ pub(crate) fn header_field(name: &[u8], value: &[u8], out: &mut dyn io::Write) -
             validation("Newlines are not allowed in header values").with_input(value),
         ));
     }
-    trusted_header_field(name, value, out)
+    header_field_unchecked(name, value, out)
 }
 
 pub(crate) const NL: &[u8; 1] = b"\n";

@@ -72,7 +72,7 @@ pub(crate) fn signing_options_if_enabled(repo: &crate::Repository) -> Result<Opt
 }
 
 fn default_ssh_key(config: &crate::config::Snapshot<'_>) -> Result<Option<OsString>> {
-    let Some(program) = config.trusted_program(gpg::Ssh::DEFAULT_KEY_COMMAND)? else {
+    let Some(program) = config.program(gpg::Ssh::DEFAULT_KEY_COMMAND)? else {
         return Ok(None);
     };
     let mut command: std::process::Command = gix_command::prepare(&program)

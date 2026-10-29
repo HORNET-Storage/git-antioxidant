@@ -65,10 +65,12 @@ impl Snapshot<'_> {
         self.repo.config.trusted_file_path(key)
     }
 
-    /// Return the trusted string at `key` for launching using [command::prepare()](gix_command::prepare()),
-    /// or `Ok(None)` if there is no such value or if no value was found in a trusted file.
+    /// Return the program at `key` for launching using `gix::command::prepare()`, from trusted
+    /// configuration only, or `Ok(None)` if there is no such value or if no value was found in a trusted file. Like
+    /// [`trusted_path()`](Self::trusted_path()), it never returns a value of a file that isn't trusted, which could
+    /// otherwise start a program that another owner of the repository chose.
     /// Return an error if the selected value cannot be represented as a native program name.
-    pub fn trusted_program(&self, key: impl gix_config::AsKey) -> Result<Option<OsString>> {
+    pub fn program(&self, key: impl gix_config::AsKey) -> Result<Option<OsString>> {
         let value = self
             .repo
             .config

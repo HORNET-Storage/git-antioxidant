@@ -64,7 +64,7 @@ impl Sequencer<'_> {
 /// Return the editor of the todo list of `repo` as `git_sequence_editor()` selects it: `sequence.editor`, which
 /// `GIT_SEQUENCE_EDITOR` overrides, or else the [editor](Repository::editor()).
 pub(super) fn sequence_editor(repo: &Repository) -> Result<Option<OsString>> {
-    match repo.config_snapshot().trusted_program(Sequence::EDITOR)? {
+    match repo.config_snapshot().program(Sequence::EDITOR)? {
         Some(editor) => Ok(Some(editor)),
         None => repo.editor(),
     }
