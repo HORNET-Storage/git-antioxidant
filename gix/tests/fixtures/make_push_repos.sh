@@ -411,10 +411,30 @@ git -C "$local_repo" config remote.origin.pushurl ../remote.git
 commit "$local_repo" C
 record push-url origin main
 
-# A URL instead of a remote name pushes without remote-tracking references.
+# A URL instead of a remote name: since Git 2.56, the remote-tracking references of the configured remote that pushes
+# to that URL, through `remote.<name>.pushurl` if it has one, are updated, unless another configured remote pushes
+# there as well. Older Git updates none. `url-ambiguous` and `url-unknown` update none with any Git.
 start url-remote
 commit "$local_repo" C
 record url-remote ../remote.git main
+
+start url-push-url
+git -C "$local_repo" config remote.origin.url ../nowhere.git
+git -C "$local_repo" config remote.origin.pushurl ../remote.git
+commit "$local_repo" C
+record url-push-url ../remote.git main
+
+start url-ambiguous
+git -C "$local_repo" remote add other ../remote.git
+git -C "$local_repo" config remote.other.followRemoteHEAD never
+git -C "$local_repo" fetch -q other
+commit "$local_repo" C
+record url-ambiguous ../remote.git main
+
+start url-unknown
+git -C "$local_repo" config remote.origin.pushurl ../nowhere.git
+commit "$local_repo" C
+record url-unknown ../remote.git main
 
 # Without a remote, `remote.pushDefault` or `branch.<name>.pushRemote` choose the remote over `branch.<name>.remote`.
 for dir in push-default-remote branch-push-remote; do

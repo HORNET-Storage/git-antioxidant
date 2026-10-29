@@ -42,8 +42,9 @@ where
     ///   from the packs of the repository where possible, along with the deltas whose base is in the pack or, unless
     ///   [`thin`](super::Options::thin) is disabled or the remote asks for `no-thin`, on the remote. All other objects
     ///   are stored whole.
-    /// * The remote-tracking references are found with the fetch refspecs of the remote and updated with the reflog
-    ///   message `update by push`, or deleted along with the remote reference. They are left alone in a
+    /// * The remote-tracking references are found with the fetch refspecs of the remote, or, for a remote made from
+    ///   a URL, of the only configured remote that pushes to that URL, as Git does since 2.56. They are updated with
+    ///   the reflog message `update by push`, or deleted along with the remote reference. They are left alone in a
     ///   [dry-run](Prepare::with_dry_run()), and if their update fails, an error is returned although the remote
     ///   accepted the push.
     ///
@@ -230,10 +231,15 @@ fn run_pre_push_hook(remote: &Remote<'_>, url: &BStr, updates: &[Update]) -> Res
 
 /// Update the remote-tracking references of the remote references that `updates` updated or found up to date, as
 /// `transport_update_tracking_ref()` in Git's `transport.c` does, with the reflog message `update by push`, and
-/// return the edits that were made.
+/// return the edits that were made. The fetch refspecs that find them are those of `remote`, or of the configured
+/// remote that `Remote::push_tracking_remote()` returns for it.
 fn update_tracking_refs(remote: &Remote<'_>, updates: &[Update]) -> Result<Vec<RefEdit>> {
     let repo = remote.repo;
-    let fetch_specs = remote.refspecs(remote::Direction::Fetch);
+    let tracking_remote = remote.push_tracking_remote();
+    let fetch_specs = tracking_remote
+        .as_ref()
+        .unwrap_or(remote)
+        .refspecs(remote::Direction::Fetch);
     let mut names = BTreeSet::new();
     let mut edits = Vec::new();
     for update in updates

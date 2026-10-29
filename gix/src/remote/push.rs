@@ -48,3 +48,39 @@ impl crate::Repository {
         }
     }
 }
+
+impl<'repo> Remote<'repo> {
+    /// Return the configured remote whose fetch refspecs find the remote-tracking references of what a push through this
+    /// remote updates, if that isn't this remote itself, as `repo_remote_for_push_tracking()` in Git's `remote.c` chooses
+    /// it since Git 2.56.
+    ///
+    /// A remote without name, which was made from a URL, has no fetch refspecs. If it pushes to that one URL only, the
+    /// configured remote that pushes to the same URL is returned, unless another configured remote pushes there as well.
+    /// URLs are compared as they are written, after their rewrites, and remotes that can't be loaded don't match.
+    pub(crate) fn push_tracking_remote(&self) -> Option<Remote<'repo>> {
+        if self.name().is_some() {
+            return None;
+        }
+        let mut urls = self.urls(remote::Direction::Push);
+        let (Some(url), None) = (urls.next(), urls.next()) else {
+            return None;
+        };
+        let url = url.to_bstring();
+        let mut found = None;
+        for name in self.repo.remote_names() {
+            let Some(Ok(candidate)) = self.repo.try_find_remote(name.as_bstr()) else {
+                continue;
+            };
+            if candidate
+                .urls(remote::Direction::Push)
+                .any(|candidate_url| candidate_url.to_bstring() == url)
+            {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(candidate);
+            }
+        }
+        found
+    }
+}

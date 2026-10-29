@@ -87,11 +87,14 @@ mod blocking_and_async_io {
     enum Expect {
         /// Report on the references and change the repositories as `git push` did.
         AsGit,
+        /// Do as [`AsGit`] says where `git push` has at least this version, which first did what `gix` does. The records
+        /// of older Git differ, so the case isn't pushed then.
+        AsGitSince((u8, u8, u8)),
         /// Fail with an error containing `gix` and change nothing, where `git push` failed with `git` in its output before
         /// it reported on any reference.
         Fail { git: &'static str, gix: &'static str },
     }
-    use Expect::{AsGit, Fail};
+    use Expect::{AsGit, AsGitSince, Fail};
 
     /// Fail like `git push`, with the same message.
     const fn fail(message: &'static str) -> Expect {
@@ -189,7 +192,10 @@ mod blocking_and_async_io {
         ("packed-no-thin", AsGit),
         ("object-source", AsGit),
         ("push-url", AsGit),
-        ("url-remote", AsGit),
+        ("url-remote", AsGitSince((2, 56, 0))),
+        ("url-push-url", AsGitSince((2, 56, 0))),
+        ("url-ambiguous", AsGit),
+        ("url-unknown", AsGit),
         ("push-default-remote", AsGit),
         ("branch-push-remote", AsGit),
         ("src-not-found", fail("src refspec nonexistent does not match any")),
@@ -228,6 +234,11 @@ mod blocking_and_async_io {
             if cfg!(not(feature = "hooks")) && name.starts_with("pre-push") {
                 continue;
             }
+            if let AsGitSince(version) = expect
+                && *gix_testtools::GIT_BASH_VERSION < *version
+            {
+                continue;
+            }
             push_case(&fixture.path().join(name), name, daemon.as_ref(), expect).await?;
         }
         Ok(())
@@ -262,7 +273,7 @@ mod blocking_and_async_io {
             .collect();
         let succeeded = std::fs::read_to_string(dir.join("exit-code"))?.trim() == "0";
         match expect {
-            AsGit => {
+            AsGit | AsGitSince(_) => {
                 let outcome = result?;
                 assert_eq!(
                     outcome.porcelain(&repo),
