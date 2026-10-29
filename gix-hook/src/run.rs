@@ -408,7 +408,8 @@ fn resolve(command: &Path, search_path: &OsStr, working_dir: &Path) -> Result<Pr
 }
 
 /// Find `command` in `search_path` as Git's `locate_in_PATH()` does: the first regular file its owner may execute.
-/// An empty entry stands for the working directory of Git, taken to be `working_dir`.
+/// Relative entries, and an empty one, which stands for the current directory, are taken from `working_dir`, the
+/// directory the hook runs in, where Git works when it runs hooks.
 #[cfg(unix)]
 fn locate_in_path(command: &Path, search_path: &OsStr, working_dir: &Path) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
@@ -417,13 +418,7 @@ fn locate_in_path(command: &Path, search_path: &OsStr, working_dir: &Path) -> Op
         return None;
     }
     std::env::split_paths(search_path)
-        .map(|dir| {
-            if dir.as_os_str().is_empty() {
-                working_dir.join(command)
-            } else {
-                dir.join(command)
-            }
-        })
+        .map(|dir| working_dir.join(dir).join(command))
         .find(|path| {
             std::fs::metadata(path)
                 .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o100 != 0)
@@ -443,11 +438,11 @@ fn resolve(command: &Path, search_path: &OsStr, working_dir: &Path) -> Result<Pr
     let program = if has_separator {
         working_dir.join(command)
     } else {
-        lookup(command.as_os_str(), search_path, false).ok_or_raise(|| not_found(command))?
+        lookup(command.as_os_str(), search_path, working_dir, false).ok_or_raise(|| not_found(command))?
     };
     Ok(match interpreter(&program) {
         Some(name) => Program {
-            program: lookup(&name, search_path, true).ok_or_raise(|| {
+            program: lookup(&name, search_path, working_dir, true).ok_or_raise(|| {
                 message("Could not find the interpreter of a hook in PATH")
                     .not_found()
                     .with_program(&name)
@@ -463,14 +458,15 @@ fn resolve(command: &Path, search_path: &OsStr, working_dir: &Path) -> Result<Pr
 
 /// Look up `name` in the non-empty entries of `search_path` as Git for Windows' `path_lookup()` does: in each, first as
 /// `name` with `.exe` appended unless `name` ends in `.exe`, then as `name`, if that's not a directory and `exe_only`
-/// is `false` or `name` ends in `.exe`.
+/// is `false` or `name` ends in `.exe`. Relative entries are taken from `working_dir`, the directory the hook runs in,
+/// where Git works when it runs hooks.
 #[cfg(not(unix))]
-fn lookup(name: &OsStr, search_path: &OsStr, exe_only: bool) -> Option<PathBuf> {
+fn lookup(name: &OsStr, search_path: &OsStr, working_dir: &Path, exe_only: bool) -> Option<PathBuf> {
     let is_exe = has_exe_extension(name);
     std::env::split_paths(search_path)
         .filter(|dir| !dir.as_os_str().is_empty())
         .find_map(|dir| {
-            let path = dir.join(name);
+            let path = working_dir.join(dir).join(name);
             if !is_exe {
                 let mut with_exe = path.clone().into_os_string();
                 with_exe.push(".exe");
@@ -527,4 +523,38 @@ fn interpreter(program: &Path) -> Option<OsString> {
     gix_path::from_byte_slice(name)
         .ok()
         .map(|name| name.as_os_str().to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{ffi::OsStr, path::Path};
+
+    /// Git looks up the programs of hooks where they run, so a relative entry of `PATH` is taken from the directory
+    /// hooks run in, wherever this process works, and the program that is found there is the one that starts.
+    #[test]
+    fn relative_path_entries_are_taken_from_the_directory_hooks_run_in() -> gix_testtools::Result {
+        let dir = gix_testtools::tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join("bin"))?;
+        let program = dir.path().join("bin").join(if cfg!(windows) {
+            "relative-hook.exe"
+        } else {
+            "relative-hook"
+        });
+        std::fs::write(&program, b"")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))?;
+        }
+        assert!(
+            !Path::new("bin").exists(),
+            "the current directory of the test has no `bin` directory to find the program in"
+        );
+        let found = super::resolve(Path::new("relative-hook"), OsStr::new("bin"), dir.path())?;
+        assert_eq!(
+            found.program, program,
+            "the program is found in the `bin` directory of the directory hooks run in"
+        );
+        Ok(())
+    }
 }
