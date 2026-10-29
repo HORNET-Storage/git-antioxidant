@@ -168,6 +168,51 @@ fn a_tree_with_more_than_one_entry_at_a_path_is_refused() -> TestResult {
 }
 
 #[test]
+fn index_paths_that_cant_be_in_a_worktree_are_refused_before_their_files_are_removed() -> TestResult {
+    for reset in [Reset::Hard, Reset::Merge] {
+        for path in ["../outside", ".git/config"] {
+            let (case, tmp) = case("clean", reset)?.writable_copy()?;
+            let outside = tmp.path().join("outside");
+            std::fs::write(&outside, "outside\n")?;
+            let config = case.git_dir().join("config");
+            let config_before = std::fs::read(&config)?;
+            let mut index = case.index()?;
+            let id = index.entries()[0].id;
+            index.dangerously_push_entry(
+                entry::Stat::default(),
+                id,
+                entry::Flags::empty(),
+                entry::Mode::FILE,
+                path.into(),
+            );
+            index.sort_entries();
+            let snapshot = Snapshot::take(&case, &index)?;
+
+            let err = reset_index(&case, &mut index, reset, &AtomicBool::new(false))?
+                .expect_err("the reset would remove a file that isn't in the worktree");
+            assert!(err.is_corrupted(), "{reset:?} {path}: {err:?}");
+            assert_eq!(
+                err.error().to_string(),
+                format!("The index has the path '{path}', which can't be in a worktree"),
+                "{reset:?}"
+            );
+            snapshot.assert_unchanged(&case, &index)?;
+            assert_eq!(
+                std::fs::read(&outside)?,
+                b"outside\n",
+                "{reset:?} {path}: the file outside the worktree stays"
+            );
+            assert_eq!(
+                std::fs::read(&config)?,
+                config_before,
+                "{reset:?} {path}: the configuration stays"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn an_interrupted_reset_changes_nothing() -> TestResult {
     for reset in [Reset::Hard, Reset::Merge, Reset::Keep] {
         let (case, _tmp) = case("clean", reset)?.writable_copy()?;

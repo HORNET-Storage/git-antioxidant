@@ -38,8 +38,9 @@ const OPERATION: &str = "reset";
 ///
 /// Nothing changes if `index` is sparse or has entries that are excluded from a sparse checkout, if the stack of `ctx`
 /// doesn't provide both attributes and exclude patterns, if a tree doesn't use the hash of `index`, can't be read, has a
-/// path that can't be checked out or more than one entry at a path, or if the reset is interrupted before the worktree
-/// changes. Once the worktree changes, the errors of single files are reported in [`Changes`] instead.
+/// path that can't be checked out or more than one entry at a path, if a hard or merge reset would remove the file of a
+/// path of `index` that can't be in a worktree, or if the reset is interrupted before the worktree changes. Once the
+/// worktree changes, the errors of single files are reported in [`Changes`] instead.
 pub fn reset<O>(
     index: &mut State,
     worktree: &Path,
@@ -122,6 +123,7 @@ where
     } = ctx;
 
     let mut plan = Plan::one_way(index, target);
+    validate_removed_paths(&plan, options.checkout.validate)?;
     check_interrupt(should_interrupt, OPERATION)?;
     let cwd = path::relative_current_dir(worktree, current_dir, options.checkout.fs);
     let cwd = cwd.as_ref().map(|cwd| cwd.as_bstr());
@@ -161,6 +163,20 @@ where
     result.set_timestamp(start);
     *index = result;
     Ok(Outcome::Reset(changes))
+}
+
+/// Fail if a path that only the index has, whose file the reset removes, can't be in a worktree, as `validate` decides.
+/// Git never adds such a path to the index, as `verify_path()` refuses it, and removing its file could reach into the Git
+/// directory or out of the worktree. The paths of the tree were validated when it was read.
+fn validate_removed_paths(plan: &Plan, validate: component::Options) -> Result<()> {
+    for change in plan.changes.iter().filter(|change| change.new.is_none()) {
+        let path = change.path.as_bstr();
+        for name in path.split_str("/") {
+            component(name.as_bstr(), None, validate)
+                .or_raise(|| message!("The index has the path '{path}', which can't be in a worktree").corrupted())?;
+        }
+    }
+    Ok(())
 }
 
 /// Reset the entries of `index` at the paths that `is_selected` selects to those of `tree`, without changing the worktree,
