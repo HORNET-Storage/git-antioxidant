@@ -293,3 +293,110 @@ pub mod tree {
         }
     }
 }
+
+/// Apply the outcome of a tree merge to the index and the worktree, with
+/// [`Repository::apply_merge_result()`](crate::Repository::apply_merge_result()).
+#[cfg(feature = "reset")]
+pub mod apply {
+    use gix_error::ClassificationMarker;
+    use gix_hash::ObjectId;
+
+    use crate::bstr::BString;
+    pub use gix_worktree_state::switch::{Changes, Refusals};
+
+    /// What [`Repository::apply_merge_result()`](crate::Repository::apply_merge_result()) did.
+    #[derive(Debug)]
+    pub struct Outcome {
+        /// The tree of the merge, with the merged entries and the files of the unresolved conflicts with their conflict
+        /// markers, which the worktree and the unconflicted entries of the index hold now, and to which the
+        /// pseudo-reference `AUTO_MERGE` points.
+        pub tree_id: ObjectId,
+        /// What changed in the index and the worktree as they switched from the tree of `HEAD` to `tree_id`.
+        pub changes: Changes,
+        /// `true` if the index got the stages of unresolved conflicts, which leaves it with conflicts.
+        pub conflicts: bool,
+    }
+
+    /// The reasons for which [`Repository::apply_merge_result()`](crate::Repository::apply_merge_result()) changes
+    /// nothing, where the checkout of `merge_switch_to_result()` in `merge-ort.c` refuses with Git's messages.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[non_exhaustive]
+    pub enum Error {
+        /// The repository has no worktree.
+        BareRepository,
+        /// Switching the index and the worktree to the merged tree would lose the changes or the untracked files of
+        /// these paths, or the index has conflicts.
+        Refused {
+            /// The refused paths in the groups of Git's messages.
+            refusals: Refusals,
+        },
+    }
+
+    impl std::fmt::Display for Error {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Error::BareRepository => f.write_str("this operation must be run in a work tree"),
+                Error::Refused { refusals } => {
+                    let mut local_changes: Vec<&BString> = refusals
+                        .staged_changes
+                        .iter()
+                        .chain(&refusals.unstaged_changes)
+                        .collect();
+                    local_changes.sort();
+                    local_changes.dedup();
+                    let groups: [(Vec<&BString>, &str, Option<&str>); 6] = [
+                        (
+                            refusals.unmerged.iter().collect(),
+                            "you need to resolve your current index first",
+                            None,
+                        ),
+                        (
+                            local_changes,
+                            "Your local changes to the following files would be overwritten by merge:",
+                            Some("Please commit your changes or stash them before you merge."),
+                        ),
+                        (
+                            refusals.directories_with_untracked_files.iter().collect(),
+                            "Updating the following directories would lose untracked files in them:",
+                            None,
+                        ),
+                        (
+                            refusals.current_dir.iter().collect(),
+                            "Refusing to remove the current working directory:",
+                            None,
+                        ),
+                        (
+                            refusals.untracked_removed.iter().collect(),
+                            "The following untracked working tree files would be removed by merge:",
+                            Some("Please move or remove them before you merge."),
+                        ),
+                        (
+                            refusals.untracked_overwritten.iter().collect(),
+                            "The following untracked working tree files would be overwritten by merge:",
+                            Some("Please move or remove them before you merge."),
+                        ),
+                    ];
+                    for (paths, header, footer) in groups.iter().filter(|(paths, _, _)| !paths.is_empty()) {
+                        writeln!(f, "{header}")?;
+                        for path in paths {
+                            writeln!(f, "\t{path}")?;
+                        }
+                        if let Some(footer) = footer {
+                            writeln!(f, "{footer}")?;
+                        }
+                    }
+                    f.write_str("Aborting")
+                }
+            }
+        }
+    }
+
+    impl std::error::Error for Error {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                Error::BareRepository => Some(const { &ClassificationMarker::VALIDATION }),
+                Error::Refused { .. } => Some(const { &ClassificationMarker::CONFLICT }),
+            }
+        }
+    }
+}

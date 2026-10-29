@@ -122,3 +122,12 @@
 # Generate this small, configuration-only hooks fixture.
 /make_hooks_repos.tar
 /make_hooks_repos_sha256.tar
+# The tests of committing, resetting and applying merges repeat with gix what the Git of the test host did, running
+# the same hooks and comparing the same index timestamps, so these fixtures are always made by the test host instead
+# of being archived.
+/make_commit_repos.tar
+/make_commit_repos_sha256.tar
+/make_reset_repos.tar
+/make_reset_repos_sha256.tar
+/make_merge_apply_repos.tar
+/make_merge_apply_repos_sha256.tar

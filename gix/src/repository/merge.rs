@@ -313,3 +313,108 @@ impl Repository {
         })
     }
 }
+
+/// Applying merge results
+#[cfg(feature = "reset")]
+impl Repository {
+    /// Apply `outcome`, the result of a merge with [`merge_trees()`](Self::merge_trees()) or
+    /// [`merge_commits()`](Self::merge_commits()) into `head_tree`, the tree of `HEAD`, to the index and the worktree, as
+    /// `merge_switch_to_result()` in `merge-ort.c` does for `git merge`, `git rebase` and `git cherry-pick`, and return
+    /// what changed.
+    ///
+    /// * The tree of `outcome` is written. The files of its unresolved conflicts hold their conflict markers.
+    /// * The index and the worktree switch from `head_tree` to that tree, as [`gix_worktree_state::switch()`] does with
+    ///   the two-way merge of Git's `unpack_trees()`, which `checkout()` in `merge-ort.c` runs. It refuses local
+    ///   changes and untracked files in the way, as it refuses an index with conflicts, and if it does, nothing changes
+    ///   and [`Refused`](crate::merge::apply::Error::Refused) lists the paths.
+    /// * Then each conflict that Git leaves unresolved, as [`TreatAsUnresolved::git()`](crate::merge::tree::TreatAsUnresolved::git())
+    ///   decides, replaces the entry of its path in the index with its stages, as `record_conflicted_index_entries()`
+    ///   does, and the cache tree is invalidated along these paths.
+    /// * Last, the index is written, and the pseudo-reference `AUTO_MERGE` points to the merged tree, without reflog
+    ///   entry, as Git writes it.
+    ///
+    /// `should_interrupt` stops the switch as long as the worktree didn't change yet.
+    ///
+    /// ### Deviation
+    ///
+    /// * The deviations of [`gix_worktree_state::switch()`] apply.
+    /// * Sparse checkouts aren't supported, where Git checks out the conflicted files that its sparse checkout excludes.
+    /// * Staged changes of the paths that the merge doesn't change stay, as the two-way merge keeps them, while
+    ///   `merge_start()` makes Git refuse to merge at all if the index differs from `HEAD`, before the merge.
+    pub fn apply_merge_result(
+        &self,
+        head_tree: impl Into<gix_hash::ObjectId>,
+        outcome: &mut crate::merge::tree::Outcome<'_>,
+        should_interrupt: &std::sync::atomic::AtomicBool,
+    ) -> Result<crate::merge::apply::Outcome> {
+        use gix_ref::{
+            FullName,
+            transaction::{PreviousValue, RefEdit},
+        };
+
+        use super::{commit::LockedIndex, reset::WorktreeContext};
+        use crate::{
+            error::{ResultExt, bail, message},
+            merge::{apply::Error as Refused, tree::apply_index_entries::RemovalMode},
+        };
+
+        if self.workdir().is_none() {
+            bail!(Refused::BareRepository);
+        }
+        let head_tree = head_tree.into();
+        let tree_id = outcome.tree.write()?.detach();
+        let LockedIndex { lock, mut index } = self.lock_index()?;
+        let WorktreeContext {
+            worktree,
+            git_dir_realpath,
+            stack,
+            options,
+        } = self.worktree_context(&index)?;
+        let objects = self
+            .objects
+            .clone()
+            .into_arc()
+            .or_raise(|| message("Could not share the object database for the checkout"))?;
+        let changes = match gix_worktree_state::switch(
+            &mut index,
+            &worktree,
+            Some(head_tree.as_ref()),
+            &tree_id,
+            objects,
+            gix_worktree_state::switch::Context {
+                stack,
+                git_dir_realpath: &git_dir_realpath,
+                current_dir: self.current_dir(),
+                should_interrupt,
+            },
+            options,
+        )? {
+            gix_worktree_state::switch::Outcome::Switched(changes) => changes,
+            gix_worktree_state::switch::Outcome::Refused(refusals) => bail!(Refused::Refused { refusals }),
+        };
+
+        let conflicts = outcome.index_changed_after_applying_conflicts(
+            &mut index,
+            crate::merge::tree::TreatAsUnresolved::git(),
+            RemovalMode::Prune,
+        );
+        if conflicts && let Some(mut cache_tree) = index.remove_tree() {
+            for entry in index.entries().iter().filter(|entry| entry.stage_raw() != 0) {
+                cache_tree.invalidate_path(entry.path(&index));
+            }
+            index.set_tree(cache_tree);
+        }
+        self.write_locked_index(lock, &index)?;
+        self.edit_reference(RefEdit::update(
+            FullName::try_from("AUTO_MERGE").or_error()?,
+            tree_id,
+            PreviousValue::Any,
+            "",
+        ))?;
+        Ok(crate::merge::apply::Outcome {
+            tree_id,
+            changes,
+            conflicts,
+        })
+    }
+}

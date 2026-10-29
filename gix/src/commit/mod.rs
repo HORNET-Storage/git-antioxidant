@@ -10,6 +10,11 @@ pub mod sign;
 #[cfg(feature = "command")]
 pub mod verify;
 
+pub mod message;
+
+#[cfg(feature = "index")]
+pub mod index;
+
 #[cfg(feature = "command")]
 fn signature_program(
     config: &crate::config::Snapshot<'_>,

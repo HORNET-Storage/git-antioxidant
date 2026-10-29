@@ -98,3 +98,126 @@ fn merges_ignore_big_file_threshold_as_git_does() -> TestResult {
     );
     Ok(())
 }
+
+/// Applying the result of merging `topic` into `main` to the index and the worktree, compared with what
+/// `git merge --no-commit topic` does.
+#[cfg(feature = "reset")]
+mod apply {
+    use std::sync::atomic::AtomicBool;
+
+    use gix::merge::{
+        apply::{Error, Outcome, Refusals},
+        blob::builtin_driver::text::Labels,
+    };
+
+    use crate::repository::commit::baseline::Scenario;
+
+    /// The files of the Git directory that applying a merge writes, which `gix` has to leave as Git does.
+    const STATE: &[&str] = &["HEAD", "AUTO_MERGE"];
+
+    /// Merge `topic` into `HEAD` in the scenario `name` with `gix` and apply the result, and return the scenario with
+    /// what applying it did.
+    fn merge_topic(name: &str) -> crate::Result<(Scenario, gix::Result<Outcome>)> {
+        let scenario = Scenario::new("make_merge_apply_repos.sh", name)?;
+        let outcome = {
+            let repo = &scenario.repo;
+            let mut merge = repo.merge_commits(
+                repo.head_id()?.detach(),
+                repo.find_reference("topic")?.peel_to_id()?.detach(),
+                Labels {
+                    ancestor: None,
+                    current: Some("HEAD".into()),
+                    other: Some("topic".into()),
+                },
+                repo.tree_merge_options()?.into(),
+            )?;
+            repo.apply_merge_result(
+                repo.head_tree_id()?.detach(),
+                &mut merge.tree_merge,
+                &AtomicBool::new(false),
+            )
+        };
+        Ok((scenario, outcome))
+    }
+
+    /// Merge as `merge_topic()` does, assert that `gix` refused with the messages of Git, left the repository as Git did
+    /// and wrote no `AUTO_MERGE`, and return why it refused.
+    fn refuses_as_git(name: &str) -> crate::Result<Error> {
+        let (scenario, outcome) = merge_topic(name)?;
+        let err = outcome.expect_err("Git refused to merge as well");
+        // After its strategy failed, `git merge` restores the local changes with `git stash apply`, whose merge writes
+        // `AUTO_MERGE`, so only `HEAD` is compared.
+        scenario.assert_same_as_git(&["HEAD"])?;
+        assert!(
+            !scenario.repo.git_dir().join("AUTO_MERGE").exists(),
+            "{name}: nothing points to the merge that wasn't applied"
+        );
+        let refusal = err
+            .downcast_any_ref::<Error>()
+            .cloned()
+            .unwrap_or_else(|| panic!("{name}: a refusal to apply the merge, not {err:?}"));
+        let messages = scenario.git_messages()?;
+        assert_eq!(
+            refusal.to_string().lines().collect::<Vec<_>>(),
+            messages
+                .iter()
+                .map(String::as_str)
+                .take_while(|line| !line.starts_with("Merge with strategy"))
+                .collect::<Vec<_>>(),
+            "{name}: the messages of the checkout of Git"
+        );
+        Ok(refusal)
+    }
+
+    #[test]
+    fn clean_merge() -> crate::Result {
+        let (scenario, outcome) = merge_topic("clean")?;
+        assert!(!outcome?.conflicts);
+        scenario.assert_same_as_git(STATE)?;
+        Ok(())
+    }
+
+    #[test]
+    fn conflicts_get_their_stages_and_markers() -> crate::Result {
+        let (scenario, outcome) = merge_topic("conflict")?;
+        assert!(outcome?.conflicts, "`a` and `c` conflict");
+        scenario.assert_same_as_git(STATE)?;
+        Ok(())
+    }
+
+    #[test]
+    fn local_changes_and_untracked_files_out_of_the_way_stay() -> crate::Result {
+        let (scenario, outcome) = merge_topic("kept")?;
+        outcome?;
+        scenario.assert_same_as_git(STATE)?;
+        Ok(())
+    }
+
+    #[test]
+    fn local_changes_in_the_way_are_refused() -> crate::Result {
+        assert_eq!(
+            refuses_as_git("refused-change")?,
+            Error::Refused {
+                refusals: Refusals {
+                    unstaged_changes: vec!["a".into()],
+                    ..Default::default()
+                }
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn untracked_files_in_the_way_are_refused() -> crate::Result {
+        assert_eq!(
+            refuses_as_git("refused-untracked")?,
+            Error::Refused {
+                refusals: Refusals {
+                    untracked_overwritten: vec!["t".into()],
+                    ..Default::default()
+                }
+            }
+        );
+        Ok(())
+    }
+}

@@ -19,6 +19,13 @@ impl Core {
     /// The `core.checkStat` key.
     pub const CHECK_STAT: CheckStat =
         CheckStat::new_with_validate("checkStat", &config::Tree::CORE, validate::CheckStat);
+    /// The `core.commentChar` key, the prefix of the comment lines of commit messages, which
+    /// [`core.commentString`](Self::COMMENT_STRING) sets as well. Git uses the last value of either key.
+    pub const COMMENT_CHAR: CommentPrefix =
+        CommentPrefix::new_with_validate("commentChar", &config::Tree::CORE, validate::CommentPrefix);
+    /// The `core.commentString` key, which sets the same prefix as [`core.commentChar`](Self::COMMENT_CHAR).
+    pub const COMMENT_STRING: CommentPrefix =
+        CommentPrefix::new_with_validate("commentString", &config::Tree::CORE, validate::CommentPrefix);
     /// The `core.deltaBaseCacheLimit` key.
     pub const DELTA_BASE_CACHE_LIMIT: keys::UnsignedInteger =
         keys::UnsignedInteger::new_unsigned_integer("deltaBaseCacheLimit", &config::Tree::CORE)
@@ -137,6 +144,8 @@ impl Section for Core {
             &Self::COMPRESSION,
             &Self::LOOSE_COMPRESSION,
             &Self::CHECK_STAT,
+            &Self::COMMENT_CHAR,
+            &Self::COMMENT_STRING,
             &Self::DELTA_BASE_CACHE_LIMIT,
             &Self::DISAMBIGUATE,
             &Self::EDITOR,
@@ -198,6 +207,9 @@ pub type RepositoryFormatVersion = keys::Any<validate::RepositoryFormatVersion>;
 
 /// The `core.sharedRepository` key.
 pub type SharedRepository = keys::Any<validate::SharedRepository>;
+
+/// The `core.commentChar` and `core.commentString` keys.
+pub type CommentPrefix = keys::Any<validate::CommentPrefix>;
 
 #[cfg(feature = "attributes")]
 mod filter {
@@ -552,8 +564,54 @@ mod abbrev {
     }
 }
 
+mod comment_prefix {
+    use crate::{Result, bstr::ByteSlice, commit::message, config, config::tree::core::CommentPrefix, error::bail};
+
+    impl CommentPrefix {
+        /// Return the prefix of comment lines that `value` sets, as Git reads `core.commentChar` and
+        /// `core.commentString`: `auto` in any case, which chooses a prefix for each message, or the value itself,
+        /// which must neither be empty nor contain a line feed. `None` stands for the key without a value, which Git
+        /// refuses as well.
+        pub fn try_into_comment_prefix(
+            &'static self,
+            value: Option<impl gix_utils::AsBStr>,
+        ) -> Result<message::CommentPrefix> {
+            let Some(value) = value else {
+                bail!(config::key::error(self, "The comment prefix needs a value"));
+            };
+            let value = value.as_bstr();
+            if value.as_bytes().eq_ignore_ascii_case(b"auto") {
+                Ok(message::CommentPrefix::Auto)
+            } else if value.is_empty() {
+                bail!(config::key::error_with_value(
+                    self,
+                    "The comment prefix must have at least one character",
+                    value
+                ))
+            } else if value.contains(&b'\n') {
+                bail!(config::key::error_with_value(
+                    self,
+                    "The comment prefix cannot contain a newline",
+                    value
+                ))
+            } else {
+                Ok(message::CommentPrefix::Fixed(value.to_owned()))
+            }
+        }
+    }
+}
+
 mod validate {
     use crate::{Result, bstr::BStr, config::tree::keys};
+
+    #[derive(Clone, Copy)]
+    pub struct CommentPrefix;
+    impl keys::Validate for CommentPrefix {
+        fn validate(&self, value: &BStr) -> Result {
+            super::Core::COMMENT_CHAR.try_into_comment_prefix(Some(value))?;
+            Ok(())
+        }
+    }
 
     #[derive(Clone, Copy)]
     pub struct RepositoryFormatVersion;
