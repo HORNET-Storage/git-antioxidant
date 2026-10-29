@@ -82,7 +82,7 @@ fn delta_search(repo: &Repository) -> Result<DeltaSearch> {
             .with_leniency(lenient)?
             .unwrap_or(defaults.depth),
         window_memory: Pack::WINDOW_MEMORY
-            .try_into_u64(resolved.integer_filter(Pack::WINDOW_MEMORY, &mut repo.filter_config_section()))
+            .try_into_window_memory(resolved.integer_filter(Pack::WINDOW_MEMORY, &mut repo.filter_config_section()))
             .with_leniency(lenient)?
             .unwrap_or(defaults.window_memory),
         delta_cache_size: Pack::DELTA_CACHE_SIZE

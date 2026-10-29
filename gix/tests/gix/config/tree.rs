@@ -1436,9 +1436,24 @@ mod pack {
 
     #[test]
     fn window_memory() -> TestResult {
-        assert_eq!(Pack::WINDOW_MEMORY.try_into_u64(int(1 << 33))?, Some(1 << 33));
-        assert_eq!(Pack::WINDOW_MEMORY.try_into_u64(Ok(None))?, None);
-        assert!(Pack::WINDOW_MEMORY.validate("8g".into()).is_ok());
+        assert_eq!(
+            Pack::WINDOW_MEMORY.try_into_window_memory(int(1 << 33))?,
+            Some(1 << 33),
+            "values of 4 GiB or more are read on every platform"
+        );
+        assert_eq!(Pack::WINDOW_MEMORY.try_into_window_memory(Ok(None))?, None);
+        crate::config::key::assert_config_error(
+            &Pack::WINDOW_MEMORY
+                .try_into_window_memory(int(-1))
+                .expect_err("Git reads the window memory as an unsigned number"),
+            "pack.windowMemory",
+            Some((-1_i64).into()),
+            None,
+        );
+        assert!(
+            Pack::WINDOW_MEMORY.validate("8g".into()).is_ok(),
+            "validation accepts what reading accepts, on every platform"
+        );
         assert!(
             Pack::WINDOW_MEMORY.validate("-1".into()).is_err(),
             "Git reads the window memory as an unsigned number"

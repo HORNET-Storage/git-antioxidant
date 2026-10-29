@@ -23,15 +23,15 @@ impl Pack {
     pub const DEPTH: Depth = Depth::new_with_validate("depth", &config::Tree::PACK, validate::Depth);
 
     /// The `pack.windowMemory` key.
-    pub const WINDOW_MEMORY: keys::UnsignedInteger =
-        keys::UnsignedInteger::new_unsigned_integer("windowMemory", &config::Tree::PACK).with_deviation(
-            "Values of 4 GiB or more are read as Git reads them on Linux and macOS, while Git for Windows, whose `unsigned long` has 32 bits, refuses them",
+    pub const WINDOW_MEMORY: WindowMemory =
+        WindowMemory::new_with_validate("windowMemory", &config::Tree::PACK, validate::WindowMemory).with_deviation(
+            "Values of 4 GiB or more are read on every platform, as Git reads them on 64-bit Linux and macOS, while Git for Windows and Git on 32-bit platforms, whose `unsigned long` has 32 bits, refuse them",
         );
 
     /// The `pack.deltaCacheSize` key.
     pub const DELTA_CACHE_SIZE: DeltaCacheSize =
         DeltaCacheSize::new_with_validate("deltaCacheSize", &config::Tree::PACK, validate::DeltaCacheSize).with_deviation(
-            "A negative value is converted to an unsigned number of 64 bits, as Git converts it on Linux and macOS, while Git for Windows, whose `unsigned long` has 32 bits, converts it to one of 32 bits",
+            "A negative value is converted to an unsigned number of 64 bits on every platform, as Git converts it on 64-bit Linux and macOS, while Git for Windows and Git on 32-bit platforms, whose `unsigned long` has 32 bits, convert it to one of 32 bits",
         );
 
     /// The `pack.deltaCacheLimit` key.
@@ -48,6 +48,9 @@ pub type Window = keys::Any<validate::Window>;
 /// The `pack.depth` key.
 pub type Depth = keys::Any<validate::Depth>;
 
+/// The `pack.windowMemory` key.
+pub type WindowMemory = keys::Any<validate::WindowMemory>;
+
 /// The `pack.deltaCacheSize` key.
 pub type DeltaCacheSize = keys::Any<validate::DeltaCacheSize>;
 
@@ -60,7 +63,7 @@ mod delta_search {
 
     use crate::{
         Result, config,
-        config::tree::sections::pack::{DeltaCacheLimit, DeltaCacheSize, Depth, Window},
+        config::tree::sections::pack::{DeltaCacheLimit, DeltaCacheSize, Depth, Window, WindowMemory},
     };
 
     impl Window {
@@ -76,6 +79,21 @@ mod delta_search {
         /// ones, as in `git pack-objects`.
         pub fn try_into_depth(&'static self, value: Result<Option<i64>>) -> Result<Option<u32>> {
             Ok(int(self, value)?.map(|depth| u32::try_from(depth).map_or(0, |depth| depth.min(MAX_DEPTH))))
+        }
+    }
+
+    impl WindowMemory {
+        /// The most bytes that the objects in the window of each thread of the delta search may take, as `value`
+        /// configures it, or 0 for no limit. A negative value is an error, as `git pack-objects` reads an unsigned
+        /// number, while values of 4 GiB or more are read on every platform.
+        pub fn try_into_window_memory(&'static self, value: Result<Option<i64>>) -> Result<Option<u64>> {
+            let value = value.or_raise(|| config::key::error(self, "Could not parse an unsigned integer"))?;
+            value
+                .map(|value| {
+                    u64::try_from(value)
+                        .or_raise(|| config::key::error_with_value(self, "Could not parse an unsigned integer", value))
+                })
+                .transpose()
         }
     }
 
@@ -185,6 +203,16 @@ mod validate {
     impl keys::Validate for Depth {
         fn validate(&self, value: &BStr) -> Result {
             super::Pack::DEPTH.try_into_depth(gix_config::Integer::from_bytes::<i64>(value).map(Some))?;
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    pub struct WindowMemory;
+    impl keys::Validate for WindowMemory {
+        fn validate(&self, value: &BStr) -> Result {
+            super::Pack::WINDOW_MEMORY
+                .try_into_window_memory(gix_config::Integer::from_bytes::<i64>(value).map(Some))?;
             Ok(())
         }
     }
