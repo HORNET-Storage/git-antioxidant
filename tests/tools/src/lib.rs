@@ -612,6 +612,8 @@ fn spawn_git_daemon_process(working_dir: impl AsRef<Path>) -> std::io::Result<Gi
         configure_git_environment(&mut cmd, working_dir.as_ref())
             .current_dir(working_dir)
             .args(["--verbose", "--base-path=.", "--export-all", "--user-path"])
+            // Only the tests connect, through the loopback interface, so the daemon doesn't listen on the others.
+            .arg("--listen=127.0.0.1")
             .arg(format!("--port={free_port}"))
             .spawn()?
     };
