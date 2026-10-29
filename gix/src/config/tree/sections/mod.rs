@@ -111,6 +111,11 @@ pub mod protocol;
 pub struct Push;
 pub mod push;
 
+/// The `rebase` top-level section.
+#[derive(Copy, Clone, Default)]
+pub struct Rebase;
+pub mod rebase;
+
 /// The `remote` top-level section.
 #[derive(Copy, Clone, Default)]
 pub struct Remote;
@@ -120,6 +125,11 @@ pub mod remote;
 #[derive(Copy, Clone, Default)]
 pub struct Safe;
 mod safe;
+
+/// The `sequence` top-level section.
+#[derive(Copy, Clone, Default)]
+pub struct Sequence;
+pub mod sequence;
 
 /// The `ssh` top-level section.
 #[derive(Copy, Clone, Default)]

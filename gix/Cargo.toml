@@ -78,6 +78,7 @@ extras = [
     "notes",
     "hooks",
     "reset",
+    "rebase",
 ]
 
 ## Various progress-related features that improve the look of progress message units.
@@ -102,6 +103,8 @@ sha1 = [
     "gix-note?/sha1",
     "gix-worktree-stream?/sha1",
     "gix-hook?/sha1",
+    "gix-sequencer?/sha1",
+    "gix-rebase?/sha1",
 ]
 
 ## Enable support for the SHA-256 hash throughout the `gix` stack.
@@ -112,6 +115,8 @@ sha256 = [
     "gix-note?/sha256",
     "gix-worktree-stream?/sha256",
     "gix-hook?/sha256",
+    "gix-sequencer?/sha256",
+    "gix-rebase?/sha256",
 ]
 
 #! #### Components
@@ -149,6 +154,10 @@ hooks = ["dep:gix-hook"]
 
 ## Reset the index and the worktree to a tree, as `git reset` does.
 reset = ["worktree-mutation", "gix-worktree-state/reset"]
+
+## Rebase branches as `git rebase` does, with the todo lists and state of `gix-sequencer` and the plans of `gix-rebase`.
+## The editor of interactive rebases and the commands of `exec` lines start through `gix-command`.
+rebase = ["merge", "reset", "command", "dep:gix-sequencer", "dep:gix-rebase"]
 
 ## Retrieve a worktree stack for querying exclude information
 excludes = ["dep:gix-ignore", "dep:gix-worktree", "index"]
@@ -413,6 +422,8 @@ gix-status = { version = "^0.37.0", path = "../gix-status", optional = true, fea
 ] }
 gix-command = { version = "^0.12.1", path = "../gix-command", optional = true }
 gix-hook = { version = "^0.0.0", path = "../gix-hook", optional = true, features = ["run"] }
+gix-sequencer = { version = "^0.0.0", path = "../gix-sequencer", optional = true }
+gix-rebase = { version = "^0.0.0", path = "../gix-rebase", optional = true }
 
 gix-worktree-stream = { version = "^0.39.0", path = "../gix-worktree-stream", optional = true }
 gix-archive = { version = "^0.39.0", path = "../gix-archive", default-features = false, optional = true }

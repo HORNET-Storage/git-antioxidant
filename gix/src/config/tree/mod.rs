@@ -61,10 +61,14 @@ pub(crate) mod root {
         pub const PROTOCOL: sections::Protocol = sections::Protocol;
         /// The `push` section.
         pub const PUSH: sections::Push = sections::Push;
+        /// The `rebase` section.
+        pub const REBASE: sections::Rebase = sections::Rebase;
         /// The `remote` section.
         pub const REMOTE: sections::Remote = sections::Remote;
         /// The `safe` section.
         pub const SAFE: sections::Safe = sections::Safe;
+        /// The `sequence` section.
+        pub const SEQUENCE: sections::Sequence = sections::Sequence;
         /// The `ssh` section.
         pub const SSH: sections::Ssh = sections::Ssh;
         /// The `status` section.
@@ -103,8 +107,10 @@ pub(crate) mod root {
                 &Self::PACK,
                 &Self::PROTOCOL,
                 &Self::PUSH,
+                &Self::REBASE,
                 &Self::REMOTE,
                 &Self::SAFE,
+                &Self::SEQUENCE,
                 &Self::SSH,
                 #[cfg(feature = "status")]
                 &Self::STATUS,
@@ -119,8 +125,9 @@ pub(crate) mod root {
 mod sections;
 pub use sections::{
     Author, Branch, Checkout, Clone, Commit, Committer, Core, Credential, Extensions, Fetch, Gitoxide, Gpg, Http,
-    Index, Init, Mailmap, Merge, Notes, Pack, Protocol, Push, Remote, Safe, Ssh, Url, User, Worktree, branch, checkout,
-    commit, core, credential, extensions, fetch, gitoxide, gpg, http, index, notes, protocol, push, remote, ssh,
+    Index, Init, Mailmap, Merge, Notes, Pack, Protocol, Push, Rebase, Remote, Safe, Sequence, Ssh, Url, User, Worktree,
+    branch, checkout, commit, core, credential, extensions, fetch, gitoxide, gpg, http, index, notes, protocol, push,
+    rebase, remote, sequence, ssh,
 };
 #[cfg(feature = "blob-diff")]
 pub use sections::{Diff, diff};

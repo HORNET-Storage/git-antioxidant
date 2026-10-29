@@ -128,6 +128,8 @@ mod note;
 mod object;
 #[cfg(feature = "attributes")]
 mod pathspec;
+#[cfg(feature = "rebase")]
+mod rebase;
 mod reference;
 mod remote;
 #[cfg(feature = "reset")]
