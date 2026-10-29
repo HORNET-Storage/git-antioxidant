@@ -16,7 +16,7 @@ impl crate::Repository {
     /// # fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     /// # mod doctest { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/doctest.rs")); }
     /// # let repo = doctest::open_repo(doctest::basic_repo_dir()?)?;
-    /// let remote = repo.remote_at("https://github.com/byron/gitoxide")?;
+    /// let remote = repo.remote_at("https://github.com/HORNET-Storage/git-antioxidant")?;
     ///
     /// assert_eq!(remote.name(), None);
     /// assert_eq!(
@@ -24,7 +24,7 @@ impl crate::Repository {
     ///         .url(gix::remote::Direction::Fetch)
     ///         .expect("fetch URL")
     ///         .to_bstring(),
-    ///     "https://github.com/byron/gitoxide"
+    ///     "https://github.com/HORNET-Storage/git-antioxidant"
     /// );
     /// # Ok(()) }
     /// ```

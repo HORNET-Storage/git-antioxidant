@@ -1041,7 +1041,7 @@ pub mod clone {
         #[clap(flatten)]
         pub shallow: ShallowOptions,
 
-        /// The url of the remote to connect to, like `https://github.com/byron/gitoxide`.
+        /// The url of the remote to connect to, like `https://github.com/HORNET-Storage/git-antioxidant`.
         pub remote: OsString,
 
         /// The name of the reference to check out.

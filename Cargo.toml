@@ -85,7 +85,7 @@ lean-async = ["hashes", "fast", "tracing", "pretty-cli", "tix", "gitoxide-core-t
 #! ### Package Maintainers
 #! `*-control` features leave it to you to configure C libraries, involving choices for HTTP transport implementation.
 #!
-#! Additional features *can* be provided with `--features` and are handled by the [`gix` crate](https://docs.rs/gix/latest/gix/#feature-flags).
+#! Additional features *can* be provided with `--features` and are handled by the `gix` crate, whose documentation lists them.
 #! Note that only one HTTP transport can be enabled at a time. See the *Building Blocks for mutually exclusive networking* headline.
 
 #! ### Building Blocks

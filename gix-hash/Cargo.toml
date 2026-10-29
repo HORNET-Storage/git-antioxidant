@@ -24,7 +24,7 @@ sha1 = ["dep:sha1dc"]
 sha256 = ["dep:sha2"]
 ## Data structures implement `serde::Serialize` and `serde::Deserialize`.
 serde = ["dep:serde", "faster-hex/serde"]
-## Enable comparisons between [`ObjectId`](https://docs.rs/gix-hash/latest/gix_hash/enum.ObjectId.html) and `bstr` types.
+## Enable comparisons between [`ObjectId`] and `bstr` types.
 bstr = ["dep:bstr"]
 
 [dependencies]
