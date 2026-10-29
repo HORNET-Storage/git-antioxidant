@@ -301,7 +301,10 @@ impl Engine {
                                 out.push(repo);
                                 progress.inc();
                             }
-                            Err(err) => progress.fail(format!("{repo_path}: {err:#?}", repo_path = repo_path.display())),
+                            Err(err) => {
+                                let repo_path = repo_path.display();
+                                progress.fail(format!("{repo_path}: {err:#?}"));
+                            }
                         }
                     }
                     statement.finalize().or_error()?;

@@ -171,10 +171,8 @@ impl delegate::Revision for Delegate<'_> {
             (None, ReflogLookup::Entry(no)) if no == available && !previous_id.is_null() => previous_id,
             (None, ReflogLookup::Entry(0)) => current_id,
             (None, ReflogLookup::Entry(no)) => {
-                bail!(
-                    "Reference '{name}' has {available} ref-log entries and entry number {no} is out of range",
-                    name = r.name()
-                );
+                let name = r.name();
+                bail!("Reference '{name}' has {available} ref-log entries and entry number {no} is out of range");
             }
             (None, ReflogLookup::Date(_)) => match oldest_id {
                 Some(id) => id,

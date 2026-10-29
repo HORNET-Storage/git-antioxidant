@@ -167,28 +167,22 @@ fn create_leading_directory(
     mode: Option<gix_index::entry::Mode>,
     mkdir_calls: &mut usize,
     unlink_on_collision: bool,
-    #[cfg_attr(not(windows), allow(unused_variables))] check_terminal_symlinks: bool,
+    check_terminal_symlinks: bool,
 ) -> std::io::Result<()> {
     if is_last_component && !crate::stack::mode_is_dir(mode).unwrap_or(false) {
-        #[cfg(not(windows))]
-        {
+        // On Windows, a symbolic link in place of the last component is refused here. Forced checkout delegates
+        // terminal symlink detection and removal to the caller immediately before replacement, avoiding a redundant
+        // check here. Callers combining these flags must uphold that no-follow contract; this stack only protects
+        // leading components in that mode.
+        if !cfg!(windows) || unlink_on_collision || !check_terminal_symlinks {
             return Ok(());
         }
-        #[cfg(windows)]
-        {
-            // Forced checkout delegates terminal symlink detection and removal to the caller immediately before
-            // replacement, avoiding a redundant check here. Callers combining these flags must uphold that no-follow
-            // contract; this stack only protects leading components in that mode.
-            if unlink_on_collision || !check_terminal_symlinks {
-                return Ok(());
-            }
-            return match stack.current().symlink_metadata() {
-                Ok(meta) if meta.file_type().is_symlink() => Err(std::io::ErrorKind::AlreadyExists.into()),
-                Ok(_) => Ok(()),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(err) => Err(err),
-            };
-        }
+        return match stack.current().symlink_metadata() {
+            Ok(meta) if meta.file_type().is_symlink() => Err(std::io::ErrorKind::AlreadyExists.into()),
+            Ok(_) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err),
+        };
     }
     *mkdir_calls += 1;
     match std::fs::create_dir(stack.current()) {

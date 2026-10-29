@@ -546,7 +546,8 @@ pub fn show_progress() -> Result<()> {
     let mut stdout = std::io::stdout().lock();
     for Record { config, usage } in &sorted {
         use std::io::Write;
-        write!(stdout, "{icon} {config: <50}: ", icon = usage.icon()).or_error()?;
+        let icon = usage.icon();
+        write!(stdout, "{icon} {config: <50}: ").or_error()?;
 
         if let Some(width) = width {
             write_with_linewrap(&mut stdout, &usage.to_string(), width).or_error()?;

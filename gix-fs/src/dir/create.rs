@@ -61,11 +61,13 @@ mod error {
                     dir,
                     retries_left,
                     retries,
-                } => write!(
-                    f,
-                    "Permanently failing to create directory \"{dir}\" ({retries_left:?} of {retries:?})",
-                    dir = dir.display(),
-                ),
+                } => {
+                    let dir = dir.display();
+                    write!(
+                        f,
+                        "Permanently failing to create directory \"{dir}\" ({retries_left:?} of {retries:?})"
+                    )
+                }
             }
         }
     }

@@ -326,11 +326,8 @@ impl std::fmt::Display for Error {
             }
             Error::NoSuchRef { name } => write!(f, "No such ref: '{name}'"),
             Error::UsedByWorktree { name, path } => {
-                write!(
-                    f,
-                    "'{name}' is already used by worktree at '{path}'",
-                    path = path.display()
-                )
+                let path = path.display();
+                write!(f, "'{name}' is already used by worktree at '{path}'")
             }
             Error::DirtyWorktree { unstaged, uncommitted } => {
                 if *unstaged {

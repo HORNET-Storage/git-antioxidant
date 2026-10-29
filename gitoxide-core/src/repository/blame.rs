@@ -124,21 +124,15 @@ fn show_blame_entries(
             .zip(entry.range_in_source_file())
             .zip(lines_in_hunk)
         {
-            write!(
-                out,
-                "{short_id} {line_no:>num_digits_for_line_number$} ",
-                short_id = entry.commit_id.to_hex_with_len(8),
-                line_no = actual_lno + 1,
-            )?;
+            let short_id = entry.commit_id.to_hex_with_len(8);
+            let line_no = actual_lno + 1;
+            write!(out, "{short_id} {line_no:>num_digits_for_line_number$} ")?;
 
             let source_file_name = entry.source_file_name.as_ref().map_or(source_file_name, BStr::new);
             write!(out, "{source_file_name} ")?;
 
-            write!(
-                out,
-                "{src_line_no:>num_digits_for_line_number$} {line}",
-                src_line_no = source_lno + 1
-            )?;
+            let src_line_no = source_lno + 1;
+            write!(out, "{src_line_no:>num_digits_for_line_number$} {line}")?;
         }
     }
 
