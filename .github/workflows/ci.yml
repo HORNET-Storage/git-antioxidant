@@ -39,6 +39,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+        with:
+          just-version: 1.59.0
       - name: Read the MSRV
         run: |
           msrv="$(just msrv)"
@@ -79,6 +81,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+        with:
+          just-version: 1.59.0
       - name: Ensure we start out clean
         run: git diff --exit-code
       - name: Regenerate the MSRV badge
@@ -89,7 +93,8 @@ jobs:
   pure-rust-build:
     runs-on: ubuntu-latest
 
-    container: debian:stable-slim
+    # `debian:stable-slim` of 2026-10-28, pinned by digest so that the image can't change unnoticed.
+    container: debian:stable-slim@sha256:13e0a2e78aa0554ad5ff66e4e260c6dbcdff807eb1f39d43b9fb0288aae88b04
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -212,6 +217,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends liblzma-dev
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+        with:
+          just-version: 1.59.0
       - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
         with:
           tool: nextest
@@ -237,6 +244,8 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+        with:
+          just-version: 1.59.0
       - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
         with:
           tool: cargo-auditable@0.7.6
@@ -258,6 +267,8 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+        with:
+          just-version: 1.59.0
       - name: Doctest
         run: just doc-tests
 
@@ -276,6 +287,8 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+        with:
+          just-version: 1.59.0
       - name: Run journey tests
         run: just ci-journey-tests
 
@@ -395,21 +408,25 @@ jobs:
     strategy:
       matrix:
         container-architecture: [i386, arm32v7]
+        # The images are `debian:stable-slim` of 2026-10-28 for each architecture, pinned by digest so that they can't
+        # change unnoticed.
         include:
           - container-architecture: i386
+            container-image: i386/debian:stable-slim@sha256:a13ec8a24fbcb2698709dff4c6d195287036b6c9206597907a69c767a34eac6e
             runner-architecture: amd64
             # Hold back the move to ubuntu-26.04 (via ubuntu-latest) until a fix for
             # https://github.com/actions/runner-images/issues/14790 is released.
             runner-os: ubuntu-24.04
             host-triple: i686-unknown-linux-gnu
           - container-architecture: arm32v7
+            container-image: arm32v7/debian:stable-slim@sha256:388a40f0b2ed7e398fc55f2240fd5d825a078f758261d93f6fb7ca5c320af9cf
             runner-architecture: arm64
             runner-os: ubuntu-24.04-arm
             host-triple: armv7-unknown-linux-gnueabihf
 
     runs-on: ${{ matrix.runner-os }}
 
-    container: ${{ matrix.container-architecture }}/debian:stable-slim
+    container: ${{ matrix.container-image }}
 
     steps:
       - name: Prerequisites
@@ -501,6 +518,8 @@ jobs:
         with:
           tool: cargo-machete@0.9.1
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+        with:
+          just-version: 1.59.0
       - name: Run cargo machete
         run: cargo machete
       - name: Run cargo clippy
