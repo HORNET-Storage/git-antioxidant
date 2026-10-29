@@ -122,7 +122,7 @@
 # Generate this small, configuration-only hooks fixture.
 /make_hooks_repos.tar
 /make_hooks_repos_sha256.tar
-# The tests of committing, resetting and applying merges repeat with gix what the Git of the test host did, running
+# The tests of committing, resetting, merging and rebasing repeat with gix what the Git of the test host did, running
 # the same hooks and comparing the same index timestamps, so these fixtures are always made by the test host instead
 # of being archived.
 /make_commit_repos.tar
@@ -133,6 +133,8 @@
 /make_merge_apply_repos_sha256.tar
 /make_merge_workflow_repos.tar
 /make_merge_workflow_repos_sha256.tar
+/make_rebase_repos.tar
+/make_rebase_repos_sha256.tar
 # The push tests push with gix to the `git-receive-pack` of the test host and run the same `pre-push` hook as Git did,
 # so this push fixture is always made by the test host instead of being archived.
 /make_push_repos.tar

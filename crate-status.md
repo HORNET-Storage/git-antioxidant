@@ -75,7 +75,10 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
         * [x] merge a commit into `HEAD` as `git merge` does with its default strategy: fast-forwards, `--no-ff`, `--ff-only`, `--squash`, `--no-commit`, the default message, `ORIG_HEAD` and the hooks of merges
         * [x] persist and resume conflicted merges with [`MERGE_HEAD`](https://git-scm.com/docs/gitrepository-layout), [`MERGE_MSG`](https://git-scm.com/docs/git-merge) and [`MERGE_MODE`](https://github.com/git/git/blob/ce74208c2fa13943fffa58f168ac27a76d0eb789/path.c#L1585) compatible state, with `--continue`, `--abort` and `--quit`
         * [x] apply the result of a merge to the index and the worktree, with the stages and the markers of its conflicts
-    * [ ] rebase workflow orchestration
+        * [ ] octopus merges, strategies other than `ort`, autostash and rerere
+    * [x] rebase workflow orchestration
+        * [x] rebase as `git rebase` does with its merge backend: the commands of the todo list, stops at conflicts, `edit`, `break` and failed `exec` lines, `--continue`, `--skip`, `--abort` and `--quit`, the sequence editor and the hooks of rebases
+        * [ ] the apply backend, autostash, rerere and the copying of notes
     * [ ] cherry-pick and revert workflow orchestration
     * [ ] bisect workflow orchestration
     * [ ] stash workflow orchestration
@@ -177,8 +180,8 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
         * [ ] [remote and branch files](https://github.com/git/git/blob/master/remote.c#L300)
     * [ ] execute hooks
         * [x] respect [`core.hooksPath`](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corehooksPath) and the hooks of the configuration
-        * [x] client-side hooks for commit and push
-        * [ ] client-side hooks for checkout, rebase, merge and am
+        * [x] client-side hooks for commit, push, merge and rebase
+        * [ ] client-side hooks for checkout and am
         * [ ] receive-side hooks and [`reference-transaction`](https://git-scm.com/docs/githooks#_reference_transaction)
     * **refs**
         * [ ] run transaction hooks and handle special repository states like quarantine
@@ -230,7 +233,7 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
     * [ ] stashing
     * [ ] Use _Commit Graph_ to speed up certain queries
     * [ ] subtree
-    * [ ] interactive rebase status/manipulation
+    * [x] interactive rebase status/manipulation
     * **submodules**
         * [x] handle 'old' form for reading and detect old form
         * [x] list
@@ -751,10 +754,11 @@ Provides a trust model to share across gitoxide crates. It helps configuring how
     * [x] `--autosquash`, `--update-refs` and `--exec`, without the commits that are already upstream
     * [x] whether a rebase can fast-forward
 * [x] obtain rebase status, through the state that `gix-sequencer` reads
-* [ ] drive a rebase operation
+* [x] drive a rebase operation, which `gix` does with `Repository::rebase()`
     * [ ] apply backend
-    * [ ] merge backend
-    * [ ] [autostash](https://git-scm.com/docs/git-rebase#Documentation/git-rebase.txt---autostash), [rerere](https://git-scm.com/docs/git-rerere) and hook integration
+    * [x] merge backend
+    * [x] hook integration
+    * [ ] [autostash](https://git-scm.com/docs/git-rebase#Documentation/git-rebase.txt---autostash) and [rerere](https://git-scm.com/docs/git-rerere)
 
 ### gix-cherry-pick
 

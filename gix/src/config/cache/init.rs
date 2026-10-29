@@ -11,7 +11,7 @@ use crate::{
     config::{
         Cache,
         cache::util::ApplyLeniency,
-        tree::{Author, Committer, Core, Gitoxide, Http, Init, Notes, gitoxide},
+        tree::{Author, Committer, Core, Gitoxide, Http, Init, Notes, Sequence, gitoxide},
     },
     open,
     repository::init::setup_objects,
@@ -677,6 +677,15 @@ fn apply_environment_overrides(
             git_prefix,
             &[{
                 let key = &Notes::DISPLAY_REF;
+                (env(key), key.name)
+            }][..],
+        ),
+        (
+            "sequence",
+            None,
+            git_prefix,
+            &[{
+                let key = &Sequence::EDITOR;
                 (env(key), key.name)
             }][..],
         ),

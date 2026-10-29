@@ -157,7 +157,7 @@ reset = ["worktree-mutation", "gix-worktree-state/reset"]
 
 ## Rebase branches as `git rebase` does, with the todo lists and state of `gix-sequencer` and the plans of `gix-rebase`.
 ## The editor of interactive rebases and the commands of `exec` lines start through `gix-command`.
-rebase = ["merge", "reset", "command", "dep:gix-sequencer", "dep:gix-rebase"]
+rebase = ["merge", "reset", "revision", "command", "dep:gix-sequencer", "dep:gix-rebase"]
 
 ## Retrieve a worktree stack for querying exclude information
 excludes = ["dep:gix-ignore", "dep:gix-worktree", "index"]
