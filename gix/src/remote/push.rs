@@ -49,6 +49,7 @@ impl crate::Repository {
     }
 }
 
+#[cfg(any(feature = "blocking-network-client", feature = "async-network-client"))]
 impl<'repo> Remote<'repo> {
     /// Return the configured remote whose fetch refspecs find the remote-tracking references of what a push through this
     /// remote updates, if that isn't this remote itself, as `repo_remote_for_push_tracking()` in Git's `remote.c` chooses
