@@ -14,4 +14,29 @@ include = ["/src/**/*", "/LICENSE-*"]
 [lib]
 doctest = false
 
+[features]
+## Enable support for the SHA-1 hash by enabling the respective feature in the `gix-hash` crate.
+sha1 = ["gix-hash/sha1"]
+## Enable support for the SHA-256 hash by enabling the respective feature in the `gix-hash` crate.
+sha256 = ["gix-hash/sha256"]
+
 [dependencies]
+gix-diff = { version = "^0.70.0", path = "../gix-diff", default-features = false }
+gix-error = { version = "^0.5.2", path = "../gix-error", features = ["bstr"] }
+gix-hash = { version = "^0.28.1", path = "../gix-hash" }
+gix-imara-diff = { version = "^0.3.3", path = "../gix-imara-diff" }
+gix-object = { version = "^0.66.1", path = "../gix-object" }
+gix-ref = { version = "^0.69.1", path = "../gix-ref" }
+gix-revision = { version = "^0.52.0", path = "../gix-revision", default-features = false, features = ["merge_base"] }
+gix-sequencer = { version = "^0.0.0", path = "../gix-sequencer" }
+
+bstr = { version = "1.12.0", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+gix-rebase = { path = ".", features = ["sha1", "sha256"] }
+gix-testtools = { path = "../tests/tools" }
+gix-odb = { path = "../gix-odb" }
+pretty_assertions = "1.4.0"
+
+[package.metadata.docs.rs]
+features = ["sha1"]

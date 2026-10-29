@@ -745,12 +745,14 @@ Provides a trust model to share across gitoxide crates. It helps configuring how
    * [x] gix
 
 ### gix-rebase
-* [ ] obtain rebase status
+* [x] plan a rebase as `git rebase` does: the commits it replays and where, as a todo list of `gix-sequencer`
+    * [x] [`--onto`, `--keep-base`, `--fork-point`, `--root`, `--rebase-merges`](https://git-scm.com/docs/git-rebase)
+    * [x] `--autosquash`, `--update-refs` and `--exec`, without the commits that are already upstream
+    * [x] whether a rebase can fast-forward
+* [x] obtain rebase status, through the state that `gix-sequencer` reads
 * [ ] drive a rebase operation
     * [ ] apply backend
     * [ ] merge backend
-    * [ ] [`--onto`, `--keep-base`, `--fork-point`, `--rebase-merges`](https://git-scm.com/docs/git-rebase)
-    * [ ] interactive todo parsing and editing
     * [ ] [autostash](https://git-scm.com/docs/git-rebase#Documentation/git-rebase.txt---autostash), [rerere](https://git-scm.com/docs/git-rerere) and hook integration
 
 ### gix-cherry-pick

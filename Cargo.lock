@@ -2429,6 +2429,21 @@ dependencies = [
 [[package]]
 name = "gix-rebase"
 version = "0.0.0"
+dependencies = [
+ "bstr",
+ "gix-diff",
+ "gix-error",
+ "gix-hash",
+ "gix-imara-diff",
+ "gix-object",
+ "gix-odb",
+ "gix-rebase",
+ "gix-ref",
+ "gix-revision",
+ "gix-sequencer",
+ "gix-testtools",
+ "pretty_assertions",
+]
 
 [[package]]
 name = "gix-ref"
