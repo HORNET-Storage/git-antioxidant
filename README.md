@@ -12,9 +12,10 @@ It aims for the highest quality in speed and security:
 - **Speed**: Git's algorithms, using every core where the work allows it, measured against Git on representative
   repositories.
 - **Security**: whatever repositories, remotes and configuration files contain is untrusted until it has been checked.
-  Hooks and the `exec` commands of rebases only run in repositories whose Git directory is fully trusted, as Git refuses
-  to work in repositories of other owners unless `safe.directory` allows it, and editors only come from trusted
-  configuration and the environment.
+  The paths of trees and of the index are validated before files are written or removed, with Git's protections for
+  NTFS and HFS. Hooks and the `exec` commands of rebases only run in repositories whose Git directory is fully trusted,
+  as Git refuses to work in repositories of other owners unless `safe.directory` allows it, and editors only come from
+  trusted configuration and the environment.
 - **Compatibility**: repositories, configuration, hooks, credential helpers and remotes work as they do with Git. Git is
   the reference that the tests compare against, and every remaining difference is documented.
 
@@ -68,7 +69,8 @@ repository at an exact commit:
 gix = { git = "https://github.com/HORNET-Storage/git-antioxidant", rev = "<commit>" }
 ```
 
-or by path from a checkout. `cargo doc -p gix --open` builds the documentation, which lists the features of each crate.
+or by path from a checkout. `cargo doc -p gix --open` builds the documentation. The `Cargo.toml` of each crate describes
+its features, which `cargo +nightly doc -p gix --features document-features --open` also lists in the documentation.
 The minimum supported Rust version is the `rust-version` of [`gix/Cargo.toml`](gix/Cargo.toml).
 
 ## The programs
@@ -87,7 +89,8 @@ cargo install --git https://github.com/HORNET-Storage/git-antioxidant --locked g
 ## Development
 
 [`DEVELOPMENT.md`](DEVELOPMENT.md) describes the tools and practices, [`AGENTS.md`](AGENTS.md) the rules that every
-change follows and [`STABILITY.md`](STABILITY.md) how the interfaces change. `just test` runs the checks of CI.
+change follows and [`STABILITY.md`](STABILITY.md) how the interfaces change. `just test` runs the lints, the builds of
+the feature sets, the tests and the documentation builds.
 
 ## Security
 
