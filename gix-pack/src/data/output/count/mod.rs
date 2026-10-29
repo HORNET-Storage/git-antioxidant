@@ -30,11 +30,15 @@ impl PackLocation {
 }
 
 impl Count {
-    /// Create a new instance from the given `oid` and its corresponding location.
+    /// Create a new instance from the given `oid` and its corresponding location, without a name hash, and neither a
+    /// preferred base nor tagged.
     pub fn from_data(oid: impl Into<ObjectId>, location: Option<crate::data::entry::Location>) -> Self {
         Count {
             id: oid.into(),
             entry_pack_location: PackLocation::LookedUp(location),
+            name_hash: 0,
+            preferred_base: false,
+            tagged: false,
         }
     }
 }
@@ -47,3 +51,9 @@ pub use objects_impl::{objects, objects_unthreaded};
 pub mod objects {
     pub use super::objects_impl::{ObjectExpansion, Options, Outcome};
 }
+
+mod preferred;
+
+pub mod revisions;
+
+pub mod walk;

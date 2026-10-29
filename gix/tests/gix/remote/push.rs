@@ -190,6 +190,9 @@ mod blocking_and_async_io {
         ("empty-remote", AsGit),
         ("packed", AsGit),
         ("packed-no-thin", AsGit),
+        ("deltas", AsGit),
+        ("deltas-no-thin", AsGit),
+        ("deltas-window-0", AsGit),
         ("object-source", AsGit),
         ("push-url", AsGit),
         ("url-remote", AsGitSince((2, 56, 0))),
@@ -338,6 +341,21 @@ mod blocking_and_async_io {
                 assert!(!written.exists(), "{name}: the hook ran only if it ran for `git push`");
             }
         }
+        let remote = before.join("remote.git");
+        let recorded_deltas = dir.join("deltas");
+        if recorded_deltas.is_file() {
+            assert_eq!(
+                kept_deltas(&remote)?,
+                lines(&recorded_deltas)?,
+                "{name}: the pack that the remote kept stores the objects as deltas of the bases of the pack of `git push`"
+            );
+        }
+        let fsck = gix_testtools::git_command(&remote).arg("fsck").output()?;
+        assert!(
+            fsck.status.success(),
+            "{name}: the remote has every object that its references reach: {}",
+            fsck.stderr.as_bstr()
+        );
         Ok(())
     }
 
@@ -452,6 +470,42 @@ mod blocking_and_async_io {
         }
         refs.sort();
         Ok(refs.into_iter().map(|(_, line)| line).collect())
+    }
+
+    /// The deltas of the one pack of the repository at `dir`, as sorted `<object> <base>` lines of `git verify-pack -v`.
+    fn kept_deltas(dir: &Path) -> Result<Vec<BString>> {
+        let mut packs = Vec::new();
+        for entry in std::fs::read_dir(dir.join("objects").join("pack"))? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|extension| extension == "pack") {
+                packs.push(path);
+            }
+        }
+        let [pack] = packs.as_slice() else {
+            return Err(format!("the remote kept what it received as one pack, but has {packs:?}").into());
+        };
+        let output = gix_testtools::git_command(dir)
+            .arg("verify-pack")
+            .arg("-v")
+            .arg(pack)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "the pack is valid: {}",
+            output.stderr.as_bstr()
+        );
+        let mut deltas: Vec<BString> = output
+            .stdout
+            .lines()
+            .filter_map(|line| match line.fields().collect::<Vec<_>>().as_slice() {
+                [object, kind, _, _, _, _, base] if matches!(*kind, b"blob" | b"tree" | b"commit" | b"tag") => {
+                    Some(BString::from(format!("{} {}", object.as_bstr(), base.as_bstr())))
+                }
+                _ => None,
+            })
+            .collect();
+        deltas.sort();
+        Ok(deltas)
     }
 
     /// The lines of the file at `path`.

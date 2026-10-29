@@ -212,6 +212,7 @@ mod expand {
 
                                 let objects_ref = if parent_commit_ids.is_empty() {
                                     traverse_delegate.clear();
+                                    let start = out.len();
                                     let objects = ExpandedCountingObjects::new(db, out, objects);
                                     gix_traverse::tree::breadthfirst(
                                         current_tree_iter,
@@ -220,6 +221,7 @@ mod expand {
                                         &mut traverse_delegate,
                                     )?;
                                     out = objects.dissolve(stats);
+                                    set_tree_name_hashes(&mut out[start..], &traverse_delegate.tree_name_hashes);
                                     &traverse_delegate.non_trees
                                 } else {
                                     changes_delegate.clear();
@@ -267,8 +269,16 @@ mod expand {
                                     }
                                     &changes_delegate.objects
                                 };
-                                for id in objects_ref.iter() {
-                                    out.push(id_to_count(db, buf2, id, objects, stats, allow_pack_lookups)?);
+                                for (id, name_hash) in objects_ref.iter() {
+                                    out.push(id_to_count(
+                                        db,
+                                        buf2,
+                                        id,
+                                        *name_hash,
+                                        objects,
+                                        stats,
+                                        allow_pack_lookups,
+                                    )?);
                                 }
                                 break;
                             }
@@ -285,6 +295,7 @@ mod expand {
                             Tree => {
                                 traverse_delegate.clear();
                                 {
+                                    let start = out.len();
                                     let objects = ExpandedCountingObjects::new(db, out, objects);
                                     gix_traverse::tree::breadthfirst(
                                         gix_object::TreeRefIter::from_bytes(obj.0.data, obj.0.object_hash),
@@ -293,9 +304,18 @@ mod expand {
                                         &mut traverse_delegate,
                                     )?;
                                     out = objects.dissolve(stats);
+                                    set_tree_name_hashes(&mut out[start..], &traverse_delegate.tree_name_hashes);
                                 }
-                                for id in &traverse_delegate.non_trees {
-                                    out.push(id_to_count(db, buf1, id, objects, stats, allow_pack_lookups)?);
+                                for (id, name_hash) in &traverse_delegate.non_trees {
+                                    out.push(id_to_count(
+                                        db,
+                                        buf1,
+                                        id,
+                                        *name_hash,
+                                        objects,
+                                        stats,
+                                        allow_pack_lookups,
+                                    )?);
                                 }
                                 break;
                             }
@@ -347,11 +367,21 @@ mod expand {
         }
     }
 
+    /// Give the trees that a traversal counted, which are among `counts`, the name hashes of their paths.
+    fn set_tree_name_hashes(counts: &mut [output::Count], name_hashes: &gix_hashtable::HashMap<ObjectId, u32>) {
+        for count in counts {
+            if let Some(&name_hash) = name_hashes.get(&count.id) {
+                count.name_hash = name_hash;
+            }
+        }
+    }
+
     #[inline]
     fn id_to_count(
         db: &dyn crate::Find,
         buf: &mut Vec<u8>,
         id: &oid,
+        name_hash: u32,
         objects: &gix_utils::progress::AtomicStep,
         statistics: &mut Outcome,
         allow_pack_lookups: bool,
@@ -365,6 +395,9 @@ mod expand {
             } else {
                 PackLocation::NotLookedUp
             },
+            name_hash,
+            preferred_base: false,
+            tagged: false,
         })
     }
 

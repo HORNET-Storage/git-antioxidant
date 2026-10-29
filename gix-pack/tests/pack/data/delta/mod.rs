@@ -2,6 +2,7 @@
 //! these deltas and have `gix-pack` index them, which applies each delta and computes the id of each object from the
 //! result. The deltas that `git pack-objects` writes are compared with the ones computed here from the same objects.
 
+mod chain;
 mod encode;
 mod git;
 mod search;
@@ -47,10 +48,7 @@ fn assert_pack_holds(objects: &[Packed<'_>]) -> TestResult {
         let id = gix_object::compute_hash(object_hash, object.kind, object.data)?;
         entries.push(match &object.delta {
             None => output::Entry::from_data(
-                &output::Count {
-                    id,
-                    entry_pack_location: output::count::PackLocation::NotLookedUp,
-                },
+                &output::Count::from_data(id, None),
                 &gix_object::Data {
                     kind: object.kind,
                     object_hash,

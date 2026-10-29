@@ -7,12 +7,19 @@ use std::{
 use gix_error::{Result, ResultExt, bail, cancelled, ensure, message};
 use gix_hash::{ObjectId, oid};
 use gix_pack::cache::lru::MemoryCappedHashmap;
-use gix_pack::data::{decode::header::ResolvedBase, delta::search::InPack, entry::Header};
+use gix_pack::data::{
+    decode::header::ResolvedBase,
+    delta::{
+        chain,
+        search::{self, InPack},
+    },
+    entry::Header,
+};
 use gix_utils::progress::{self, Count, DynNestedProgress, Progress};
 
 use crate::repack::{
     Options, Pack,
-    deltas::{self, Computed, Facts},
+    deltas::{self, Facts},
     loose, names,
 };
 
@@ -146,9 +153,9 @@ pub(crate) struct Plan {
     /// For each object, the object that it is stored as a delta of as an index into `objects`, whether the delta is
     /// copied from its pack or was computed, or `None` if the object is stored whole.
     pub(crate) bases: Vec<Option<u32>>,
-    /// For each object, the delta that the search computed for it, or `None` if its delta is copied or it is stored
+    /// For each object, the delta that the search found for it, or `None` if its delta is copied or it is stored
     /// whole.
-    pub(crate) computed: Vec<Option<Computed>>,
+    pub(crate) computed: Vec<Option<search::Delta>>,
     /// The indices into `objects` in the order the objects are written in, each delta after the object it applies to.
     pub(crate) order: Vec<u32>,
     /// The loose objects that couldn't be read or whose data doesn't hash to their name.
@@ -315,7 +322,7 @@ impl Plan {
         drop(selected);
         // As each object is copied from the first combined pack that holds it, deltas form cycles only where a pack
         // holds a delta whose base it doesn't hold. Chains can be longer than `delta_depth` in any pack.
-        break_delta_chains(&mut bases, options.delta_depth.min(deltas::MAX_DEPTH));
+        chain::break_chains(&mut bases, options.delta_depth.min(search::MAX_DEPTH));
 
         let mut objects_handle = crate::at(objects_dir, object_hash)
             .and_then(crate::Handle::into_arc)
@@ -325,7 +332,6 @@ impl Plan {
         let mut name_hashes = vec![0; objects.len()];
         names::assign(
             &objects_handle,
-            object_hash,
             &commits,
             is_retained,
             &indices,
@@ -345,7 +351,21 @@ impl Plan {
             &searching,
             should_interrupt,
         )?;
-        let order = write_order(&bases);
+        // Without tags among the objects, git writes them in the order of the list, each delta after its base. It knows
+        // only the kind of the entry of a copied delta, and orders it with neither commits nor trees.
+        let order = chain::write_order(
+            &bases
+                .iter()
+                .zip(&facts)
+                .zip(&computed)
+                .map(|((&base, facts), computed)| chain::Object {
+                    base,
+                    kind: (base.is_none() || computed.is_some()).then_some(facts.kind),
+                    tagged: false,
+                    preferred_base: false,
+                })
+                .collect::<Vec<_>>(),
+        );
         Ok(Plan {
             sources,
             objects,
@@ -412,182 +432,5 @@ fn seconds(time: SystemTime) -> i64 {
             let before = before.duration();
             i64::try_from(before.as_secs()).map_or(i64::MIN, |seconds| -seconds - i64::from(before.subsec_nanos() > 0))
         }
-    }
-}
-
-/// Drop the deltas in `bases` that would form a cycle or a chain of more than `depth` deltas, as git's
-/// `break_delta_chains()` does: a chain that is too long is cut into chains of `depth` deltas on one object stored
-/// whole, and one chain with the deltas that remain, which the object the chain was followed from is in.
-fn break_delta_chains(bases: &mut [Option<u32>], depth: u32) {
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum State {
-        Unseen,
-        /// On the chain that is being followed.
-        Active,
-        /// Its depth is final.
-        Done,
-    }
-    let modulus = u64::from(depth) + 1;
-    let mut state = vec![State::Unseen; bases.len()];
-    let mut depths = vec![0u32; bases.len()];
-    for start in 0..bases.len() {
-        // Follow the chain from `start` down to an object stored whole or one whose depth is known, and drop the delta
-        // that would lead back into the chain.
-        let mut total_depth = 0u64;
-        let mut current = start;
-        loop {
-            if state[current] == State::Done {
-                total_depth += u64::from(depths[current]);
-                break;
-            }
-            let Some(base) = bases[current].map(|base| base as usize) else {
-                state[current] = State::Done;
-                break;
-            };
-            state[current] = State::Active;
-            if state[base] == State::Active {
-                bases[current] = None;
-                state[current] = State::Done;
-                break;
-            }
-            current = base;
-            total_depth += 1;
-        }
-        // Then assign the depths from `start` on, and store each object whose depth would be a multiple of `depth + 1`
-        // whole.
-        let mut current = Some(start);
-        while let Some(index) = current {
-            if state[index] == State::Done {
-                break;
-            }
-            current = bases[index].map(|base| base as usize);
-            let object_depth = total_depth % modulus;
-            total_depth -= 1;
-            depths[index] = object_depth as u32;
-            if object_depth == 0 {
-                bases[index] = None;
-            }
-            state[index] = State::Done;
-        }
-    }
-}
-
-/// The order in which to write the objects with `bases`, as they were selected but with each delta after the object it
-/// applies to, as git's `write_one()` writes the base of a delta first. `bases` must not contain cycles.
-pub(crate) fn write_order(bases: &[Option<u32>]) -> Vec<u32> {
-    let mut order = Vec::with_capacity(bases.len());
-    let mut placed = vec![false; bases.len()];
-    let mut chain = Vec::new();
-    for start in 0..bases.len() {
-        let mut current = start;
-        while !placed[current] {
-            placed[current] = true;
-            chain.push(current as u32);
-            match bases[current] {
-                Some(base) => current = base as usize,
-                None => break,
-            }
-        }
-        order.extend(chain.drain(..).rev());
-    }
-    order
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{break_delta_chains, write_order};
-
-    /// The amount of deltas below each object, after which the chains end in objects stored whole.
-    fn depths(bases: &[Option<u32>]) -> Vec<usize> {
-        (0..bases.len())
-            .map(|start| {
-                let mut depth = 0;
-                let mut current = start;
-                while let Some(base) = bases[current] {
-                    depth += 1;
-                    assert!(depth <= bases.len(), "a cycle remains");
-                    current = base as usize;
-                }
-                depth
-            })
-            .collect()
-    }
-
-    fn assert_bases_come_first(bases: &[Option<u32>]) {
-        let order = write_order(bases);
-        let mut position = vec![usize::MAX; bases.len()];
-        for (index, &object) in order.iter().enumerate() {
-            assert_eq!(position[object as usize], usize::MAX, "each object is written once");
-            position[object as usize] = index;
-        }
-        assert!(
-            position.iter().all(|&index| index != usize::MAX),
-            "every object is written"
-        );
-        for (object, base) in bases.iter().enumerate() {
-            if let Some(base) = base {
-                assert!(
-                    position[*base as usize] < position[object],
-                    "the object a delta applies to is written before it"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn long_chains_are_cut_into_chains_of_depth_deltas() {
-        // Each object is a delta against the one selected before it.
-        let mut bases = vec![None, Some(0), Some(1), Some(2), Some(3), Some(4)];
-        break_delta_chains(&mut bases, 2);
-        assert_eq!(bases, [None, Some(0), Some(1), None, Some(3), Some(4)]);
-        assert_bases_come_first(&bases);
-
-        // Each object is a delta against the one selected after it, so the chain is followed from its delta at the top.
-        let mut bases = vec![Some(1), Some(2), Some(3), Some(4), None];
-        break_delta_chains(&mut bases, 2);
-        assert_eq!(
-            bases,
-            [Some(1), None, Some(3), Some(4), None],
-            "as in git, the chain of 2 deltas at the bottom is kept whole, and the delta left over stays above it"
-        );
-        assert_eq!(depths(&bases), [1, 0, 2, 1, 0]);
-        assert_bases_come_first(&bases);
-    }
-
-    #[test]
-    fn chains_within_the_depth_are_kept() {
-        let mut bases = vec![Some(1), Some(2), None, Some(1)];
-        break_delta_chains(&mut bases, 50);
-        assert_eq!(bases, [Some(1), Some(2), None, Some(1)]);
-        assert_eq!(write_order(&bases), [2, 1, 0, 3]);
-    }
-
-    #[test]
-    fn a_depth_of_zero_stores_every_object_whole() {
-        let mut bases = vec![None, Some(0), Some(1)];
-        break_delta_chains(&mut bases, 0);
-        assert_eq!(bases, [None, None, None]);
-    }
-
-    #[test]
-    fn cycles_are_broken_where_they_close() {
-        let mut bases = vec![Some(1), Some(2), Some(0)];
-        break_delta_chains(&mut bases, 50);
-        assert_eq!(
-            bases,
-            [Some(1), Some(2), None],
-            "the delta that leads back to the first object is dropped"
-        );
-        assert_bases_come_first(&bases);
-
-        let mut bases = vec![Some(0)];
-        break_delta_chains(&mut bases, 50);
-        assert_eq!(bases, [None], "a delta against itself is dropped");
-
-        let mut bases = vec![Some(1), Some(2), Some(1), Some(0)];
-        break_delta_chains(&mut bases, 50);
-        assert_eq!(bases, [Some(1), Some(2), None, Some(0)]);
-        assert_eq!(depths(&bases), [2, 1, 0, 3]);
-        assert_bases_come_first(&bases);
     }
 }

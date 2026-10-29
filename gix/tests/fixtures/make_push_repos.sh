@@ -14,6 +14,8 @@ set -eu -o pipefail
 # - `pre-push`: the name of the remote and the input that the `pre-push` hook of `local` received, if it has the hook.
 # - `push-options`: the number and the values of the push options that the `pre-receive` hook of the remote received,
 #   if it has the hook.
+# - `deltas`: the deltas of the pack that the remote kept, if it kept what it received as a pack, as `<object> <base>`
+#   lines of `git verify-pack -v`, sorted.
 #
 # `before` stays as it was, so pushing from it with the same arguments has to lead to the same records. Relative URLs
 # like `../remote.git` are those of the remotes of the case, as seen from `local`. The remotes set `daemon.receivepack`,
@@ -137,7 +139,7 @@ function tracking_refs () {
 # Push with `git push --porcelain` and the remaining arguments from `local` in a copy of `before` of the case `$1`, and
 # record what it printed and what it changed.
 function record () {
-  local dir=$1 arg status=0
+  local dir=$1 arg pack status=0
   shift
   : > "$dir/args"
   for arg in "$@"; do
@@ -148,6 +150,13 @@ function record () {
   echo "$status" > "$dir/exit-code"
   git -C "$dir/after/remote.git" for-each-ref --format='%(objectname) %(refname)' > "$dir/remote-refs"
   tracking_refs "$dir/after/local" > "$dir/tracking-refs"
+  for pack in "$dir/after/remote.git/objects/pack/"*.pack; do
+    if test -f "$pack" && ! test -f "$dir/before/remote.git/objects/pack/${pack##*/}"; then
+      git -C "$dir/after/remote.git" verify-pack -v "objects/pack/${pack##*/}" |
+        awk 'NF == 7 && ($2 == "blob" || $2 == "tree" || $2 == "commit" || $2 == "tag") { print $1, $7 }' |
+        LC_ALL=C sort >> "$dir/deltas"
+    fi
+  done
   if test -f "$dir/after/local/pre-push"; then
     cp "$dir/after/local/pre-push" "$dir/pre-push"
   fi
@@ -398,6 +407,47 @@ for dir in packed packed-no-thin; do
 done
 record packed origin main
 record packed-no-thin --no-thin origin main
+
+# The remote keeps what it receives as a pack, whose deltas `git verify-pack -v` shows: `local` has a new version of
+# `big`, whose previous version the remote has, and two versions of `other`, which the remote doesn't have. The pack
+# is thin unless `--no-thin` is given, and has no deltas to search with `pack.window=0`. Deltas are searched with one
+# thread, which finds the same ones each time.
+for dir in deltas deltas-no-thin deltas-window-0; do
+  start $dir
+  seq 1 3000 | sed 's/^/line /' > "$local_repo/big"
+  git -C "$local_repo" add big
+  tick
+  git -C "$local_repo" commit -q -m big
+  git -C "$local_repo" push -q origin main
+  git -C "$remote_repo" config receive.unpackLimit 1
+  git -C "$local_repo" config pack.threads 1
+  sed '100,120d' "$local_repo/big" > "$local_repo/big.tmp"
+  mv "$local_repo/big.tmp" "$local_repo/big"
+  seq 1 2000 | sed 's/^/other /' > "$local_repo/other"
+  git -C "$local_repo" add big other
+  tick
+  git -C "$local_repo" commit -q -m 'smaller big and other'
+  sed 's/^other 1000$/other 1000 changed/' "$local_repo/other" > "$local_repo/other.tmp"
+  mv "$local_repo/other.tmp" "$local_repo/other"
+  git -C "$local_repo" add other
+  tick
+  git -C "$local_repo" commit -q -m 'changed other'
+done
+git -C deltas-window-0/before/local config pack.window 0
+record deltas origin main
+record deltas-no-thin --no-thin origin main
+record deltas-window-0 origin main
+# `git push` sent the new version of `big` as a delta of the version the remote has where the pack is thin, one version
+# of `other` as a delta of the other one, and no deltas without a window.
+big_versions="$(git -C deltas/before/local rev-parse main:big) $(git -C deltas/before/remote.git rev-parse main:big)"
+grep -qx "$big_versions" deltas/deltas
+for dir in deltas deltas-no-thin; do
+  old=$(git -C $dir/before/local rev-parse main~1:other)
+  new=$(git -C $dir/before/local rev-parse main:other)
+  grep -qx -e "$old $new" -e "$new $old" $dir/deltas
+done
+test -f deltas-window-0/deltas
+test ! -s deltas-window-0/deltas
 
 # An object named by a revision instead of a reference, which the remote has already, so no object is sent.
 start object-source

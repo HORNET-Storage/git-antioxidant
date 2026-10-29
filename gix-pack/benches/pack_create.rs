@@ -77,6 +77,7 @@ fn write_pack(odb: &Memory, counts: Vec<output::Count>) -> u64 {
             counts,
             odb.clone(),
             Box::new(progress::Discard),
+            &std::sync::atomic::AtomicBool::default(),
             entry::iter_from_counts::Options {
                 mode: entry::iter_from_counts::Mode::PackCopyAndBaseObjects,
                 ..Default::default()

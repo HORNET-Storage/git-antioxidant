@@ -5,12 +5,15 @@
 //! of the base and insert new bytes, as `gitformat-pack(5)` describes them. [`Index`] indexes a base so that the
 //! deltas of several objects can be computed against it with [`Index::encode()`], and [`encode()`] computes a single
 //! delta. Both write the bytes of Git's `diff-delta.c`. [`search::find_deltas()`] chooses the bases as the delta search
-//! of `git pack-objects` does, and documents where it deviates from it.
+//! of `git pack-objects` does, and documents where it deviates from it. [`chain`] cuts the chains of deltas that a pack
+//! copies as Git does before its search, and orders the objects of a pack as Git writes them, each delta after its
+//! base.
 use gix_error::{ErrorExt, OptionExt, Result, bail};
 
 mod encode;
 pub use encode::{Index, encode};
 
+pub mod chain;
 pub mod search;
 
 fn corrupt(message: &'static str) -> gix_error::Message {

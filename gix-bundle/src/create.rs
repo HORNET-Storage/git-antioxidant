@@ -154,6 +154,9 @@ pub(crate) mod function {
                 let count = output::Count {
                     id: object_ids.remove(index),
                     entry_pack_location: output::count::PackLocation::NotLookedUp,
+                    name_hash: 0,
+                    preferred_base: false,
+                    tagged: false,
                 };
                 let data = gix_object::Data {
                     kind: Kind::Tree,
@@ -169,12 +172,16 @@ pub(crate) mod function {
             .map(|id| output::Count {
                 id,
                 entry_pack_location: output::count::PackLocation::NotLookedUp,
+                name_hash: 0,
+                preferred_base: false,
+                tagged: false,
             })
             .collect();
         let entries = gix_parallel::InOrderIter::from(output::entry::iter_from_counts(
             counts,
             objects,
             Box::new(progress.add_child("create entries".into())),
+            should_interrupt,
             output::entry::iter_from_counts::Options {
                 thread_limit,
                 allow_thin_pack: false,

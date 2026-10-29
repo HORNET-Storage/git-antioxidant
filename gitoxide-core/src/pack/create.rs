@@ -234,6 +234,7 @@ where
             counts,
             handle,
             Box::new(progress),
+            &interrupt::IS_INTERRUPTED,
             pack::data::output::entry::iter_from_counts::Options {
                 thread_limit,
                 mode: pack::data::output::entry::iter_from_counts::Mode::PackCopyAndBaseObjects,
@@ -327,6 +328,7 @@ fn human_output(
                 missing_objects,
                 objects_copied_from_pack,
                 ref_delta_objects,
+                computed_delta_objects: _,
             },
     }: Statistics,
     mut out: impl std::io::Write,

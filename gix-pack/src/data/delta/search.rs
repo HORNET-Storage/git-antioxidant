@@ -61,6 +61,12 @@ use crate::data::delta::Index;
 /// Objects smaller than this many bytes are neither deltas nor bases.
 const MIN_SIZE: u64 = 50;
 
+/// The longest chain of deltas that `git pack-objects` allows, whatever `pack.depth` is.
+pub const MAX_DEPTH: u32 = 4095;
+
+/// The longest delta that `git pack-objects` keeps for its length alone, whatever `pack.deltaCacheLimit` is.
+pub const MAX_DELTA_CACHE_LIMIT: u64 = (1 << 20) - 1;
+
 /// The name hash of `path` that `git pack-objects` sorts objects by, that of `--name-hash-version=1`, its default.
 ///
 /// It is made of the bytes of `path` other than spaces, tabs, line feeds and carriage returns, mostly of the last 16 of

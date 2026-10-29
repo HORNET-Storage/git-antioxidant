@@ -168,7 +168,8 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
             * [x] `--force`, `--force-with-lease`, `--atomic`, `--dry-run` and push options
             * [x] the `pre-push` hook and the update of remote-tracking references
             * [ ] `--mirror`, `--prune`, `--set-upstream`, `--signed`, `--force-if-includes` and push negotiation
-            * [ ] deltas between the objects of the pack that is sent
+            * [x] deltas between the objects of the pack that is sent, and against what the remote has in a thin pack,
+              searched as `git pack-objects` searches them
         * [x] ls-refs
         * [x] ls-refs with ref-spec filter
         * [x] list, find by name
@@ -331,8 +332,10 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
                * [ ] respect the `delta=false` attribute
                * [x] write a computed delta as an entry of `data::output` (`output::Entry::from_delta()`), as the `repack` of
                  `gix-odb` does
-               * [ ] use them in `data::output::entry::iter_from_counts()`, which needs the name hashes of the counted objects,
-                 a search of the objects that it doesn't copy as deltas, and a write order that puts each base before its deltas
+               * [x] use them in `data::output::entry::iter_from_counts()` (`Mode::PackCopyAndDeltaSearch`), with the name
+                 hashes of the counted objects, a search of the objects that it doesn't copy as deltas, the preferred bases of
+                 thin packs, and Git's write order
+               * [ ] copy the deltas that refer to their base by its id, as Git copies them where it packs the base
             * [x] create 'thin' pack, i.e. deltas that are based on objects the other side has.
             * [x] parallel implementation that scales perfectly
         * [x] entries to pack data iterator

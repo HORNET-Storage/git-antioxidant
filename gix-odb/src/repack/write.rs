@@ -7,12 +7,14 @@ use std::{
 use gix_error::{Error, Result, ResultExt, bail, cancelled, ensure, message};
 use gix_hash::ObjectId;
 use gix_object::Find;
-use gix_pack::data::output;
+use gix_pack::data::{
+    delta::search,
+    output::{self, entry::DeltaBase},
+};
 use gix_utils::progress::{self, BoxedDynNestedProgress, Count, DynNestedProgress, Progress};
 
 use crate::repack::{
     Options, Written,
-    deltas::Computed,
     plan::{Location, Plan},
 };
 
@@ -174,7 +176,6 @@ impl Producer<'_> {
             objects,
             next: 0,
             buf: Vec::new(),
-            base_buf: Vec::new(),
             failed: false,
         };
         let mut pack = output::bytes::FromEntriesIter::new(
@@ -203,8 +204,6 @@ struct Entries<'a> {
     /// The position in the pack of the next object to produce.
     next: usize,
     buf: Vec<u8>,
-    /// The data of the base of a delta that is computed again.
-    base_buf: Vec<u8>,
     /// Whether an entry couldn't be produced, after which no more entries are produced.
     failed: bool,
 }
@@ -305,31 +304,21 @@ impl Entries<'_> {
     /// The entry of the object `id` with its data compressed anew.
     fn whole(&mut self, id: ObjectId) -> Result<output::Entry> {
         let data = read(&self.objects, &id, &mut self.buf)?;
-        let count = output::Count {
-            id,
-            entry_pack_location: output::count::PackLocation::NotLookedUp,
-        };
+        let count = output::Count::from_data(id, None);
         output::Entry::from_data(&count, &data, self.producer.compression)
     }
 
-    /// The entry of the object `id` as the delta that the search computed against the object at `base` in the plan,
+    /// The entry of the object `id` as the `delta` that the search found against the object at `base` in the plan,
     /// which is computed again if the search didn't keep it, as git's `write_object()` does.
-    fn computed_delta(&mut self, id: ObjectId, base: usize, computed: &Computed) -> Result<output::Entry> {
-        let (base_index, compression) = (self.producer.positions[base], self.producer.compression);
-        if let Some(delta) = &computed.data {
-            return output::Entry::from_delta(id, base_index, delta, compression);
-        }
-        let base_id = self.producer.plan.objects[base].id;
-        let base_data = read(&self.objects, &base_id, &mut self.base_buf)?;
-        let data = read(&self.objects, &id, &mut self.buf)?;
-        let delta = gix_pack::data::delta::encode(base_data.data, data.data).unwrap_or_default();
-        ensure!(
-            delta.len() == computed.size,
-            "The delta of {id} against {base_id} has {} bytes when it is computed again, instead of {}",
-            delta.len(),
-            computed.size
-        );
-        output::Entry::from_delta(id, base_index, &delta, compression)
+    fn computed_delta(&self, id: ObjectId, base: usize, delta: &search::Delta) -> Result<output::Entry> {
+        output::Entry::from_found_delta(
+            id,
+            DeltaBase::Index(self.producer.positions[base]),
+            &self.producer.plan.objects[base].id,
+            delta,
+            &self.objects,
+            self.producer.compression,
+        )
     }
 }
 

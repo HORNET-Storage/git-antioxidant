@@ -1,19 +1,13 @@
 use std::sync::atomic::AtomicBool;
 
 use gix_error::Result;
-use gix_pack::data::delta::search::{self, InPack};
+use gix_pack::data::delta::{
+    chain,
+    search::{self, InPack},
+};
 use gix_utils::progress::Count;
 
-use crate::repack::{
-    Options,
-    plan::{Object, write_order},
-};
-
-/// The longest chain of deltas that `git pack-objects` allows, whatever `pack.depth` is.
-pub(crate) const MAX_DEPTH: u32 = 4095;
-
-/// The longest delta that `git pack-objects` keeps for its length alone, whatever `pack.deltaCacheLimit` is.
-const MAX_CACHE_LIMIT: u64 = (1 << 20) - 1;
+use crate::repack::{Options, plan::Object};
 
 /// What `git pack-objects` knows of an object of the new pack when it decides whether to search a delta for it.
 #[derive(Debug, Clone, Copy)]
@@ -28,16 +22,6 @@ pub(crate) struct Facts {
     /// The combined pack that the object is copied from and whether it stores the object as a delta, or `None` for
     /// loose objects.
     pub(crate) in_pack: Option<InPack>,
-}
-
-/// A delta that the search computed for an object of the new pack.
-#[derive(Debug, Clone)]
-pub(crate) struct Computed {
-    /// The length of the delta.
-    pub(crate) size: usize,
-    /// The delta, if the search kept it. Otherwise, it is computed again from its base and its object when it is
-    /// written.
-    pub(crate) data: Option<Vec<u8>>,
 }
 
 /// Search deltas for the `objects` of the new pack, whose `facts` and `name_hashes` are known and which are copied as
@@ -60,11 +44,11 @@ pub(crate) fn find<F>(
     options: &Options,
     progress: &dyn Count,
     should_interrupt: &AtomicBool,
-) -> Result<Vec<Option<Computed>>>
+) -> Result<Vec<Option<search::Delta>>>
 where
     F: gix_object::Find + Send,
 {
-    let dependents = dependents_depths(bases);
+    let dependents = chain::dependents_depths(bases);
     let (mut list, mut indices) = (Vec::new(), Vec::new());
     for (index, ((object, facts), base)) in objects.iter().zip(facts).zip(bases.iter()).enumerate() {
         if base.is_some() || facts.threshold_size > options.big_file_threshold {
@@ -90,48 +74,21 @@ where
         search::Options {
             window: options.window,
             window_memory: options.window_memory,
-            depth: options.delta_depth.min(MAX_DEPTH),
+            depth: options.delta_depth.min(search::MAX_DEPTH),
             reuse_delta: true,
             delta_cache_size: options.delta_cache_size,
-            delta_cache_limit: options.delta_cache_limit.min(MAX_CACHE_LIMIT),
+            delta_cache_limit: options.delta_cache_limit.min(search::MAX_DELTA_CACHE_LIMIT),
             thread_limit: options.thread_limit,
         },
     )?;
-    let mut computed: Vec<Option<Computed>> = std::iter::repeat_with(|| None).take(objects.len()).collect();
+    let mut computed: Vec<Option<search::Delta>> = std::iter::repeat_with(|| None).take(objects.len()).collect();
     for (position, delta) in deltas.into_iter().enumerate() {
-        let Some(search::Delta { base, size, data }) = delta else {
+        let Some(delta) = delta else {
             continue;
         };
         let index = indices[position] as usize;
-        bases[index] = Some(indices[base]);
-        computed[index] = Some(Computed { size, data });
+        bases[index] = Some(indices[delta.base]);
+        computed[index] = Some(delta);
     }
     Ok(computed)
-}
-
-/// The amount of deltas in the longest chain of `bases` that depends on each object, as git's `check_delta_limit()`
-/// counts them, or 0 for objects that no delta depends on. `bases` must not contain cycles.
-fn dependents_depths(bases: &[Option<u32>]) -> Vec<u32> {
-    let mut depths = vec![0u32; bases.len()];
-    // In reverse of the write order, each delta comes before the object it applies to.
-    for &object in write_order(bases).iter().rev() {
-        if let Some(base) = bases[object as usize] {
-            let depth = depths[object as usize] + 1;
-            let base_depth = &mut depths[base as usize];
-            *base_depth = (*base_depth).max(depth);
-        }
-    }
-    depths
-}
-
-#[cfg(test)]
-mod tests {
-    use super::dependents_depths;
-
-    #[test]
-    fn dependents_depths_are_those_of_the_longest_chain_below_each_object() {
-        // 1 and 2 are deltas of 0, 3 of 2, 4 of 3, and 5 is stored whole.
-        let bases = [None, Some(0), Some(0), Some(2), Some(3), None];
-        assert_eq!(dependents_depths(&bases), [3, 0, 2, 1, 0, 0]);
-    }
 }

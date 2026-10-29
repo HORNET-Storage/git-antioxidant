@@ -1,10 +1,12 @@
 use gix_error::Result;
 use std::io::Write;
 
-use gix_error::{ErrorExt, ResultExt, bail, message};
-use gix_hash::ObjectId;
+use gix_error::{ErrorExt, ResultExt, bail, ensure, message};
+use gix_hash::{ObjectId, oid};
 
 use crate::{data, data::output, find};
+
+mod deltas;
 
 ///
 pub mod iter_from_counts;
@@ -33,6 +35,15 @@ pub enum Kind {
     },
 }
 
+/// The base of a delta that an [`Entry`](output::Entry) is made of with [`from_delta()`](output::Entry::from_delta()).
+#[derive(PartialEq, Eq, Debug, Hash, Ord, PartialOrd, Clone, Copy)]
+pub enum DeltaBase {
+    /// The base is the entry with this index among the entries written before, as with [`Kind::DeltaRef`].
+    Index(usize),
+    /// The base is the object with this id, which the receiver of a thin pack has, as with [`Kind::DeltaOid`].
+    Id(ObjectId),
+}
+
 impl output::Entry {
     /// An object which can be identified as invalid easily which happens if objects didn't exist even if they were referred to.
     pub fn invalid() -> output::Entry {
@@ -58,7 +69,7 @@ impl output::Entry {
     ///
     /// Errors from `pack_offset_to_oid` are propagated rather than triggering recompression as if the base were absent.
     pub fn from_pack_entry(
-        mut entry: find::Entry,
+        entry: find::Entry,
         count: &output::Count,
         potential_bases: &[output::Count],
         bases_index_offset: usize,
@@ -116,15 +127,7 @@ impl output::Entry {
                 id: count.id.to_owned(),
                 kind,
                 decompressed_size: pack_entry.decompressed_size as usize,
-                compressed_data: {
-                    entry.data.copy_within(pack_entry.data_offset as usize.., 0);
-                    entry.data.resize(
-                        entry.data.len()
-                            - usize::try_from(pack_entry.data_offset).expect("offset representable as usize"),
-                        0,
-                    );
-                    entry.data
-                },
+                compressed_data: compressed_data(entry.data, pack_entry.data_offset),
             })
         })
     }
@@ -147,26 +150,55 @@ impl output::Entry {
         })
     }
 
-    /// Create a new instance for the object `id` that is stored as `delta`, which builds it from the object at
-    /// `base_index` among the entries written before it, deflating `delta` with `compression`.
+    /// Create a new instance for the object `id` that is stored as `delta`, which builds it from `base`, deflating `delta`
+    /// with `compression`.
     ///
     /// This is how `git pack-objects` writes the deltas that it computes, such as those of
     /// [`find_deltas()`](crate::data::delta::search::find_deltas()): the delta is compressed like the data of an object
-    /// stored whole, and the entry refers to its base by the distance to the base's offset in the pack.
-    pub fn from_delta(
-        id: ObjectId,
-        base_index: usize,
-        delta: &[u8],
-        compression: gix_zlib::Compression,
-    ) -> Result<Self> {
+    /// stored whole, and the entry refers to a base among the entries written before it by the distance to the base's
+    /// offset in the pack, and to a base that the receiver of a thin pack has by its id.
+    pub fn from_delta(id: ObjectId, base: DeltaBase, delta: &[u8], compression: gix_zlib::Compression) -> Result<Self> {
         Ok(output::Entry {
             id,
-            kind: Kind::DeltaRef {
-                object_index: base_index,
+            kind: match base {
+                DeltaBase::Index(object_index) => Kind::DeltaRef { object_index },
+                DeltaBase::Id(id) => Kind::DeltaOid { id },
             },
             decompressed_size: delta.len(),
             compressed_data: deflate(delta, compression)?,
         })
+    }
+
+    /// Create a new instance for the object `id` that is stored as the `delta` that
+    /// [`find_deltas()`](crate::data::delta::search::find_deltas()) found for it against the object `base_id`, which the
+    /// entry refers to as `base` says, as [`from_delta()`](Self::from_delta()) does.
+    ///
+    /// The delta is the one that the search kept, or else the delta that [`encode()`](crate::data::delta::encode()) computes
+    /// again from the base and the object, which it reads from `objects`, as Git's `get_delta()` does. Like Git, this is
+    /// an error if the delta computed again doesn't have the length that the search found, and so is an object that
+    /// `objects` doesn't have.
+    pub fn from_found_delta(
+        id: ObjectId,
+        base: DeltaBase,
+        base_id: &oid,
+        delta: &crate::data::delta::search::Delta,
+        objects: &dyn gix_object::Find,
+        compression: gix_zlib::Compression,
+    ) -> Result<Self> {
+        if let Some(data) = &delta.data {
+            return Self::from_delta(id, base, data, compression);
+        }
+        let (mut base_buf, mut buf) = (Vec::new(), Vec::new());
+        let base_data = read(objects, base_id, &mut base_buf)?;
+        let data = read(objects, &id, &mut buf)?;
+        let computed = crate::data::delta::encode(base_data.data, data.data).unwrap_or_default();
+        ensure!(
+            computed.len() == delta.size,
+            "The delta of {id} against {base_id} has {} bytes when it is computed again, instead of {}",
+            computed.len(),
+            delta.size
+        );
+        Self::from_delta(id, base, &computed, compression)
     }
 
     /// Transform ourselves into a pack entry header which can be written into a pack of `version`.
@@ -196,6 +228,26 @@ impl output::Entry {
             },
         }
     }
+}
+
+/// The object `id` that `objects` reads into `buf`, or an error if it doesn't exist.
+fn read<'a>(objects: &dyn gix_object::Find, id: &oid, buf: &'a mut Vec<u8>) -> Result<gix_object::Data<'a>> {
+    match objects
+        .try_find(id, buf)
+        .or_raise(|| message!("Could not read the object {id}"))?
+    {
+        Some(data) => Ok(data),
+        None => bail!("The object {id} disappeared before it was written".not_found()),
+    }
+}
+
+/// The compressed data of the pack entry whose bytes, its header followed by its data, are `entry_data`, and whose data
+/// starts at `data_offset`.
+fn compressed_data(mut entry_data: Vec<u8>, data_offset: data::Offset) -> Vec<u8> {
+    let data_offset = usize::try_from(data_offset).expect("offset representable as usize");
+    entry_data.copy_within(data_offset.., 0);
+    entry_data.truncate(entry_data.len() - data_offset);
+    entry_data
 }
 
 /// `data` compressed with `compression`, as the data of a pack entry.

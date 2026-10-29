@@ -40,8 +40,11 @@ where
     /// * The pack has the objects the pushed objects reach that the remote doesn't have as far as its references and the
     ///   objects it advertised with `.have` show, and isn't sent if every update deletes a reference. Objects are copied
     ///   from the packs of the repository where possible, along with the deltas whose base is in the pack or, unless
-    ///   [`thin`](super::Options::thin) is disabled or the remote asks for `no-thin`, on the remote. All other objects
-    ///   are stored whole.
+    ///   [`thin`](super::Options::thin) is disabled or the remote asks for `no-thin`, is one of the objects that the
+    ///   remote has in the trees of the commits at the edge of what is sent. The other objects are searched for deltas
+    ///   as `git pack-objects` searches them, with its defaults and the `pack.window`, `pack.depth`,
+    ///   `pack.windowMemory`, `pack.deltaCacheSize`, `pack.deltaCacheLimit`, `pack.threads` and `core.bigFileThreshold`
+    ///   keys of the repository, and stored whole where no delta is found.
     /// * The remote-tracking references are found with the fetch refspecs of the remote, or, for a remote made from
     ///   a URL, of the only configured remote that pushes to that URL, as Git does since 2.56. They are updated with
     ///   the reflog message `update by push`, or deleted along with the remote reference. They are left alone in a
@@ -137,7 +140,13 @@ where
                 .iter()
                 .filter_map(|reference| reference.unpack().1.map(ToOwned::to_owned))
                 .chain(remote_refs.extra_have.iter().copied());
-            Some(pack::select(repo, tips, haves, should_interrupt)?)
+            Some(pack::select(
+                repo,
+                tips,
+                haves,
+                thin && arguments.thin_pack,
+                should_interrupt,
+            )?)
         } else {
             None
         };
@@ -148,7 +157,7 @@ where
                 let Some(selection) = &selection else {
                     crate::error::bail!(message("A pack was to be written although no object is pushed"));
                 };
-                pack::write(repo, selection, out, arguments, thin, progress, should_interrupt)
+                pack::write(repo, selection, out, arguments, progress, should_interrupt)
             },
             progress,
             should_interrupt,

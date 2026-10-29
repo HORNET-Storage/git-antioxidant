@@ -1375,6 +1375,118 @@ mod pack {
         assert!(Pack::INDEX_VERSION.validate("-1".into()).is_err());
         Ok(())
     }
+
+    fn int(value: i64) -> gix::Result<Option<i64>> {
+        Ok(Some(value))
+    }
+
+    #[test]
+    fn window() -> TestResult {
+        assert_eq!(Pack::WINDOW.try_into_window(int(10))?, Some(10));
+        assert_eq!(
+            Pack::WINDOW.try_into_window(int(-1))?,
+            Some(0),
+            "a negative window tries no bases, as in Git"
+        );
+        assert_eq!(Pack::WINDOW.try_into_window(Ok(None))?, None);
+        crate::config::key::assert_config_error(
+            &Pack::WINDOW
+                .try_into_window(int(1 << 31))
+                .expect_err("Git reads the window as an `int`"),
+            "pack.window",
+            Some((1_i64 << 31).into()),
+            None,
+        );
+        assert!(Pack::WINDOW.validate("1k".into()).is_ok());
+        assert!(Pack::WINDOW.validate("-1".into()).is_ok());
+        assert!(
+            Pack::WINDOW.validate("2g".into()).is_err(),
+            "2 GiB don't fit into an `int`"
+        );
+        assert!(Pack::WINDOW.validate("wide".into()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn depth() -> TestResult {
+        assert_eq!(Pack::DEPTH.try_into_depth(int(50))?, Some(50));
+        assert_eq!(
+            Pack::DEPTH.try_into_depth(int(-1))?,
+            Some(0),
+            "a negative depth allows no deltas, as in Git"
+        );
+        assert_eq!(
+            Pack::DEPTH.try_into_depth(int(10_000))?,
+            Some(4095),
+            "Git allows no longer chains of deltas"
+        );
+        assert_eq!(Pack::DEPTH.try_into_depth(Ok(None))?, None);
+        crate::config::key::assert_config_error(
+            &Pack::DEPTH
+                .try_into_depth(int(-(1 << 31) - 1))
+                .expect_err("Git reads the depth as an `int`"),
+            "pack.depth",
+            Some((-(1_i64 << 31) - 1).into()),
+            None,
+        );
+        assert!(Pack::DEPTH.validate("4095".into()).is_ok());
+        assert!(Pack::DEPTH.validate("deep".into()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn window_memory() -> TestResult {
+        assert_eq!(Pack::WINDOW_MEMORY.try_into_u64(int(1 << 33))?, Some(1 << 33));
+        assert_eq!(Pack::WINDOW_MEMORY.try_into_u64(Ok(None))?, None);
+        assert!(Pack::WINDOW_MEMORY.validate("8g".into()).is_ok());
+        assert!(
+            Pack::WINDOW_MEMORY.validate("-1".into()).is_err(),
+            "Git reads the window memory as an unsigned number"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn delta_cache_size() -> TestResult {
+        assert_eq!(
+            Pack::DELTA_CACHE_SIZE.try_into_delta_cache_size(int(256 << 20))?,
+            Some(256 << 20)
+        );
+        assert_eq!(
+            Pack::DELTA_CACHE_SIZE.try_into_delta_cache_size(int(-1))?,
+            Some(u64::MAX),
+            "Git converts the negative `int` that it reads to an `unsigned long`"
+        );
+        assert_eq!(Pack::DELTA_CACHE_SIZE.try_into_delta_cache_size(Ok(None))?, None);
+        assert!(Pack::DELTA_CACHE_SIZE.validate("1g".into()).is_ok());
+        assert!(
+            Pack::DELTA_CACHE_SIZE.validate("2g".into()).is_err(),
+            "2 GiB don't fit into an `int`"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn delta_cache_limit() -> TestResult {
+        assert_eq!(
+            Pack::DELTA_CACHE_LIMIT.try_into_delta_cache_limit(int(1000))?,
+            Some(1000)
+        );
+        assert_eq!(
+            Pack::DELTA_CACHE_LIMIT.try_into_delta_cache_limit(int(1 << 20))?,
+            Some((1 << 20) - 1),
+            "Git keeps no longer deltas for their length alone"
+        );
+        assert_eq!(
+            Pack::DELTA_CACHE_LIMIT.try_into_delta_cache_limit(int(-1))?,
+            Some((1 << 20) - 1),
+            "Git converts a negative `int` to a large `unsigned long`, which is limited as well"
+        );
+        assert_eq!(Pack::DELTA_CACHE_LIMIT.try_into_delta_cache_limit(Ok(None))?, None);
+        assert!(Pack::DELTA_CACHE_LIMIT.validate("1m".into()).is_ok());
+        assert!(Pack::DELTA_CACHE_LIMIT.validate("small".into()).is_err());
+        Ok(())
+    }
 }
 
 mod protocol {

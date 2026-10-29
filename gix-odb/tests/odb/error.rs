@@ -568,9 +568,18 @@ fn multi_index_pack_generation_is_fallible(large_offset: bool) -> gix_error::Tes
     let count = output::Count {
         id: delta_id,
         entry_pack_location: output::count::PackLocation::NotLookedUp,
+        name_hash: 0,
+        preferred_base: false,
+        tagged: false,
     };
-    let mut valid_entries =
-        output::entry::iter_from_counts(vec![count.clone()], db, Box::new(gix_utils::progress::Discard), options)?;
+    let should_interrupt = std::sync::atomic::AtomicBool::default();
+    let mut valid_entries = output::entry::iter_from_counts(
+        vec![count.clone()],
+        db,
+        Box::new(gix_utils::progress::Discard),
+        &should_interrupt,
+        options,
+    )?;
     let (_, generated) = valid_entries.next().expect("one input object produces one chunk")?;
     assert_eq!(
         generated.len(),
@@ -608,9 +617,13 @@ fn multi_index_pack_generation_is_fallible(large_offset: bool) -> gix_error::Tes
         vec![output::Count {
             id: unrelated_id,
             entry_pack_location: output::count::PackLocation::NotLookedUp,
+            name_hash: 0,
+            preferred_base: false,
+            tagged: false,
         }],
         db.clone(),
         Box::new(gix_utils::progress::Discard),
+        &should_interrupt,
         options,
     )
     .err()
@@ -622,6 +635,7 @@ fn multi_index_pack_generation_is_fallible(large_offset: bool) -> gix_error::Tes
         vec![count.clone()],
         db.clone(),
         Box::new(gix_utils::progress::Discard),
+        &should_interrupt,
         options,
     )?;
     let err = entries
@@ -632,7 +646,13 @@ fn multi_index_pack_generation_is_fallible(large_offset: bool) -> gix_error::Tes
     assert!(!err.is_not_found(), "iteration corruption is not a missing delta base");
     drop(entries);
 
-    let entries = output::entry::iter_from_counts(vec![count], db, Box::new(gix_utils::progress::Discard), options)?;
+    let entries = output::entry::iter_from_counts(
+        vec![count],
+        db,
+        Box::new(gix_utils::progress::Discard),
+        &should_interrupt,
+        options,
+    )?;
     let mut writer = output::bytes::FromEntriesIter::new(
         entries.map(|chunk| chunk.map(|(_, entries)| entries)),
         Vec::new(),

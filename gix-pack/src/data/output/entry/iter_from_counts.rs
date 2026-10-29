@@ -1,6 +1,9 @@
 pub(crate) mod function {
     use gix_error::Result;
-    use std::{cmp::Ordering, sync::Arc};
+    use std::{
+        cmp::Ordering,
+        sync::{Arc, atomic::AtomicBool},
+    };
 
     use gix_error::{OptionExt, ResultExt, message, not_found};
     use gix_parallel as parallel;
@@ -11,7 +14,7 @@ pub(crate) mod function {
     };
 
     use super::{Mode, Options, Outcome, ProgressId, reduce, util};
-    use crate::data::output;
+    use crate::data::output::{self, entry::deltas};
 
     /// Given a known list of object `counts`, calculate entries ready to be put into a data pack.
     ///
@@ -22,18 +25,25 @@ pub(crate) mod function {
     ///
     /// * `counts`
     ///   * A list of previously counted objects to add to the pack. Duplication checks are not performed, no object is expected to be duplicated.
+    ///   * [Preferred bases](output::Count::preferred_base) aren't written, so the pack has one entry for each of the other
+    ///     counts.
     /// * `progress`
     ///   * a way to obtain progress information
+    /// * `should_interrupt`
+    ///   * is checked while [`Mode::PackCopyAndDeltaSearch`] plans the entries, which then stops with an error once it is
+    ///     set.
     /// * `options`
     ///   * more configuration
     ///
-    /// Returns an iterator over entry chunks, or an error if resolving pack locations fails before iteration.
+    /// Returns an iterator over entry chunks, or an error if resolving pack locations fails before iteration, or if planning
+    /// the entries fails.
     ///
     /// ## Discussion
     ///
     /// ### Advantages
     ///
-    /// * Begins writing immediately and supports back-pressure.
+    /// * Begins writing immediately and supports back-pressure, unless the deltas of [`Mode::PackCopyAndDeltaSearch`] are
+    ///   searched first.
     /// * Abstract over object databases and how input is provided.
     ///
     /// ### Disadvantages
@@ -46,6 +56,7 @@ pub(crate) mod function {
         mut counts: Vec<output::Count>,
         db: Find,
         mut progress: Box<dyn DynNestedProgress + 'static>,
+        should_interrupt: &AtomicBool,
         Options {
             version,
             mode,
@@ -56,11 +67,17 @@ pub(crate) mod function {
         }: Options,
     ) -> Result<
         impl Iterator<Item = Result<(SequenceId, Vec<output::Entry>)>>
-        + parallel::Finalize<Reduce = reduce::Statistics<gix_error::Error>>,
+        + parallel::Finalize<Reduce = reduce::Statistics<gix_error::Error>>
+        + use<Find>,
     >
     where
         Find: crate::Find + Send + Clone + 'static,
     {
+        // Preferred bases are only the bases of the deltas that the search finds for a thin pack, and aren't written.
+        if !allow_thin_pack || !matches!(mode, Mode::PackCopyAndDeltaSearch(_)) {
+            counts.retain(|count| !count.preferred_base);
+        }
+        let search_thread_limit = thread_limit;
         let (chunk_size, thread_limit, _) =
             parallel::optimize_chunk_size_and_thread_limit(chunk_size, Some(counts.len()), thread_limit, None);
         {
@@ -97,7 +114,7 @@ pub(crate) mod function {
             )?;
             progress.lock().show_throughput(start);
         }
-        let counts_range_by_pack_id = match mode {
+        let work = match mode {
             Mode::PackCopyAndBaseObjects => {
                 let mut progress = progress.add_child_with_id("sorting".into(), ProgressId::SortEntries.into());
                 progress.init(Some(counts.len()), gix_utils::progress::count("counts"));
@@ -131,13 +148,30 @@ pub(crate) mod function {
                 progress.set(counts.len());
                 progress.show_throughput(start);
 
-                index
+                Work::Copy {
+                    counts_range_by_pack_id: index,
+                }
             }
+            Mode::PackCopyAndDeltaSearch(search) => Work::Deltas(deltas::Plan::new(
+                &counts,
+                &db,
+                search,
+                version,
+                chunk_size,
+                search_thread_limit,
+                &mut *progress,
+                should_interrupt,
+            )?),
+        };
+        let num_entries = match &work {
+            Work::Copy { .. } => counts.len(),
+            Work::Deltas(plan) => plan.order.len(),
         };
 
         let counts = Arc::new(counts);
+        let work = Arc::new(work);
         let progress = Arc::new(parking_lot::Mutex::new(progress));
-        let chunks = util::ChunkRanges::new(chunk_size, counts.len());
+        let chunks = util::ChunkRanges::new(chunk_size, num_entries);
 
         Ok(parallel::Stepwise::new(
             chunks.enumerate(),
@@ -155,12 +189,24 @@ pub(crate) mod function {
             },
             {
                 let counts = Arc::clone(&counts);
-                move |(chunk_id, chunk_range): (SequenceId, std::ops::Range<usize>), (buf, progress)| {
+                move |(chunk_id, chunk_range): (SequenceId, std::ops::Range<usize>),
+                      (buf, progress)|
+                      -> Result<(SequenceId, Vec<output::Entry>, Outcome)> {
+                    let mut stats = Outcome::default();
+                    progress.init(Some(chunk_range.len()), gix_utils::progress::count("objects"));
+                    let counts_range_by_pack_id = match &*work {
+                        Work::Copy {
+                            counts_range_by_pack_id,
+                        } => counts_range_by_pack_id,
+                        Work::Deltas(plan) => {
+                            let out = plan.entries(chunk_range, &counts, &db, version, compression, buf, &mut stats)?;
+                            progress.inc_by(out.len());
+                            return Ok((chunk_id, out, stats));
+                        }
+                    };
                     let mut out = Vec::new();
                     let chunk = &counts[chunk_range];
-                    let mut stats = Outcome::default();
                     let mut pack_offsets_to_id = None;
-                    progress.init(Some(chunk.len()), gix_utils::progress::count("objects"));
 
                     for count in chunk.iter() {
                         out.push(match count
@@ -251,6 +297,16 @@ pub(crate) mod function {
             },
             reduce::Statistics::default(),
         ))
+    }
+
+    /// What the entries are made from.
+    enum Work {
+        /// The counts are ordered by their location, and the counts of each pack are at its range.
+        Copy {
+            counts_range_by_pack_id: Vec<(u32, std::ops::Range<usize>)>,
+        },
+        /// The entries of [`Mode::PackCopyAndDeltaSearch`].
+        Deltas(deltas::Plan),
     }
 }
 
@@ -344,6 +400,9 @@ mod types {
         pub objects_copied_from_pack: usize,
         /// The amount of objects that ref to their base as ref-delta, an indication for a thin back being created.
         pub ref_delta_objects: usize,
+        /// The amount of objects that are stored as the deltas that the search of [`Mode::PackCopyAndDeltaSearch`]
+        /// found for them.
+        pub computed_delta_objects: usize,
     }
 
     impl Outcome {
@@ -354,12 +413,14 @@ mod types {
                 missing_objects,
                 objects_copied_from_pack,
                 ref_delta_objects,
+                computed_delta_objects,
             }: Self,
         ) {
             self.decoded_and_recompressed_objects += decoded_objects;
             self.missing_objects += missing_objects;
             self.objects_copied_from_pack += objects_copied_from_pack;
             self.ref_delta_objects += ref_delta_objects;
+            self.computed_delta_objects += computed_delta_objects;
         }
     }
 
@@ -372,13 +433,82 @@ mod types {
         /// from existing pack compression and spending the smallest possible time on compressing unpacked objects at
         /// the cost of bandwidth.
         PackCopyAndBaseObjects,
+        /// Copy objects and deltas from packs, search deltas for the other objects, and write the entries in the order of
+        /// `git pack-objects`, each delta after its base, as it does with the given options:
+        ///
+        /// * A delta that a pack stores is copied if it refers to its base by offset and the base is among the counts, at the
+        ///   same location or another, as Git's `check_object()` copies deltas whose base it packs. Then the chains of copied
+        ///   deltas are cut where they are longer than [`DeltaSearch::depth`], as Git's `break_delta_chains()` cuts them.
+        /// * The other objects that aren't larger than [`DeltaSearch::big_file_threshold`] are searched for deltas in the
+        ///   order of the counts and with their [name hashes](crate::data::output::Count::name_hash), as Git's
+        ///   `prepare_pack()` searches them with [`find_deltas()`](crate::data::delta::search::find_deltas()), in up to
+        ///   [`Options::thread_limit`] threads, along with the [preferred bases](crate::data::output::Count::preferred_base)
+        ///   among the counts if [`Options::allow_thin_pack`] is set. The delta that the search finds for an object is
+        ///   written with [`Entry::from_found_delta()`](crate::data::output::Entry::from_found_delta()), against an entry
+        ///   written before it, or against a preferred base, which the delta refers to by its id. The objects that the
+        ///   search finds no delta for are copied where a pack stores them whole, and compressed whole otherwise.
+        /// * The entries come in the order of [`write_order()`](crate::data::delta::chain::write_order()), as Git's
+        ///   `compute_write_order()` and `write_one()` order them, with the objects of
+        ///   [tagged](crate::data::output::Count::tagged) counts moved forward.
+        ///
+        /// The objects are examined and their deltas searched before the first entry is produced.
+        ///
+        /// ### Deviation
+        ///
+        /// * Git also copies deltas that refer to their base by id if it packs the base, and deltas whose base its
+        ///   reachability bitmaps show the receiver of a thin pack to have, while here the objects of such deltas are
+        ///   searched for deltas instead, as [`PackCopyAndBaseObjects`](Mode::PackCopyAndBaseObjects) doesn't copy them
+        ///   either.
+        /// * The `delta` attribute isn't read, so objects whose `delta` attribute is unset are searched like the others.
+        PackCopyAndDeltaSearch(DeltaSearch),
+    }
+
+    /// The options of the delta search of [`Mode::PackCopyAndDeltaSearch`], with the meanings and the defaults of
+    /// `git pack-objects`.
+    #[derive(PartialEq, Eq, Debug, Hash, Ord, PartialOrd, Clone, Copy)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct DeltaSearch {
+        /// How many of the objects before an object are tried as its base (`pack.window`). With 0, no deltas are
+        /// computed.
+        pub window: usize,
+        /// The longest chain of deltas (`pack.depth`), which Git limits to 4095. With 0, no deltas are computed, and the
+        /// objects that packs store as deltas are stored whole.
+        pub depth: u32,
+        /// The most bytes that the data and indices of the objects in the window of each thread may take
+        /// (`pack.windowMemory`), or 0 for no limit.
+        pub window_memory: u64,
+        /// The most bytes of deltas that are kept in memory until they are written (`pack.deltaCacheSize`), or 0 for no
+        /// limit. The other deltas are computed again when they are written.
+        pub delta_cache_size: u64,
+        /// Deltas shorter than this many bytes are kept while they fit (`pack.deltaCacheLimit`), which Git limits to 1 MiB
+        /// less one byte.
+        pub delta_cache_limit: u64,
+        /// Objects larger than this many bytes aren't searched for deltas (`core.bigFileThreshold`). For an object that a
+        /// pack stores as a delta that could be copied, the length of that delta counts, as in Git.
+        pub big_file_threshold: u64,
+    }
+
+    impl Default for DeltaSearch {
+        /// The defaults of `git pack-objects`: a window of 10 objects without a memory limit, a depth of 50, up to 256 MiB
+        /// of kept deltas with a limit of 1000 bytes for short ones, and a threshold of 512 MiB for large objects.
+        fn default() -> Self {
+            DeltaSearch {
+                window: 10,
+                depth: 50,
+                window_memory: 0,
+                delta_cache_size: 256 * 1024 * 1024,
+                delta_cache_limit: 1000,
+                big_file_threshold: 512 * 1024 * 1024,
+            }
+        }
     }
 
     /// Configuration options for the pack generation functions provided in [`iter_from_counts()`][crate::data::output::entry::iter_from_counts()].
     #[derive(PartialEq, Eq, Debug, Hash, Ord, PartialOrd, Clone, Copy)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     pub struct Options {
-        /// The amount of threads to use at most when resolving the pack. If `None`, all logical cores are used.
+        /// The amount of threads to use at most when resolving the pack, and for the delta search of
+        /// [`Mode::PackCopyAndDeltaSearch`] (`pack.threads`). If `None`, all logical cores are used.
         pub thread_limit: Option<usize>,
         /// The algorithm to produce a pack
         pub mode: Mode,
@@ -388,6 +518,10 @@ mod types {
         /// commit graph. Please note that thin packs are not valid packs at rest, thus they are only valid for packs in transit.
         ///
         /// If set to false, delta objects will be decompressed and recompressed as base objects.
+        ///
+        /// With [`Mode::PackCopyAndDeltaSearch`], deltas refer to objects outside of the pack only if these are
+        /// [preferred bases](crate::data::output::Count::preferred_base) among the counts, which are used only if this is
+        /// set.
         pub allow_thin_pack: bool,
         /// The amount of objects per chunk or unit of work to be sent to threads for processing
         /// TODO: could this become the window size?
@@ -425,6 +559,11 @@ mod types {
         ResolveCounts,
         /// Layout pack entries for placement into a pack (by pack-id and by offset).
         SortEntries,
+        /// The amount of objects whose kind, size and stored delta are examined for the delta search of
+        /// [`Mode::PackCopyAndDeltaSearch`].
+        ExamineCounts,
+        /// The amount of objects that the delta search of [`Mode::PackCopyAndDeltaSearch`] tried as deltas.
+        FindDeltas,
     }
 
     impl From<ProgressId> for gix_utils::progress::Id {
@@ -432,8 +571,10 @@ mod types {
             match v {
                 ProgressId::ResolveCounts => *b"ECRC",
                 ProgressId::SortEntries => *b"ECSE",
+                ProgressId::ExamineCounts => *b"ECEC",
+                ProgressId::FindDeltas => *b"ECFD",
             }
         }
     }
 }
-pub use types::{Mode, Options, Outcome, ProgressId};
+pub use types::{DeltaSearch, Mode, Options, Outcome, ProgressId};

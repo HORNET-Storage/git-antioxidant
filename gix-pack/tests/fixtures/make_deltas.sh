@@ -151,3 +151,34 @@ git pack-objects -q --delta-base-offset --threads=1 --window=250 --depth=50 pack
 git pack-objects -q --delta-base-offset --threads=1 --window=10 --depth=50 default/objects < objects.list > /dev/null
 git pack-objects -q --delta-base-offset --threads=1 --window=50 --depth=3 --window-memory=64k shallow/objects \
   < objects.list > /dev/null
+
+# `thin/` holds the packs that pushes send. `<name>.revs` lists the revisions that `pack_objects()` in Git's `send-pack.c`
+# passes to `git pack-objects --revs --thin --stdout --delta-base-offset`: the objects to send, and after `^` those that
+# the receiver has. `<name>.pack` is the pack that it writes with one thread. The `loose` packs are made from the loose
+# objects of the repository, and the `packed` ones from `packed.git`, a bare clone with a pack whose deltas they copy.
+# `tags.list` lists the objects of the tags, each tag and the object that it peels to, which Git writes first.
+git for-each-ref --format='%(objectname) %(*objectname)' refs/tags > tags.list
+git clone -q --bare --no-local . packed.git
+mkdir thin
+
+# thin_pack <repository> <name> <revision>... writes `thin/<name>.revs` and the pack of these revisions.
+thin_pack() {
+  local repo=$1 name=$2
+  shift 2
+  printf '%s\n' "$@" > "thin/$name.revs"
+  git -C "$repo" -c pack.threads=1 pack-objects -q --revs --thin --stdout --delta-base-offset \
+    < "thin/$name.revs" > "thin/$name.pack"
+}
+
+for kind in loose packed; do
+  repo=.
+  if [ "$kind" = packed ]; then
+    repo=packed.git
+  fi
+  # The new versions of every file since `edit 3`, sent with the tag `v2` of the last commit.
+  thin_pack "$repo" "$kind-edits" "$(git rev-parse v2)" "^$(git rev-parse ':/^edit 3')"
+  # The last commit, to a receiver that has the tag `v1` of the commit before it.
+  thin_pack "$repo" "$kind-last" "$(git rev-parse HEAD)" "^$(git rev-parse v1)"
+  # Both tags and all they reach, to a receiver that has nothing, so that there are no preferred bases.
+  thin_pack "$repo" "$kind-all" "$(git rev-parse v1)" "$(git rev-parse v2)"
+done
