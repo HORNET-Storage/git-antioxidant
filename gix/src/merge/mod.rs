@@ -1,6 +1,9 @@
 pub use gix_merge as plumbing;
 pub use gix_merge::blob;
 
+#[cfg(all(feature = "reset", feature = "revision"))]
+pub mod into_head;
+
 ///
 pub mod virtual_merge_base {
     use crate::Id;
@@ -336,57 +339,7 @@ pub mod apply {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
                 Error::BareRepository => f.write_str("this operation must be run in a work tree"),
-                Error::Refused { refusals } => {
-                    let mut local_changes: Vec<&BString> = refusals
-                        .staged_changes
-                        .iter()
-                        .chain(&refusals.unstaged_changes)
-                        .collect();
-                    local_changes.sort();
-                    local_changes.dedup();
-                    let groups: [(Vec<&BString>, &str, Option<&str>); 6] = [
-                        (
-                            refusals.unmerged.iter().collect(),
-                            "you need to resolve your current index first",
-                            None,
-                        ),
-                        (
-                            local_changes,
-                            "Your local changes to the following files would be overwritten by merge:",
-                            Some("Please commit your changes or stash them before you merge."),
-                        ),
-                        (
-                            refusals.directories_with_untracked_files.iter().collect(),
-                            "Updating the following directories would lose untracked files in them:",
-                            None,
-                        ),
-                        (
-                            refusals.current_dir.iter().collect(),
-                            "Refusing to remove the current working directory:",
-                            None,
-                        ),
-                        (
-                            refusals.untracked_removed.iter().collect(),
-                            "The following untracked working tree files would be removed by merge:",
-                            Some("Please move or remove them before you merge."),
-                        ),
-                        (
-                            refusals.untracked_overwritten.iter().collect(),
-                            "The following untracked working tree files would be overwritten by merge:",
-                            Some("Please move or remove them before you merge."),
-                        ),
-                    ];
-                    for (paths, header, footer) in groups.iter().filter(|(paths, _, _)| !paths.is_empty()) {
-                        writeln!(f, "{header}")?;
-                        for path in paths {
-                            writeln!(f, "\t{path}")?;
-                        }
-                        if let Some(footer) = footer {
-                            writeln!(f, "{footer}")?;
-                        }
-                    }
-                    f.write_str("Aborting")
-                }
+                Error::Refused { refusals } => write_refusals(f, refusals),
             }
         }
     }
@@ -398,5 +351,59 @@ pub mod apply {
                 Error::Refused { .. } => Some(const { &ClassificationMarker::CONFLICT }),
             }
         }
+    }
+
+    /// Write the messages with which a checkout of `git merge` refuses the paths of `refusals`, as
+    /// `setup_unpack_trees_porcelain()` in `unpack-trees.c` words them for `merge`, followed by `Aborting`.
+    pub(crate) fn write_refusals(f: &mut std::fmt::Formatter<'_>, refusals: &Refusals) -> std::fmt::Result {
+        let mut local_changes: Vec<&BString> = refusals
+            .staged_changes
+            .iter()
+            .chain(&refusals.unstaged_changes)
+            .collect();
+        local_changes.sort();
+        local_changes.dedup();
+        let groups: [(Vec<&BString>, &str, Option<&str>); 6] = [
+            (
+                refusals.unmerged.iter().collect(),
+                "you need to resolve your current index first",
+                None,
+            ),
+            (
+                local_changes,
+                "Your local changes to the following files would be overwritten by merge:",
+                Some("Please commit your changes or stash them before you merge."),
+            ),
+            (
+                refusals.directories_with_untracked_files.iter().collect(),
+                "Updating the following directories would lose untracked files in them:",
+                None,
+            ),
+            (
+                refusals.current_dir.iter().collect(),
+                "Refusing to remove the current working directory:",
+                None,
+            ),
+            (
+                refusals.untracked_removed.iter().collect(),
+                "The following untracked working tree files would be removed by merge:",
+                Some("Please move or remove them before you merge."),
+            ),
+            (
+                refusals.untracked_overwritten.iter().collect(),
+                "The following untracked working tree files would be overwritten by merge:",
+                Some("Please move or remove them before you merge."),
+            ),
+        ];
+        for (paths, header, footer) in groups.iter().filter(|(paths, _, _)| !paths.is_empty()) {
+            writeln!(f, "{header}")?;
+            for path in paths {
+                writeln!(f, "\t{path}")?;
+            }
+            if let Some(footer) = footer {
+                writeln!(f, "{footer}")?;
+            }
+        }
+        f.write_str("Aborting")
     }
 }

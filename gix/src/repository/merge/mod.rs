@@ -7,6 +7,9 @@ use crate::{
     prelude::ObjectIdExt,
 };
 
+#[cfg(all(feature = "reset", feature = "revision"))]
+mod into_head;
+
 /// Merge-utilities
 impl Repository {
     /// Create a resource cache that can hold the three resources needed for a three-way merge. `worktree_roots`

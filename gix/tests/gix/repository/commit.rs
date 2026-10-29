@@ -77,8 +77,15 @@ pub(crate) mod baseline {
         /// index and files of the worktree, and the same `state`, files of the Git directory that are missing in both or
         /// have the same content.
         pub(crate) fn assert_same_as_git(&self, state: &[&str]) -> crate::Result {
+            self.assert_same_as(&self.git, state)
+        }
+
+        /// Assert that `gix` left its repository as the repository at `path` is: with the same references, reflogs, entries
+        /// of the index and files of the worktree, and the same `state`, files of the Git directory that are missing in
+        /// both or have the same content.
+        pub(crate) fn assert_same_as(&self, path: &Path, state: &[&str]) -> crate::Result {
             let actual = open(self.path())?;
-            let expected = open(&self.git)?;
+            let expected = open(path)?;
             assert_eq!(references(&actual)?, references(&expected)?, "references");
             assert_eq!(
                 files(&actual.git_dir().join("logs"), None)?,
@@ -200,7 +207,10 @@ pub(crate) mod baseline {
     }
 }
 
+/// The hooks that these tests run inherit the environment of the process, which `#[serial]` tests change while they run,
+/// so these tests are `#[parallel]` and don't run at the same time as those.
 #[cfg(feature = "index")]
+#[serial_test::parallel]
 mod commit_index {
     use gix::{
         bstr::{BString, ByteSlice},

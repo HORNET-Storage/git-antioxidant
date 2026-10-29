@@ -45,6 +45,14 @@ impl Merge {
     #[cfg(feature = "merge")]
     pub const CONFLICT_STYLE: ConflictStyle =
         ConflictStyle::new_with_validate("conflictStyle", &config::Tree::MERGE, validate::ConflictStyle);
+    /// The `merge.ff` key, which says whether `git merge` fast-forwards: a boolean, or `only`.
+    #[cfg(feature = "merge")]
+    pub const FF: FastForward = FastForward::new_with_validate("ff", &config::Tree::MERGE, validate::FastForward);
+    /// The `merge.suppressDest` key, a glob pattern of the branches into which the default message of a merge doesn't name
+    /// the branch it merges into, which can be given more than once.
+    ///
+    /// An empty value removes the patterns before it, and without any value, Git suppresses `main` and `master`.
+    pub const SUPPRESS_DEST: keys::String = keys::String::new_string("suppressDest", &config::Tree::MERGE);
 }
 
 impl Section for Merge {
@@ -66,6 +74,9 @@ impl Section for Merge {
             &Self::DRIVER_RECURSIVE,
             #[cfg(feature = "merge")]
             &Self::CONFLICT_STYLE,
+            #[cfg(feature = "merge")]
+            &Self::FF,
+            &Self::SUPPRESS_DEST,
         ]
     }
 }
@@ -117,6 +128,33 @@ mod directory_renames {
 #[cfg(feature = "merge")]
 pub type ConflictStyle = keys::Any<validate::ConflictStyle>;
 
+/// The `merge.ff` key.
+#[cfg(feature = "merge")]
+pub type FastForward = keys::Any<validate::FastForward>;
+
+#[cfg(all(feature = "merge", feature = "reset", feature = "revision"))]
+mod fast_forward {
+    use crate::{bstr::BStr, config::tree::sections::merge::FastForward, merge::into_head};
+
+    impl FastForward {
+        /// Return how `git merge` fast-forwards for `value`, as `git_merge_config()` in `builtin/merge.c` reads `merge.ff`:
+        /// [`Allow`](into_head::FastForward::Allow) for a true boolean or a key without value, which is `None`,
+        /// [`Never`](into_head::FastForward::Never) for a false boolean and [`Only`](into_head::FastForward::Only) for
+        /// `only`. Other values are `None`, as Git ignores them.
+        pub fn try_into_fast_forward(&self, value: Option<&BStr>) -> Option<into_head::FastForward> {
+            let Some(value) = value else {
+                return Some(into_head::FastForward::Allow);
+            };
+            match gix_config::Boolean::try_from(value) {
+                Ok(gix_config::Boolean(true)) => Some(into_head::FastForward::Allow),
+                Ok(gix_config::Boolean(false)) => Some(into_head::FastForward::Never),
+                Err(_) if value == "only" => Some(into_head::FastForward::Only),
+                Err(_) => None,
+            }
+        }
+    }
+}
+
 #[cfg(feature = "merge")]
 mod conflict_style {
     use gix_error::bail;
@@ -166,6 +204,15 @@ mod validate {
     impl keys::Validate for ConflictStyle {
         fn validate(&self, value: &BStr) -> Result {
             Merge::CONFLICT_STYLE.try_into_conflict_style(value)?;
+            Ok(())
+        }
+    }
+
+    /// Git accepts any value of `merge.ff` and ignores those it doesn't know.
+    #[derive(Clone, Copy)]
+    pub struct FastForward;
+    impl keys::Validate for FastForward {
+        fn validate(&self, _value: &BStr) -> Result {
             Ok(())
         }
     }

@@ -4,7 +4,7 @@
 #[cfg(feature = "index")]
 use std::path::Path;
 #[cfg(all(feature = "index", feature = "hooks"))]
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf};
 
 #[cfg(feature = "index")]
 use gix_hash::ObjectId;
@@ -23,7 +23,7 @@ use crate::{
 use crate::{
     bstr::{BStr, BString, ByteSlice},
     commit::{
-        index::{Error as Refused, Options, Outcome},
+        index::{Error as Refused, Merge, Options, Outcome},
         message as msg,
     },
     config::tree::Index,
@@ -103,7 +103,8 @@ impl Repository {
     ///   [`amend`](Options::amend), the commit replaces that of `HEAD` and takes its parents, its extra headers but
     ///   its signature, and its message and author unless others are given.
     /// * The message is [`Options::message`], or that of `MERGE_MSG` preceded by `SQUASH_MSG` or that of `SQUASH_MSG`,
-    ///   cleaned as [`Options::cleanup`] or [`commit.cleanup`](Self::commit_cleanup()) say with the comment prefix of
+    ///   cleaned as [`Options::cleanup`] or [`commit.cleanup`](Self::commit_cleanup()) say, for a message that was edited
+    ///   in an editor if [`Options::edited`] is set, with the comment prefix of
     ///   [`comment_prefix()`](Self::comment_prefix()). Git prepares it in `$GIT_DIR/COMMIT_EDITMSG`, whose leading and
     ///   trailing whitespace it removes unless the cleanup is `verbatim`, and which the hooks receive, may change and
     ///   from which it is read for the commit.
@@ -122,6 +123,7 @@ impl Repository {
     ///   `commit (amend): <subject>` or `commit (merge): <subject>`, unless [`Options::reflog_action`] replaces the
     ///   action. Then the state of a merge goes away as `git commit` removes it: the pseudo-reference `AUTO_MERGE`,
     ///   `MERGE_HEAD`, `MERGE_MSG`, `MERGE_MODE` and `SQUASH_MSG`. Failures to remove them are ignored, as in Git.
+    /// * With [`Options::merge`], the merge is committed as `git merge` commits it, as [`Merge`] describes.
     ///
     /// ### Refusals
     ///
@@ -144,8 +146,9 @@ impl Repository {
     ///
     /// ### Deviation
     ///
-    /// * No editor is started, so `default` and `scissors` clean up whitespace only and keep comment lines, as Git does
-    ///   for a message given with `-m`. `commit.template`, `commit.verbose`, `--signoff` and trailers aren't supported.
+    /// * No editor is started, so unless [`Options::edited`] is set, `default` and `scissors` clean up whitespace only and
+    ///   keep comment lines, as Git does for a message given with `-m`. `commit.template`, `commit.verbose`, `--signoff`
+    ///   and trailers aren't supported.
     /// * The stat information of the entries of the index isn't refreshed before the commit, as Git refreshes it.
     /// * `CHERRY_PICK_HEAD` and `REVERT_HEAD` aren't read, so the commit of a cherry-pick or revert in progress is made
     ///   as any other commit, and they stay in place, where Git takes the author of the picked commit and removes them.
@@ -158,6 +161,9 @@ impl Repository {
     pub fn commit_index(&self, options: Options) -> Result<Outcome> {
         if self.workdir().is_none() {
             bail!(Refused::BareRepository);
+        }
+        if let Some(merge) = &options.merge {
+            return self.commit_merge(&options, merge);
         }
         let git_dir = self.current_dir().join(self.git_dir());
         let mut head = self.head()?;
@@ -198,21 +204,11 @@ impl Repository {
 
         // As `prepare_index()` does for a commit of the index as it is, write the trees of the index and keep its cache
         // tree, before the hooks see the index.
-        let LockedIndex { lock, mut index } = self.lock_index()?;
-        if index.entries().iter().any(|entry| entry.stage_raw() != 0) {
-            bail!(Refused::UnmergedEntries);
-        }
-        let mut written = index.write_tree(index.tree(), self, Default::default())?;
-        if index.tree() == Some(&written.cache_tree) {
-            drop(lock);
-        } else {
-            index.set_tree(written.cache_tree.clone());
-            self.write_locked_index(lock, &index)?;
-        }
+        let (index, mut written) = self.write_index_tree()?;
 
         let message_path = git_dir.join(COMMIT_EDITMSG);
         #[cfg(feature = "hooks")]
-        let hooks = CommitHooks::new(self, &message_path, &author)?;
+        let hooks = CommitHooks::new(self, &message_path, author_env(&author)?)?;
         #[cfg(feature = "hooks")]
         let pre_commit_ran =
             !options.no_verify && hooks.run_or_stop("pre-commit", gix_hook::Invocation::pre_commit(hooks.commit()))?;
@@ -223,7 +219,7 @@ impl Repository {
             Some(cleanup) => cleanup,
             None => self.commit_cleanup()?,
         }
-        .mode(false);
+        .mode(options.edited);
         let (prepared, source) = prepare_message(&options, amended, merge.is_some(), &git_dir)?;
         let prepared = if mode == msg::Mode::None {
             prepared
@@ -321,14 +317,7 @@ impl Repository {
             message: cleaned.clone(),
             extra_headers,
         };
-        let sign = match options.sign {
-            Some(sign) => sign,
-            None => Commit::GPG_SIGN
-                .enrich_error(self.config.resolved.boolean(Commit::GPG_SIGN))
-                .with_lenient_default(self.config.lenient_config)?
-                .unwrap_or_default(),
-        };
-        if sign {
+        if self.wants_signature(options.sign)? {
             commit = self.sign_commit(commit)?;
         }
         let commit_id = self.write_object(&commit)?.detach();
@@ -371,6 +360,199 @@ impl Repository {
             message: cleaned,
             reference,
             previous,
+        })
+    }
+
+    /// Commit `merge` as `git merge` commits a merge without conflicts, as [`Merge`] describes, for
+    /// [`commit_index()`](Self::commit_index()) with [`Options::merge`].
+    #[cfg(feature = "merge")]
+    fn commit_merge(&self, options: &Options, merge: &Merge) -> Result<Outcome> {
+        if options.amend {
+            bail!(Refused::AmendInMerge);
+        }
+        let git_dir = self.current_dir().join(self.git_dir());
+        let mut head = self.head()?;
+        if head.is_unborn() {
+            bail!(message("A merge can only be committed on top of the commit of HEAD").validation_error());
+        }
+        let current = head.peel_to_commit()?;
+        let reference = match head.referent_name() {
+            Some(name) => name.to_owned(),
+            None => gix_ref::FullName::try_from("HEAD").or_error()?,
+        };
+        let author = match &options.author {
+            Some(author) => author.clone(),
+            None => self
+                .author()
+                .ok_or_else(|| message("Author identity is not configured").validation_error())??
+                .to_owned()?,
+        };
+        let committer = self
+            .committer()
+            .ok_or_else(|| message("Committer identity is not configured").validation_error())??;
+
+        // As `write_tree_trivial()` does, write the trees of the index before the hooks run, whose changes of the index
+        // don't reach the commit.
+        let (_, written) = self.write_index_tree()?;
+        let mode = match options.cleanup {
+            Some(cleanup) => cleanup,
+            None => self.commit_cleanup()?,
+        }
+        .mode(options.edited);
+        let (prepared, _) = prepare_message(options, None, true, &git_dir)?;
+        let state = |message: BString| gix_merge::state::State {
+            heads: merge.heads.clone(),
+            message: Some(message),
+            no_ff: merge.no_ff,
+        };
+        #[cfg(feature = "hooks")]
+        let hooks = CommitHooks::new(
+            self,
+            &git_dir.join(MERGE_MSG),
+            merge
+                .hook_env
+                .iter()
+                .map(|(name, value)| (name.clone(), Some(value.clone())))
+                .collect(),
+        )?;
+        // `prepare_to_commit()` in `builtin/merge.c` runs the hooks and reads the message back.
+        let cleaned = (|| -> Result<BString> {
+            #[cfg(feature = "hooks")]
+            if !options.no_verify {
+                hooks.run_or_stop(
+                    "pre-merge-commit",
+                    gix_hook::Invocation::pre_merge_commit(hooks.commit()),
+                )?;
+            }
+            state(prepared.clone()).write(&git_dir)?;
+            #[cfg(feature = "hooks")]
+            {
+                hooks.run_or_stop(
+                    "prepare-commit-msg",
+                    gix_hook::Invocation::prepare_commit_msg(
+                        hooks.commit(),
+                        &hooks.message_file,
+                        Some(gix_hook::invocation::MessageSource::Merge),
+                    ),
+                )?;
+                if !options.no_verify {
+                    hooks.run_or_stop(
+                        "commit-msg",
+                        gix_hook::Invocation::commit_msg(hooks.commit(), &hooks.message_file),
+                    )?;
+                }
+            }
+            let path = git_dir.join(MERGE_MSG);
+            let raw = std::fs::read(&path)
+                .or_raise(|| message!("Could not read the merge message from {}", path.display()))?;
+            let comment_prefix = match self.comment_prefix()? {
+                CommentPrefix::Fixed(prefix) => prefix,
+                CommentPrefix::Auto => "#".into(),
+            };
+            let cleaned = msg::clean(raw.as_bstr(), mode, comment_prefix.as_bstr());
+            if cleaned.is_empty() && !options.allow_empty_message {
+                bail!(Refused::EmptyMessage);
+            }
+            Ok(cleaned)
+        })();
+        let cleaned = match cleaned {
+            Ok(cleaned) => cleaned,
+            Err(err) => {
+                // As `abort_commit()` does, leave the merge for `git commit` to conclude.
+                let mut message = prepared;
+                message.push(b'\n');
+                state(message).write(&git_dir)?;
+                return Err(err);
+            }
+        };
+        if cleaned.contains(&0) {
+            bail!(crate::error::validation(
+                "a NUL byte in commit log message not allowed."
+            ));
+        }
+
+        let (parents, merge_tags) = self.merge_parents(
+            current.id,
+            &MergeInProgress {
+                heads: merge.heads.clone(),
+                no_ff: merge.no_ff,
+            },
+        )?;
+        let mut commit = gix_object::Commit {
+            tree: written.tree_id,
+            parents: parents.iter().copied().collect(),
+            author,
+            committer: committer.to_owned()?,
+            encoding: None,
+            message: cleaned.clone(),
+            extra_headers: merge_tags,
+        };
+        if self.wants_signature(options.sign)? {
+            commit = self.sign_commit(commit)?;
+        }
+        let commit_id = self.write_object(&commit)?.detach();
+
+        // `finish()` updates `HEAD` through to its branch.
+        self.edit_references_as(
+            Some(
+                RefEdit::update(
+                    gix_ref::FullName::try_from("HEAD").or_error()?,
+                    commit_id,
+                    PreviousValue::MustExistAndMatch(gix_ref::Target::Object(current.id)),
+                    msg::normalize_reflog_message(merge.reflog_message.as_bstr()),
+                )
+                .with_deref(true),
+            ),
+            Some(committer),
+        )?;
+        #[cfg(feature = "hooks")]
+        let post_merge = hooks.run(gix_hook::Invocation::post_merge(false));
+        self.remove_merge_state(&git_dir);
+        #[cfg(feature = "hooks")]
+        post_merge?;
+
+        Ok(Outcome {
+            commit_id,
+            tree_id: written.tree_id,
+            parents,
+            message: cleaned,
+            reference,
+            previous: Some(current.id),
+        })
+    }
+
+    /// Refuse to commit a merge as `git merge` does, as `gix-merge` writes the state of a merge.
+    #[cfg(not(feature = "merge"))]
+    fn commit_merge(&self, _options: &Options, _merge: &Merge) -> Result<Outcome> {
+        bail!(Refused::MergeUnsupported)
+    }
+
+    /// Lock the index, refuse its unmerged entries and write its trees, as `prepare_index()` and `write_tree_trivial()` do
+    /// for a commit of the index as it is, and give the index the cache tree of these trees, writing it back if that
+    /// changed it. Return the index and the written trees.
+    fn write_index_tree(&self) -> Result<(gix_index::File, gix_index::write_tree::Outcome)> {
+        let LockedIndex { lock, mut index } = self.lock_index()?;
+        if index.entries().iter().any(|entry| entry.stage_raw() != 0) {
+            bail!(Refused::UnmergedEntries);
+        }
+        let written = index.write_tree(index.tree(), self, Default::default())?;
+        if index.tree() == Some(&written.cache_tree) {
+            drop(lock);
+        } else {
+            index.set_tree(written.cache_tree.clone());
+            self.write_locked_index(lock, &index)?;
+        }
+        Ok((index, written))
+    }
+
+    /// Return whether a commit is signed: as `sign` says, or without it, as `commit.gpgSign` says.
+    fn wants_signature(&self, sign: Option<bool>) -> Result<bool> {
+        Ok(match sign {
+            Some(sign) => sign,
+            None => Commit::GPG_SIGN
+                .enrich_error(self.config.resolved.boolean(Commit::GPG_SIGN))
+                .with_lenient_default(self.config.lenient_config)?
+                .unwrap_or_default(),
         })
     }
 
@@ -497,6 +679,17 @@ impl Repository {
         for name in ["MERGE_HEAD", MERGE_MSG, "MERGE_MODE", SQUASH_MSG] {
             let _ = std::fs::remove_file(git_dir.join(name));
         }
+    }
+
+    /// Remove the state of a merge as `remove_merge_branch_state()` in `branch.c` removes it once `git merge` is done or
+    /// quit: `MERGE_HEAD`, `MERGE_RR`, `MERGE_MSG`, `MERGE_MODE` and the pseudo-reference `AUTO_MERGE`. As in Git, failures
+    /// are ignored.
+    #[cfg(feature = "merge")]
+    pub(crate) fn remove_merge_state(&self, git_dir: &Path) {
+        for name in ["MERGE_HEAD", "MERGE_RR", MERGE_MSG, "MERGE_MODE"] {
+            let _ = std::fs::remove_file(git_dir.join(name));
+        }
+        let _ = self.delete_auto_merge();
     }
 
     /// Delete the pseudo-reference `AUTO_MERGE` along with its reflog if it exists, without following it, as
@@ -641,23 +834,9 @@ struct CommitHooks {
 
 #[cfg(all(feature = "index", feature = "hooks"))]
 impl CommitHooks {
-    /// Prepare to run the hooks of `repo` for a commit by `author`, whose message is prepared in `message_path`.
-    fn new(repo: &Repository, message_path: &Path, author: &gix_actor::Signature) -> Result<Self> {
-        let mut date = b"@".to_vec();
-        author.time.write_to(&mut date).or_error()?;
-        let env = [
-            ("GIT_AUTHOR_NAME", author.name.as_bstr()),
-            ("GIT_AUTHOR_EMAIL", author.email.as_bstr()),
-            ("GIT_AUTHOR_DATE", date.as_bstr()),
-        ]
-        .into_iter()
-        .map(|(name, value)| {
-            Ok((
-                name.into(),
-                Some(gix_path::from_bstr(value)?.into_owned().into_os_string()),
-            ))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    /// Prepare to run the hooks of `repo` for a commit whose message is prepared in `message_path`, which receive the
+    /// variables of `env` in addition to those of the commit.
+    fn new(repo: &Repository, message_path: &Path, env: Vec<(OsString, Option<OsString>)>) -> Result<Self> {
         Ok(CommitHooks {
             hooks: repo.hooks()?,
             index_file: hook_path(repo, &repo.index_path())?,
@@ -693,6 +872,26 @@ impl CommitHooks {
         }
         Ok(!outcome.hooks.is_empty())
     }
+}
+
+/// Return the `GIT_AUTHOR_*` variables that `determine_author_info()` exports for the hooks of a commit by `author`.
+#[cfg(all(feature = "index", feature = "hooks"))]
+fn author_env(author: &gix_actor::Signature) -> Result<Vec<(OsString, Option<OsString>)>> {
+    let mut date = b"@".to_vec();
+    author.time.write_to(&mut date).or_error()?;
+    [
+        ("GIT_AUTHOR_NAME", author.name.as_bstr()),
+        ("GIT_AUTHOR_EMAIL", author.email.as_bstr()),
+        ("GIT_AUTHOR_DATE", date.as_bstr()),
+    ]
+    .into_iter()
+    .map(|(name, value)| {
+        Ok((
+            name.into(),
+            Some(gix_path::from_bstr(value)?.into_owned().into_os_string()),
+        ))
+    })
+    .collect()
 }
 
 /// Return `path` as Git passes it to hooks: relative to the root of the worktree if the Git directory of `repo` is the

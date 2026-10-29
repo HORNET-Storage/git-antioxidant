@@ -1,5 +1,7 @@
 //! Commit the index as `git commit` does, with [`Repository::commit_index()`](crate::Repository::commit_index()).
 
+use std::ffi::OsString;
+
 use gix_error::ClassificationMarker;
 use gix_hash::ObjectId;
 
@@ -35,6 +37,52 @@ pub struct Options {
     /// The action in front of the message of the reflog entries of the commit, as `GIT_REFLOG_ACTION` sets it, or `None`
     /// for Git's `commit`, `commit (initial)`, `commit (amend)` or `commit (merge)`.
     pub reflog_action: Option<BString>,
+    /// Clean the message as Git cleans a message that was edited in an editor, as `git commit` does when it starts one,
+    /// which it does unless `-m`, `-F` or `--no-edit` give the message: [`Cleanup::Default`] then removes comment lines,
+    /// and [`Cleanup::Scissors`] removes the scissors line and everything below it. No editor is started, and the hooks
+    /// still learn that none is used. `git merge --continue` commits as `git commit` does with an editor.
+    pub edited: bool,
+    /// Commit a merge without conflicts as `git merge` commits it, as [`Merge`] describes, instead of as `git commit`
+    /// does, which `None` stands for.
+    pub merge: Option<Merge>,
+}
+
+/// How [`Repository::commit_index()`](crate::Repository::commit_index()) commits a merge without conflicts as `git merge`
+/// commits it, with `prepare_to_commit()`, `finish_automerge()` and `finish()` in `builtin/merge.c`, when
+/// [`Options::merge`] gives it.
+///
+/// * The parents are the commit of `HEAD` and [`heads`](Self::heads), as for a merge in progress, whose `MERGE_HEAD` isn't
+///   read. `HEAD` has to point to a commit, and [`Options::amend`] is refused.
+/// * The tree is that of the index, written before the hooks run, as `write_tree_trivial()` writes it.
+/// * The message is that of [`Options::message`], which `$GIT_DIR/MERGE_MSG` receives without cleaning. First
+///   `pre-merge-commit` runs, unless [`Options::no_verify`] is set; then `MERGE_HEAD`, `MERGE_MODE` and `MERGE_MSG` are
+///   written as `write_merge_heads()` writes them; then `prepare-commit-msg` runs with `MERGE_MSG` and `merge`, and
+///   `commit-msg` with `MERGE_MSG` unless [`Options::no_verify`] is set. The hooks receive `GIT_INDEX_FILE`,
+///   `GIT_EDITOR=:` and [`hook_env`](Self::hook_env), but no `GIT_AUTHOR_*` variables, which `git merge` doesn't export.
+/// * The message is read back from `MERGE_MSG` and cleaned as [`Options::cleanup`] or `commit.cleanup` say, with `#` as
+///   comment prefix if `core.commentChar` is `auto`, as `git merge` chooses none. A message that is empty after
+///   cleaning is refused unless [`Options::allow_empty_message`] is set.
+/// * If a hook fails or the message is refused, the state of the merge is written as `abort_commit()` writes it, for
+///   `git commit` to conclude the merge: `MERGE_HEAD`, `MERGE_MODE`, and `MERGE_MSG` with the message as given followed
+///   by a line feed.
+/// * Otherwise `HEAD`, or its branch, points to the commit with the reflog message
+///   [`reflog_message`](Self::reflog_message), then `post-merge` runs with `0` and [`hook_env`](Self::hook_env), and
+///   last, the state of the merge goes away as `remove_merge_branch_state()` removes it: `MERGE_HEAD`, `MERGE_RR`,
+///   `MERGE_MSG`, `MERGE_MODE` and the pseudo-reference `AUTO_MERGE`. `COMMIT_EDITMSG` isn't written, and `post-commit`
+///   doesn't run.
+#[derive(Debug, Default, Clone)]
+pub struct Merge {
+    /// The commits that are merged into `HEAD`, as `MERGE_HEAD` lists them: an annotated tag that is merged with its own
+    /// id.
+    pub heads: Vec<ObjectId>,
+    /// Whether `HEAD` stays a parent even if a merged commit reaches it, as `--no-ff` asks for, which `MERGE_MODE` records.
+    pub no_ff: bool,
+    /// The message of the reflog entries of the commit, which `git merge` writes as
+    /// `<action>: Merge made by the 'ort' strategy.`.
+    pub reflog_message: BString,
+    /// The variables that `git merge` exports for the hooks it runs, as names with their values: `GIT_REFLOG_ACTION`, and
+    /// `GITHEAD_<id>` with the name of each merged commit as it was given.
+    pub hook_env: Vec<(OsString, OsString)>,
 }
 
 /// What [`Repository::commit_index()`](crate::Repository::commit_index()) did.
@@ -70,7 +118,8 @@ pub enum Error {
     NothingToAmend,
     /// [`Options::amend`] was given while a merge is in progress.
     AmendInMerge,
-    /// A merge is in progress, as `MERGE_HEAD` exists, but `gix` was built without its `merge` feature, which reads it.
+    /// A merge is in progress, as `MERGE_HEAD` exists, or [`Options::merge`] asks to commit one, but `gix` was built
+    /// without its `merge` feature, which reads and writes the state of a merge.
     MergeUnsupported,
     /// `commit.gpgSign` or [`Options::sign`] asks for a signature, but `gix` was built without its `command` feature,
     /// which starts the signing program.
