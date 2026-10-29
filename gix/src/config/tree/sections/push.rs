@@ -6,6 +6,13 @@ use crate::{
 impl Push {
     /// The `push.default` key
     pub const DEFAULT: Default = Default::new_with_validate("default", &config::Tree::PUSH, validate::Default);
+    /// The `push.followTags` key, which makes pushes send the annotated tags pointing into what they push, as
+    /// `git push --follow-tags` does.
+    pub const FOLLOW_TAGS: keys::Boolean = keys::Boolean::new_boolean("followTags", &config::Tree::PUSH);
+    /// The `push.pushOption` key, with the strings sent to the hooks of the remote when no `--push-option` is given.
+    ///
+    /// It may be given more than once, and an empty value clears the values given before it.
+    pub const PUSH_OPTION: keys::String = keys::String::new_string("pushOption", &config::Tree::PUSH);
 }
 
 impl Section for Push {
@@ -14,11 +21,11 @@ impl Section for Push {
     }
 
     fn keys(&self) -> &[&dyn Key] {
-        &[&Self::DEFAULT]
+        &[&Self::DEFAULT, &Self::FOLLOW_TAGS, &Self::PUSH_OPTION]
     }
 }
 
-/// The `remote.<name>.tagOpt` key type.
+/// The `push.default` key type.
 pub type Default = keys::Any<validate::Default>;
 
 mod default {

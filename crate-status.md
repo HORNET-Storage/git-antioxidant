@@ -159,7 +159,12 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
             * [x] 'ref-in-want'
             * [ ] 'wanted-ref'
             * [x] standard negotiation algorithms `consecutive`, `skipping` and `noop`.
-        * [ ] push
+        * [x] push
+            * [x] refspecs, `remote.<name>.push` and `push.default`, `--delete`, `--tags` and `--follow-tags`
+            * [x] `--force`, `--force-with-lease`, `--atomic`, `--dry-run` and push options
+            * [x] the `pre-push` hook and the update of remote-tracking references
+            * [ ] `--mirror`, `--prune`, `--set-upstream`, `--signed`, `--force-if-includes` and push negotiation
+            * [ ] deltas between the objects of the pack that is sent
         * [x] ls-refs
         * [x] ls-refs with ref-spec filter
         * [x] list, find by name
@@ -170,8 +175,9 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
         * [ ] groups
         * [ ] [remote and branch files](https://github.com/git/git/blob/master/remote.c#L300)
     * [ ] execute hooks
-        * [ ] respect [`core.hooksPath`](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corehooksPath)
-        * [ ] client-side hooks for checkout, commit, rebase, merge, am and push
+        * [x] respect [`core.hooksPath`](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corehooksPath) and the hooks of the configuration
+        * [x] client-side hooks for commit and push
+        * [ ] client-side hooks for checkout, rebase, merge and am
         * [ ] receive-side hooks and [`reference-transaction`](https://git-scm.com/docs/githooks#_reference_transaction)
     * **refs**
         * [ ] run transaction hooks and handle special repository states like quarantine

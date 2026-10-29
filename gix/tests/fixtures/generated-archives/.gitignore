@@ -131,3 +131,7 @@
 /make_reset_repos_sha256.tar
 /make_merge_apply_repos.tar
 /make_merge_apply_repos_sha256.tar
+# The push tests push with gix to the `git-receive-pack` of the test host and run the same `pre-push` hook as Git did,
+# so this push fixture is always made by the test host instead of being archived.
+/make_push_repos.tar
+/make_push_repos_sha256.tar
