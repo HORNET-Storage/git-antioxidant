@@ -209,7 +209,9 @@ impl Repository {
 
         let message_path = git_dir.join(COMMIT_EDITMSG);
         #[cfg(feature = "hooks")]
-        let hooks = CommitHooks::new(self, &message_path, author_env(&author)?)?;
+        let hooks = CommitHooks::new(self, gix_hook::invocation::Editor::NotUsed, author_env(&author)?)?;
+        #[cfg(feature = "hooks")]
+        let message_file = hook_path(self, &message_path)?;
         #[cfg(feature = "hooks")]
         let pre_commit_ran =
             !options.no_verify && hooks.run_or_stop("pre-commit", gix_hook::Invocation::pre_commit(hooks.commit()))?;
@@ -261,12 +263,12 @@ impl Repository {
         {
             hooks.run_or_stop(
                 "prepare-commit-msg",
-                gix_hook::Invocation::prepare_commit_msg(hooks.commit(), &hooks.message_file, source.to_hook()),
+                gix_hook::Invocation::prepare_commit_msg(hooks.commit(), &message_file, source.to_hook()),
             )?;
             if !options.no_verify {
                 hooks.run_or_stop(
                     "commit-msg",
-                    gix_hook::Invocation::commit_msg(hooks.commit(), &hooks.message_file),
+                    gix_hook::Invocation::commit_msg(hooks.commit(), &message_file),
                 )?;
             }
         }
@@ -409,13 +411,15 @@ impl Repository {
         #[cfg(feature = "hooks")]
         let hooks = CommitHooks::new(
             self,
-            &git_dir.join(MERGE_MSG),
+            gix_hook::invocation::Editor::NotUsed,
             merge
                 .hook_env
                 .iter()
                 .map(|(name, value)| (name.clone(), Some(value.clone())))
                 .collect(),
         )?;
+        #[cfg(feature = "hooks")]
+        let message_file = hook_path(self, &git_dir.join(MERGE_MSG))?;
         // `prepare_to_commit()` in `builtin/merge.c` runs the hooks and reads the message back.
         let cleaned = (|| -> Result<BString> {
             #[cfg(feature = "hooks")]
@@ -432,14 +436,14 @@ impl Repository {
                     "prepare-commit-msg",
                     gix_hook::Invocation::prepare_commit_msg(
                         hooks.commit(),
-                        &hooks.message_file,
+                        &message_file,
                         Some(gix_hook::invocation::MessageSource::Merge),
                     ),
                 )?;
                 if !options.no_verify {
                     hooks.run_or_stop(
                         "commit-msg",
-                        gix_hook::Invocation::commit_msg(hooks.commit(), &hooks.message_file),
+                        gix_hook::Invocation::commit_msg(hooks.commit(), &message_file),
                     )?;
                 }
             }
@@ -819,49 +823,58 @@ impl Source {
 
 /// The hooks of a commit, with what Git passes to them.
 #[cfg(all(feature = "index", feature = "hooks"))]
-struct CommitHooks {
+pub(crate) struct CommitHooks {
     /// The hooks of the repository.
     hooks: gix_hook::Hooks,
     /// The index of the commit as Git names it in `GIT_INDEX_FILE`.
     index_file: PathBuf,
-    /// `COMMIT_EDITMSG` as Git names it to the hooks.
-    message_file: PathBuf,
-    /// The `GIT_AUTHOR_*` variables that `determine_author_info()` exports for the hooks.
-    env: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
+    /// Whether an editor edits the message, which leaves `GIT_EDITOR` alone.
+    editor: gix_hook::invocation::Editor,
+    /// The variables that the process of the commit adds for its hooks.
+    env: Vec<(OsString, Option<OsString>)>,
 }
 
 #[cfg(all(feature = "index", feature = "hooks"))]
 impl CommitHooks {
-    /// Prepare to run the hooks of `repo` for a commit whose message is prepared in `message_path`, which receive the
-    /// variables of `env` in addition to those of the commit.
-    fn new(repo: &Repository, message_path: &Path, env: Vec<(OsString, Option<OsString>)>) -> Result<Self> {
+    /// Prepare to run the hooks of `repo` for a commit, with `editor` telling them if an editor edits its message, which
+    /// receive the variables of `env` in addition to those of the commit.
+    pub(crate) fn new(
+        repo: &Repository,
+        editor: gix_hook::invocation::Editor,
+        env: Vec<(OsString, Option<OsString>)>,
+    ) -> Result<Self> {
         Ok(CommitHooks {
             hooks: repo.hooks()?,
             index_file: hook_path(repo, &repo.index_path())?,
-            message_file: hook_path(repo, message_path)?,
+            editor,
             env,
         })
     }
 
     /// Return what the hooks of a commit learn about it.
-    fn commit(&self) -> gix_hook::invocation::Commit<'_> {
+    pub(crate) fn commit(&self) -> gix_hook::invocation::Commit<'_> {
         gix_hook::invocation::Commit {
             index_file: &self.index_file,
-            editor: gix_hook::invocation::Editor::NotUsed,
+            editor: self.editor,
         }
     }
 
-    /// Run the hooks of `invocation`, whose failure Git ignores.
-    fn run(&self, mut invocation: gix_hook::Invocation<'_>) -> Result<()> {
+    /// Return `true` if a hook of `event` exists, as `hook_exists()` tells.
+    #[cfg(feature = "rebase")]
+    pub(crate) fn exists(&self, event: &str) -> bool {
+        !self.hooks.find(event).hooks.is_empty()
+    }
+
+    /// Run the hooks of `invocation` and return how they ended, which is up to the caller as Git ignores the failure of
+    /// some of them.
+    pub(crate) fn run(&self, mut invocation: gix_hook::Invocation<'_>) -> Result<gix_hook::run::Outcome> {
         invocation.env.extend(self.env.iter().cloned());
-        self.hooks.run(&invocation)?;
-        Ok(())
+        self.hooks.run(&invocation)
     }
 
     /// Run the hooks of `invocation` for `event`, whose failure stops the commit, and return `true` if any ran.
-    fn run_or_stop(&self, event: &'static str, mut invocation: gix_hook::Invocation<'_>) -> Result<bool> {
-        invocation.env.extend(self.env.iter().cloned());
-        let outcome = self.hooks.run(&invocation)?;
+    fn run_or_stop(&self, event: &'static str, invocation: gix_hook::Invocation<'_>) -> Result<bool> {
+        let outcome = self.run(invocation)?;
         if !outcome.success() {
             bail!(Refused::HookFailed {
                 event,
@@ -874,7 +887,7 @@ impl CommitHooks {
 
 /// Return the `GIT_AUTHOR_*` variables that `determine_author_info()` exports for the hooks of a commit by `author`.
 #[cfg(all(feature = "index", feature = "hooks"))]
-fn author_env(author: &gix_actor::Signature) -> Result<Vec<(OsString, Option<OsString>)>> {
+pub(crate) fn author_env(author: &gix_actor::Signature) -> Result<Vec<(OsString, Option<OsString>)>> {
     let mut date = b"@".to_vec();
     author.time.write_to(&mut date).or_error()?;
     [
@@ -896,7 +909,7 @@ fn author_env(author: &gix_actor::Signature) -> Result<Vec<(OsString, Option<OsS
 /// `.git` directory there, as `git` names its files when it runs in such a worktree, and absolute otherwise, with slashes
 /// on Windows as in Git for Windows.
 #[cfg(all(feature = "index", feature = "hooks"))]
-fn hook_path(repo: &Repository, path: &Path) -> Result<PathBuf> {
+pub(crate) fn hook_path(repo: &Repository, path: &Path) -> Result<PathBuf> {
     let current_dir = repo.current_dir();
     let path = current_dir.join(path);
     let relative = repo

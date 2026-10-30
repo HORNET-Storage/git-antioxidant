@@ -124,19 +124,3 @@ pub(super) fn worktree_root(repo: &Repository) -> Result<PathBuf> {
         .ok_or_else(|| message("The repository has no worktree").validation_error())?;
     Ok(repo.current_dir().join(worktree))
 }
-
-/// Return `path` as Git names it to hooks and editors that it starts in the root of the worktree: relative to the root
-/// if the Git directory of `repo` is the `.git` directory there, and absolute otherwise, with slashes on Windows as in
-/// Git for Windows.
-#[cfg(feature = "hooks")]
-pub(super) fn hook_path(repo: &Repository, path: &Path) -> Result<PathBuf> {
-    let current_dir = repo.current_dir();
-    let path = current_dir.join(path);
-    let relative = repo
-        .workdir()
-        .map(|workdir| current_dir.join(workdir))
-        .filter(|workdir| current_dir.join(repo.git_dir()) == workdir.join(".git"))
-        .and_then(|workdir| path.strip_prefix(workdir).ok().map(Path::to_path_buf));
-    let path = gix_path::to_unix_separators_on_windows(gix_path::into_bstr(relative.unwrap_or(path))?);
-    Ok(gix_path::from_bstr(path)?.into_owned())
-}

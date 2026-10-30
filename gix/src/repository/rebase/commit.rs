@@ -15,6 +15,8 @@ use gix_sequencer::{
 };
 
 use super::{Sequencer, message_from_subject, programs::Edited};
+#[cfg(feature = "hooks")]
+use crate::repository::commit::{CommitHooks, author_env, hook_path};
 use crate::{
     Result,
     bstr::{BStr, BString, ByteSlice},
@@ -146,7 +148,7 @@ impl Sequencer<'_> {
         }
 
         #[cfg(feature = "hooks")]
-        let hooks = CommitHooks::new(self, false, Vec::new())?;
+        let hooks = CommitHooks::new(self.repo, gix_hook::invocation::Editor::NotUsed, Vec::new())?;
         #[cfg(feature = "hooks")]
         if hooks.exists("prepare-commit-msg") {
             let path = self.git_dir().join(COMMIT_EDITMSG);
@@ -156,12 +158,13 @@ impl Sequencer<'_> {
             } else {
                 gix_hook::invocation::MessageSource::Message
             };
-            let message_file = super::programs::hook_path(self.repo, &path)?;
-            if !hooks.run(gix_hook::Invocation::prepare_commit_msg(
+            let message_file = hook_path(self.repo, &path)?;
+            let outcome = hooks.run(gix_hook::Invocation::prepare_commit_msg(
                 hooks.commit(),
                 &message_file,
                 Some(source),
-            ))? {
+            ))?;
+            if !outcome.success() {
                 return Ok(Some(Committed::Refused("'prepare-commit-msg' hook failed".into())));
             }
             message = read_file(&path)?;
@@ -262,13 +265,18 @@ impl Sequencer<'_> {
                         .into(),
                 ),
             ));
-            CommitHooks::new(self, flags.edit, env)?
+            let editor = if flags.edit {
+                gix_hook::invocation::Editor::Used
+            } else {
+                gix_hook::invocation::Editor::NotUsed
+            };
+            CommitHooks::new(self.repo, editor, env)?
         };
         let tree = self.write_index_tree()?;
         // The tree is written again after `pre-commit`, which may have changed the index.
         #[cfg(feature = "hooks")]
         let tree = if flags.verify && hooks.exists("pre-commit") {
-            if !hooks.run(gix_hook::Invocation::pre_commit(hooks.commit()))? {
+            if !hooks.run(gix_hook::Invocation::pre_commit(hooks.commit()))?.success() {
                 return Ok(Committed::Refused("the pre-commit hook failed".into()));
             }
             self.write_index_tree()?
@@ -347,19 +355,20 @@ impl Sequencer<'_> {
             } else {
                 gix_hook::invocation::MessageSource::Message
             };
-            let message_file = super::programs::hook_path(self.repo, &message_path)?;
-            if !hooks.run(gix_hook::Invocation::prepare_commit_msg(
+            let message_file = hook_path(self.repo, &message_path)?;
+            let outcome = hooks.run(gix_hook::Invocation::prepare_commit_msg(
                 hooks.commit(),
                 &message_file,
                 Some(source),
-            ))? {
+            ))?;
+            if !outcome.success() {
                 return Ok(Committed::Refused("the prepare-commit-msg hook failed".into()));
             }
         }
         if flags.edit {
             let index_file = self.repo.index_path();
             #[cfg(feature = "hooks")]
-            let index_file = super::programs::hook_path(self.repo, &index_file)?;
+            let index_file = hook_path(self.repo, &index_file)?;
             let env = [("GIT_INDEX_FILE".into(), index_file.into_os_string())];
             if let Edited::Failed(reason) = self.edit_message(&message_path, &env)? {
                 return Ok(Committed::Refused(format!(
@@ -369,8 +378,11 @@ impl Sequencer<'_> {
         }
         #[cfg(feature = "hooks")]
         if flags.verify && hooks.exists("commit-msg") {
-            let message_file = super::programs::hook_path(self.repo, &message_path)?;
-            if !hooks.run(gix_hook::Invocation::commit_msg(hooks.commit(), &message_file))? {
+            let message_file = hook_path(self.repo, &message_path)?;
+            if !hooks
+                .run(gix_hook::Invocation::commit_msg(hooks.commit(), &message_file))?
+                .success()
+            {
                 return Ok(Committed::Refused("the commit-msg hook failed".into()));
             }
         }
@@ -613,78 +625,4 @@ pub(super) fn remove_file(path: &Path) -> Result<()> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err).or_raise(|| message!("could not remove '{}'", path.display())),
     }
-}
-
-/// The hooks of a commit of the rebase, with what Git passes to them.
-#[cfg(feature = "hooks")]
-struct CommitHooks {
-    /// The hooks of the repository.
-    hooks: gix_hook::Hooks,
-    /// The index, as Git names it in `GIT_INDEX_FILE`.
-    index_file: std::path::PathBuf,
-    /// Whether the editor edits the message, which leaves `GIT_EDITOR` alone.
-    editor: gix_hook::invocation::Editor,
-    /// The variables that the process of the commit adds for its hooks.
-    env: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
-}
-
-#[cfg(feature = "hooks")]
-impl CommitHooks {
-    /// Prepare to run the hooks of a commit of `sequencer`, whose message the editor edits if `editor_used`, with the
-    /// variables of `env`.
-    fn new(
-        sequencer: &Sequencer<'_>,
-        editor_used: bool,
-        env: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
-    ) -> Result<Self> {
-        Ok(CommitHooks {
-            hooks: sequencer.repo.hooks()?,
-            index_file: super::programs::hook_path(sequencer.repo, &sequencer.repo.index_path())?,
-            editor: if editor_used {
-                gix_hook::invocation::Editor::Used
-            } else {
-                gix_hook::invocation::Editor::NotUsed
-            },
-            env,
-        })
-    }
-
-    /// Return what the hooks of the commit learn about it.
-    fn commit(&self) -> gix_hook::invocation::Commit<'_> {
-        gix_hook::invocation::Commit {
-            index_file: &self.index_file,
-            editor: self.editor,
-        }
-    }
-
-    /// Return `true` if a hook of `event` exists, as `hook_exists()` tells.
-    fn exists(&self, event: &str) -> bool {
-        !self.hooks.find(event).hooks.is_empty()
-    }
-
-    /// Run the hooks of `invocation` and return `true` if they succeeded or none ran.
-    fn run(&self, mut invocation: gix_hook::Invocation<'_>) -> Result<bool> {
-        invocation.env.extend(self.env.iter().cloned());
-        Ok(self.hooks.run(&invocation)?.success())
-    }
-}
-
-/// Return the `GIT_AUTHOR_*` variables that `git commit` exports for its hooks with the author of the commit.
-#[cfg(feature = "hooks")]
-fn author_env(author: &gix_actor::Signature) -> Result<Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>> {
-    let mut date = b"@".to_vec();
-    author.time.write_to(&mut date).or_error()?;
-    [
-        ("GIT_AUTHOR_NAME", author.name.as_bstr()),
-        ("GIT_AUTHOR_EMAIL", author.email.as_bstr()),
-        ("GIT_AUTHOR_DATE", date.as_bstr()),
-    ]
-    .into_iter()
-    .map(|(name, value)| {
-        Ok((
-            name.into(),
-            Some(gix_path::from_bstr(value)?.into_owned().into_os_string()),
-        ))
-    })
-    .collect()
 }
