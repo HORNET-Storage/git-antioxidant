@@ -4,7 +4,7 @@ use gix_error::{OptionExt, Result};
 
 use crate::{
     Entry, Version,
-    decode::header,
+    decode::{ensure_in_alloc_limit, header},
     entry,
     util::{read_u32, split_at_byte_exclusive, var_int},
 };
@@ -99,6 +99,7 @@ pub fn chunk<'a>(
     num_entries: u32,
     object_hash: gix_hash::Kind,
     version: Version,
+    alloc_limit_bytes: Option<usize>,
 ) -> Result<(Outcome, &'a [u8])> {
     let mut is_sparse = false;
     let has_delta_paths = version == Version::V4;
@@ -112,8 +113,9 @@ pub fn chunk<'a>(
             object_hash.len_in_bytes(),
             has_delta_paths,
             prev_path,
+            alloc_limit_bytes,
         )
-        .ok_or_raise(|| gix_error::message!("Could not parse entry at index {idx}").corrupted())?;
+        .ok_or_raise(|| gix_error::message!("Could not parse entry at index {idx}").corrupted())??;
 
         data = remaining;
         is_sparse |= entry.mode.is_sparse();
@@ -127,14 +129,18 @@ pub fn chunk<'a>(
     Ok((Outcome { is_sparse }, data))
 }
 
-/// Note that `prev_path` is only useful if the version is V4
+/// Note that `prev_path` is only useful if the version is V4.
+///
+/// Return `None` if the entry is malformed, and an error if the part of its path that a V4 entry takes from the previous
+/// one would make `path_backing` exceed `alloc_limit_bytes`.
 fn load_one<'a>(
     data: &'a [u8],
     path_backing: &mut Vec<u8>,
     hash_len: usize,
     has_delta_paths: bool,
     prev_path_and_buf: Option<(Range<usize>, &mut Vec<u8>)>,
-) -> Option<(Entry, &'a [u8])> {
+    alloc_limit_bytes: Option<usize>,
+) -> Option<Result<(Entry, &'a [u8])>> {
     let first_byte_of_entry = data.as_ptr() as usize;
     let (ctime_secs, data) = read_u32(data)?;
     let (ctime_nsecs, data) = read_u32(data)?;
@@ -161,17 +167,19 @@ fn load_one<'a>(
     let start = path_backing.len();
     let data = if has_delta_paths {
         let (strip_len, data) = var_int(data)?;
+        let (path, data) = split_at_byte_exclusive(data, 0)?;
         if let Some((prev_path, buf)) = prev_path_and_buf {
             let end = prev_path.end.checked_sub(strip_len.try_into().ok()?)?;
             let copy_len = end.checked_sub(prev_path.start)?;
             if copy_len > 0 {
+                if let Err(err) = ensure_in_alloc_limit(start + copy_len + path.len(), alloc_limit_bytes) {
+                    return Some(Err(err));
+                }
                 buf.resize(copy_len, 0);
                 buf.copy_from_slice(&path_backing[prev_path.start..end]);
                 path_backing.extend_from_slice(buf);
             }
         }
-
-        let (path, data) = split_at_byte_exclusive(data, 0)?;
         path_backing.extend_from_slice(path);
 
         data
@@ -191,7 +199,7 @@ fn load_one<'a>(
     };
     let path_range = start..path_backing.len();
 
-    Some((
+    Some(Ok((
         Entry {
             stat: entry::Stat {
                 ctime: entry::stat::Time {
@@ -215,7 +223,7 @@ fn load_one<'a>(
             path: path_range,
         },
         data,
-    ))
+    )))
 }
 
 #[inline]

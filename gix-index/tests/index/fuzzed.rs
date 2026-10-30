@@ -169,6 +169,78 @@ fn alloc_limit_constructor_rejects_oversized_allocations() {
     assert!(!err.can_retry(), "configured limits can't be fixed by retrying");
 }
 
+/// Return an entry of a V4 index that repeats the whole path of the entry before it and appends `path` to it.
+fn v4_entry(path: &[u8]) -> Vec<u8> {
+    const STAT_HASH_FLAGS_AND_BYTES_TO_REMOVE: usize = 40 + 20 + 2 + 1;
+    let mut entry = vec![0; STAT_HASH_FLAGS_AND_BYTES_TO_REMOVE];
+    entry.extend_from_slice(path);
+    entry.push(0);
+    entry
+}
+
+/// Return a V4 index of `blocks` of entries, with the extensions that let threads decode each block on its own.
+fn v4_index(blocks: &[Vec<Vec<u8>>]) -> Result<Vec<u8>> {
+    let num_entries: usize = blocks.iter().map(Vec::len).sum();
+    let mut index = b"DIRC".to_vec();
+    index.extend_from_slice(&4u32.to_be_bytes());
+    index.extend_from_slice(&(num_entries as u32).to_be_bytes());
+    let mut offsets = 1u32.to_be_bytes().to_vec();
+    for block in blocks {
+        offsets.extend_from_slice(&(index.len() as u32).to_be_bytes());
+        offsets.extend_from_slice(&(block.len() as u32).to_be_bytes());
+        index.extend(block.iter().flatten());
+    }
+
+    let start_of_extensions = index.len() as u32;
+    let offsets_len = (offsets.len() as u32).to_be_bytes();
+    index.extend_from_slice(b"IEOT");
+    index.extend_from_slice(&offsets_len);
+    index.extend_from_slice(&offsets);
+    let mut checksum_of_extensions = gix_hash::hasher(gix_hash::Kind::Sha1);
+    checksum_of_extensions.update(b"IEOT");
+    checksum_of_extensions.update(&offsets_len);
+    index.extend_from_slice(b"EOIE");
+    index.extend_from_slice(&24u32.to_be_bytes());
+    index.extend_from_slice(&start_of_extensions.to_be_bytes());
+    index.extend_from_slice(checksum_of_extensions.try_finalize()?.as_bytes());
+    index.extend_from_slice(&[0; 20]);
+    Ok(index)
+}
+
+/// A path repeated by an entry costs that entry two bytes in the file, and its whole length in memory, whether one thread
+/// decodes all entries or several decode a block each and the paths they collected are put together.
+#[test]
+fn alloc_limit_applies_to_the_paths_of_v4_entries() -> Result {
+    let block = vec![v4_entry(&[b'a'; 1000]), v4_entry(b"")];
+    let index = v4_index(&[block.clone(), block])?;
+    let decode = |thread_limit, alloc_limit_bytes| {
+        gix_index::State::from_bytes(
+            &index,
+            FileTime::from_unix_time(0, 0),
+            gix_hash::Kind::Sha1,
+            gix_index::decode::Options {
+                thread_limit: Some(thread_limit),
+                alloc_limit_bytes,
+                ..Default::default()
+            },
+        )
+    };
+
+    for thread_limit in [1, 3] {
+        let (state, _checksum) = decode(thread_limit, None)?;
+        assert_eq!(state.entries().len(), 4, "the index is valid");
+
+        let err = decode(thread_limit, Some(3000)).expect_err("all paths need at least 4000 bytes");
+        assert!(
+            err.classify().any(|classification| {
+                classification.class() == Class::ResourceExhaustion(gix_error::ResourceExhaustionKind::AllocationLimit)
+            }),
+            "exceeding the limit isn't malformed input, with {thread_limit} threads: {err:#}"
+        );
+    }
+    Ok(())
+}
+
 fn artifact_paths(target: &str) -> Vec<PathBuf> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../fuzz/artifacts")

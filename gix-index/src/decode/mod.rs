@@ -29,7 +29,9 @@ pub struct Options {
     ///
     /// We will abort reading this file if it doesn't match.
     pub expected_checksum: Option<gix_hash::ObjectId>,
-    /// Configure the maximum size of a single allocation caused by untrusted on-disk index data.
+    /// Configure the maximum size of a single allocation caused by untrusted on-disk index data. This includes the paths
+    /// of all entries, which can become far larger than the file in a V4 index, whose entries can repeat the path before
+    /// them with a few bytes.
     ///
     /// Use `None` to disable the limit, which is also the default.
     pub alloc_limit_bytes: Option<usize>,
@@ -135,6 +137,7 @@ impl State {
                                                         offset.num_entries,
                                                         object_hash,
                                                         version,
+                                                        alloc_limit_bytes,
                                                     )?;
                                                     is_sparse |= chunk_is_sparse;
                                                 }
@@ -163,6 +166,13 @@ impl State {
                             //       Maybe benchmarks can tell if that is noticeable later at 200/400GB/s memory bandwidth, or maybe just
                             //       100GB/s on a single core.
                             while let (Ok(lhs), Some(res)) = (acc.as_mut(), results.next()) {
+                                let res = res.and_then(|rhs| {
+                                    ensure_in_alloc_limit(
+                                        lhs.path_backing.len() + rhs.path_backing.len(),
+                                        alloc_limit_bytes,
+                                    )?;
+                                    Ok(rhs)
+                                });
                                 match res {
                                     Ok(mut rhs) => {
                                         lhs.is_sparse |= rhs.is_sparse;
@@ -187,6 +197,7 @@ impl State {
                             num_entries,
                             object_hash,
                             version,
+                            alloc_limit_bytes,
                         ),
                     };
                     let ext_res = extension_loading.map_or_else(
@@ -205,6 +216,7 @@ impl State {
                     num_entries,
                     object_hash,
                     version,
+                    alloc_limit_bytes,
                 )?;
                 let (ext, data) = extension::decode::all(data, object_hash, alloc_limit_bytes)?;
                 (entries, ext, data)
@@ -284,6 +296,7 @@ fn entries(
     num_entries: u32,
     object_hash: gix_hash::Kind,
     version: Version,
+    alloc_limit_bytes: Option<usize>,
 ) -> Result<(EntriesOutcome, &[u8])> {
     let mut entries = vec_with_capacity(num_entries as usize)?;
     let mut path_backing = vec_with_capacity(path_backing_buffer_size)?;
@@ -294,6 +307,7 @@ fn entries(
         num_entries,
         object_hash,
         version,
+        alloc_limit_bytes,
     )
     .map(|(entries::Outcome { is_sparse }, data): (entries::Outcome, &[u8])| {
         (
