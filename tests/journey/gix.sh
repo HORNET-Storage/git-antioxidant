@@ -171,8 +171,8 @@ title "gix (with repository)"
     it "launches an existing editor path with spaces directly" && {
       expect_run $SUCCESSFULLY env GIT_EDITOR="$PWD/check editor" "$exe_plumbing" --no-verbose editor first second
     }
-    it "launches a trusted relative editor path from the repository directly" && {
-      expect_run $SUCCESSFULLY env GIT_EDITOR='./check editor' "$exe_plumbing" --no-verbose editor first second
+    it "gives a relative editor path with spaces to the shell as a command line, which doesn't find it, as Git does" && {
+      expect_run $WITH_FAILURE env GIT_EDITOR='./check editor' "$exe_plumbing" --no-verbose editor first second
     }
     it "rejects an explicitly empty editor" && {
       expect_run $WITH_FAILURE env GIT_EDITOR= "$exe_plumbing" --no-verbose editor

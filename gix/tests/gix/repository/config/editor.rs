@@ -80,6 +80,34 @@ fn follows_git_editor_precedence() -> gix_testtools::TestResult {
 }
 
 #[test]
+fn the_editor_is_a_command_line_unless_it_is_the_absolute_path_of_a_file() -> gix_testtools::TestResult {
+    if gix_testtools::run_in_isolated_process()? {
+        return Ok(());
+    }
+    let _term = Env::new().set("TERM", "xterm");
+    let dir = gix_testtools::tempfile::TempDir::new()?;
+    std::fs::write(dir.path().join("my editor"), "")?;
+    let parent = dir.path().to_string_lossy().replace('\\', "/");
+
+    // The fixture is found relative to the current directory, which then has to change for the editors of the repositories.
+    let cases = [
+        ("my editor".to_owned(), true),
+        (format!("{parent}/my editor"), false),
+        (format!("{parent}/my editor --wait"), true),
+    ]
+    .map(|(editor, shell)| (repository([format!("core.editor={editor}")]), editor, shell));
+    let _cwd = gix_testtools::set_current_dir(dir.path())?;
+    for (repo, editor, shell) in cases {
+        let prepared = repo?.editor_command()?.expect("the editor is configured");
+        assert_eq!(
+            prepared.use_shell, shell,
+            "{editor}: a file of the current directory doesn't change what the command line means"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 #[serial]
 fn dumb_terminals_require_an_explicit_non_visual_editor() -> gix_testtools::TestResult {
     let _environment = gix_testtools::isolate_git_environment()?

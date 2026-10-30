@@ -592,6 +592,22 @@ fn reword() -> crate::Result {
 }
 
 #[test]
+fn the_editor_is_a_command_line_even_if_a_file_has_its_name() -> crate::Result {
+    if gix_testtools::run_in_isolated_process()? {
+        return Ok(());
+    }
+    let scenario = scenario("reword-editor-file")?;
+    {
+        let _cwd = gix_testtools::set_current_dir(scenario.path())?;
+        assert_finished(&rebase(&scenario, interactive("main"))?);
+    }
+    if git_writes_todo_lists_as_gix() {
+        assert_same_as_git(&scenario)?;
+    }
+    Ok(())
+}
+
+#[test]
 #[parallel]
 fn squash_and_fixup() -> crate::Result {
     let scenario = scenario("squash")?;

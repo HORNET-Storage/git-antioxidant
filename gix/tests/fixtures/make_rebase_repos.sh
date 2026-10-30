@@ -339,6 +339,17 @@ echo "one reworded" >reword/.git/message-1
 twin reword
 git -C reword-git rebase -i main
 
+# The worktree has a file whose path is the command line of the editor, which stays a command line for the shell.
+history reword-editor-file
+prepare reword-editor-file
+todo reword-editor-file reword topic~1 pick topic
+echo "one reworded" >reword-editor-file/.git/message-1
+mkdir "reword-editor-file/sh .git"
+printf '#!/bin/sh\necho "ran as a file" >>.git/editor-records\n' >"reword-editor-file/sh .git/editor"
+chmod +x "reword-editor-file/sh .git/editor"
+twin reword-editor-file
+git -C reword-editor-file-git rebase -i main
+
 # The `commit-msg` hook fails when `reword` amends its commit, so that the rebase stops after the commit was picked.
 history reword-hook-fails
 prepare reword-hook-fails

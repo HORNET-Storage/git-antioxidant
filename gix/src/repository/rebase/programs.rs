@@ -101,15 +101,8 @@ pub(super) fn edit(
     if editor == ":" {
         return Ok(Edited::Done);
     }
-    let mut prepare = gix_command::prepare(&editor);
-    if !Path::new(&editor).is_file() {
-        prepare = prepare.command_may_be_shell_script();
-    }
-    prepare = prepare
-        .with_context(repo.command_context()?)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+    let mut prepare = repo
+        .prepare_editor(&editor)?
         .arg(repo.current_dir().join(path).into_os_string());
     for (name, value) in env {
         prepare = prepare.env(name, value);

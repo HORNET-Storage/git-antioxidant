@@ -129,25 +129,36 @@ impl crate::Repository {
     /// before spawning it.
     #[cfg(feature = "command")]
     pub fn editor_command(&self) -> Result<Option<gix_command::Prepare>> {
-        use std::{path::Path, process::Stdio};
-
         let Some(editor) = self.editor()? else {
             return Ok(None);
         };
 
-        let mut command = gix_command::prepare(&editor);
-        if editor.to_string_lossy().trim_ascii() == ":" {
-            command = command.with_shell();
-        } else if !Path::new(&editor).is_file() {
+        let command = self.prepare_editor(&editor)?;
+        Ok(Some(if editor.to_string_lossy().trim_ascii() == ":" {
+            command.with_shell()
+        } else {
+            command
+        }))
+    }
+
+    /// Prepare `editor` to start as `launch_specified_editor()` starts it, with repository context and inherited standard
+    /// streams: as a command line, which a shell runs if it has characters that are special to shells. It's never taken
+    /// for a file in the current directory, which the repository could provide. Only the absolute path of an existing
+    /// file starts directly, so the editor of the Git installation starts if its path has spaces.
+    #[cfg(feature = "command")]
+    pub(crate) fn prepare_editor(&self, editor: &std::ffi::OsStr) -> Result<gix_command::Prepare> {
+        use std::{path::Path, process::Stdio};
+
+        let path = Path::new(editor);
+        let mut command = gix_command::prepare(editor);
+        if !(path.is_absolute() && path.is_file()) {
             command = command.command_may_be_shell_script();
         }
-        Ok(Some(
-            command
-                .with_context(self.command_context()?)
-                .stdin(Stdio::inherit())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit()),
-        ))
+        Ok(command
+            .with_context(self.command_context()?)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit()))
     }
 
     /// Resolve all Git configuration needed to sign a commit with [`gix_object::Commit::sign()`].
