@@ -164,7 +164,8 @@ impl Repository {
     ///
     /// `tree` is peeled to a tree, as Git resolves a tree-ish there. On an unborn branch without `tree`, the entries of
     /// the matching paths are removed, as if `HEAD` had the empty tree. The patterns are pathspecs relative to the current
-    /// working directory in the worktree, as those of Git are.
+    /// working directory in the worktree, as those of Git are. Without patterns, all entries inside of that directory are
+    /// reset, which are all entries of the index in the root of the worktree.
     ///
     /// ### Deviation
     ///
