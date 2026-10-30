@@ -173,7 +173,8 @@ impl Ignore {
         self.matched_directory_patterns_stack
             .push(self.matching_exclude_pattern_no_dir(rela_dir, Some(true), case));
 
-        let ignore_path_relative = gix_path::join_bstr_unix_pathsep(rela_dir, ".gitignore");
+        let ignore_path_relative =
+            gix_path::join_bstr_unix_pathsep(rela_dir, self.exclude_file_name_for_directories.as_bstr());
         let ignore_file_in_index = id_mappings.binary_search_by(|t| t.0.as_bstr().cmp(ignore_path_relative.as_ref()));
         match self.source {
             Source::IdMapping => {
@@ -199,9 +200,11 @@ impl Ignore {
                 }
             }
             Source::WorktreeThenIdMappingIfNotSkipped => {
+                let ignore_file = gix_path::from_bstr(self.exclude_file_name_for_directories.as_bstr())
+                    .map_err(std::io::Error::other)?;
                 let added = gix_glob::search::add_patterns_file(
                     &mut self.stack.patterns,
-                    dir.join(".gitignore"),
+                    dir.join(ignore_file),
                     false,
                     Some(root),
                     buf,

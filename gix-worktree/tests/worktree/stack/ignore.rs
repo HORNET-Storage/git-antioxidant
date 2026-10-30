@@ -75,6 +75,56 @@ fn symlinked_ignore_files_are_skipped_with_index_fallback() -> TestResult {
     Ok(())
 }
 
+/// `make_custom_exclude_file_repo.sh` shows what `git ls-files --exclude-per-directory` ignores with another name for the
+/// ignore files, which are found by that name in the worktree and in the index.
+#[test]
+fn ignore_files_can_have_another_name() -> TestResult {
+    let dir = crate::scripted_fixture_read_only("make_custom_exclude_file_repo.sh")?;
+    let git_dir = dir.join(".git");
+    let index = gix_index::File::at(
+        git_dir.join("index"),
+        gix_testtools::object_hash(),
+        false,
+        Default::default(),
+    )?;
+    let objects = gix_odb::at(git_dir.join("objects"), gix_testtools::object_hash())?;
+    let baseline = std::fs::read(dir.join("baseline"))?;
+    let ignored_by_git: Vec<&BStr> = baseline.lines().map(ByteSlice::as_bstr).collect();
+    assert_eq!(
+        ignored_by_git.len(),
+        3,
+        "Git reads both files of that name, and not `.gitignore`"
+    );
+
+    for source in [Source::WorktreeThenIdMappingIfNotSkipped, Source::IdMapping] {
+        let state = gix_worktree::stack::State::IgnoreStack(gix_worktree::stack::state::Ignore::new(
+            Default::default(),
+            Default::default(),
+            Some(".custom-ignore".into()),
+            source,
+            Default::default(),
+        ));
+        let mut stack = Stack::from_state_and_ignore_case(&dir, false, state, &index, index.path_backing());
+        for path in [
+            "ignored-by-root",
+            "ignored-by-sub",
+            "ignored-by-gitignore",
+            "kept",
+            "sub/ignored-by-root",
+            "sub/ignored-by-sub",
+            "sub/ignored-by-gitignore",
+            "sub/kept",
+        ] {
+            assert_eq!(
+                stack.at_entry(path, Some(Mode::FILE), &objects)?.is_excluded(),
+                ignored_by_git.contains(&path.into()),
+                "{path} with {source:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
 struct IgnoreExpectations<'a> {
     lines: bstr::Lines<'a>,
 }
