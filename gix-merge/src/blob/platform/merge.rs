@@ -54,7 +54,7 @@ pub(super) mod inner {
             process::Stdio,
         };
 
-        use bstr::{BString, ByteVec};
+        use bstr::{BStr, BString, ByteSlice, ByteVec};
         use gix_tempfile::{AutoRemove, ContainingDirectory};
 
         use crate::blob::{
@@ -73,6 +73,10 @@ pub(super) mod inner {
             ///
             /// The resulting command should be spawned, and when successful, [the result file can be opened](merge::Command::open_result_file)
             /// to read back the result into a suitable buffer.
+            ///
+            /// As in Git, the command receives only the names of these files and runs in their directory, which is the `worktree_dir` of
+            /// `context`, or else its `git_dir`, or else the current directory. The path of that directory isn't part of the
+            /// command, so a shell can't interpret it.
             ///
             /// ### Deviation
             ///
@@ -105,6 +109,13 @@ pub(super) mod inner {
                     Ok((file, path))
                 }
 
+                fn file_name(path: &Path) -> Result<&BStr> {
+                    let name = path
+                        .file_name()
+                        .ok_or_raise(|| message("The path of a tempfile always ends in its name"))?;
+                    gix_path::os_str_into_bstr(name)
+                }
+
                 let base = self.ancestor.data.as_slice().ok_or_raise(|| {
                     validation(format!(
                         "The resource of kind {:?} was too large to be processed",
@@ -126,24 +137,24 @@ pub(super) mod inner {
 
                 let tmp_dir = context
                     .worktree_dir
-                    .as_deref()
-                    .or(context.git_dir.as_deref())
-                    .unwrap_or(Path::new(""));
-                let (base_tmp, base_path) = write_data(base, tmp_dir).or_raise(|| {
+                    .clone()
+                    .or_else(|| context.git_dir.clone())
+                    .unwrap_or_default();
+                let (base_tmp, base_path) = write_data(base, &tmp_dir).or_raise(|| {
                     message!(
                         "Tempfile to store content of '{}' ({:?}) for passing to external merge command could not be created",
                         self.ancestor.rela_path,
                         ResourceKind::CommonAncestorOrBase
                     )
                 })?;
-                let (ours_tmp, ours_path) = write_data(ours, tmp_dir).or_raise(|| {
+                let (ours_tmp, ours_path) = write_data(ours, &tmp_dir).or_raise(|| {
                     message!(
                         "Tempfile to store content of '{}' ({:?}) for passing to external merge command could not be created",
                         self.current.rela_path,
                         ResourceKind::CurrentOrOurs
                     )
                 })?;
-                let (theirs_tmp, theirs_path) = write_data(theirs, tmp_dir).or_raise(|| {
+                let (theirs_tmp, theirs_path) = write_data(theirs, &tmp_dir).or_raise(|| {
                     message!(
                         "Tempfile to store content of '{}' ({:?}) for passing to external merge command could not be created",
                         self.other.rela_path,
@@ -151,70 +162,54 @@ pub(super) mod inner {
                     )
                 })?;
 
+                let base_name = file_name(&base_path)?;
+                let ours_name = file_name(&ours_path)?;
+                let theirs_name = file_name(&theirs_path)?;
                 let mut cmd = BString::from(Vec::with_capacity(merge_command.len()));
-                let mut count = 0;
-                for token in merge_command.split(|b| *b == b'%') {
-                    count += 1;
-                    let token = if count > 1 {
-                        match token.first() {
-                            Some(&b'O') => {
-                                cmd.push_str(gix_path::into_bstr(&base_path)?.as_ref());
-                                &token[1..]
-                            }
-                            Some(&b'A') => {
-                                cmd.push_str(gix_path::into_bstr(&ours_path)?.as_ref());
-                                &token[1..]
-                            }
-                            Some(&b'B') => {
-                                cmd.push_str(gix_path::into_bstr(&theirs_path)?.as_ref());
-                                &token[1..]
-                            }
-                            Some(&b'L') => {
-                                let marker_size = self
-                                    .options
-                                    .text
-                                    .conflict
-                                    .marker_size()
-                                    .unwrap_or(Conflict::DEFAULT_MARKER_SIZE);
-                                cmd.push_str(format!("{marker_size}"));
-                                &token[1..]
-                            }
-                            Some(&b'P') => {
-                                cmd.push_str(gix_quote::single(self.current.rela_path));
-                                &token[1..]
-                            }
-                            Some(&b'S') => {
-                                cmd.push_str(gix_quote::single(ancestor.unwrap_or_default()));
-                                &token[1..]
-                            }
-                            Some(&b'X') => {
-                                cmd.push_str(gix_quote::single(current.unwrap_or_default()));
-                                &token[1..]
-                            }
-                            Some(&b'Y') => {
-                                cmd.push_str(gix_quote::single(other.unwrap_or_default()));
-                                &token[1..]
-                            }
-                            Some(_other) => {
-                                cmd.push(b'%');
-                                token
-                            }
-                            None => b"%",
+                let mut rest = merge_command.as_slice();
+                while let Some(percent) = rest.find_byte(b'%') {
+                    cmd.extend_from_slice(&rest[..percent]);
+                    rest = &rest[percent + 1..];
+                    let mut consumed = 1;
+                    match rest.first() {
+                        Some(b'%') => cmd.push(b'%'),
+                        Some(b'O') => cmd.push_str(base_name),
+                        Some(b'A') => cmd.push_str(ours_name),
+                        Some(b'B') => cmd.push_str(theirs_name),
+                        Some(b'L') => {
+                            let marker_size = self
+                                .options
+                                .text
+                                .conflict
+                                .marker_size()
+                                .unwrap_or(Conflict::DEFAULT_MARKER_SIZE);
+                            cmd.push_str(format!("{marker_size}"));
                         }
-                    } else {
-                        token
-                    };
-                    cmd.extend_from_slice(token);
+                        Some(b'P') => cmd.push_str(gix_quote::single(self.current.rela_path)),
+                        Some(b'S') => cmd.push_str(gix_quote::single(ancestor.unwrap_or_default())),
+                        Some(b'X') => cmd.push_str(gix_quote::single(current.unwrap_or_default())),
+                        Some(b'Y') => cmd.push_str(gix_quote::single(other.unwrap_or_default())),
+                        Some(_) | None => {
+                            cmd.push(b'%');
+                            consumed = 0;
+                        }
+                    }
+                    rest = &rest[consumed..];
                 }
+                cmd.extend_from_slice(rest);
 
+                let mut cmd: std::process::Command = gix_command::prepare(gix_path::from_bstring(cmd)?)
+                    .with_context(context)
+                    .command_may_be_shell_script()
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit())
+                    .try_into()?;
+                if !tmp_dir.as_os_str().is_empty() {
+                    cmd.current_dir(&tmp_dir);
+                }
                 Ok(merge::Command {
-                    cmd: gix_command::prepare(gix_path::from_bstring(cmd)?)
-                        .with_context(context)
-                        .command_may_be_shell_script()
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::inherit())
-                        .stderr(Stdio::inherit())
-                        .try_into()?,
+                    cmd,
                     current: ours_tmp,
                     current_path: ours_path,
                     ancestor: base_tmp,

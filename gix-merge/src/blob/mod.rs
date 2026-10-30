@@ -82,11 +82,11 @@ pub struct Driver {
     /// The command to execute to perform the merge entirely like `<command> %O %A %B %L %P %S %X %Y`.
     ///
     /// * **%O**
-    ///     - the common ancestor version, or *base*.
+    ///     - the name of the file with the common ancestor version, or *base*.
     /// * **%A**
-    ///     - the current version, or *ours*.
+    ///     - the name of the file with the current version, or *ours*.
     /// * **%B**
-    ///     - the other version, or *theirs*.
+    ///     - the name of the file with the other version, or *theirs*.
     /// * **%L**
     ///     - The conflict-marker size as positive number.
     /// * **%P**
@@ -97,8 +97,11 @@ pub struct Driver {
     ///     - The conflict-label for the current version or *ours*.
     /// * **%Y**
     ///     - The conflict-label for the other version or *theirs*.
+    /// * **%%**
+    ///     - A single `%`.
     ///
-    /// Note that conflict-labels are behind the conflict markers, to annotate them.
+    /// Any other `%` stays as it is. The files are in the directory the command runs in, so their names have no directory
+    /// that a shell could interpret. Note that conflict-labels are behind the conflict markers, to annotate them.
     ///
     /// A typical invocation with all arguments substituted could then look like this:
     ///

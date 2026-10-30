@@ -345,10 +345,8 @@ theirs
         let mut buf = Vec::new();
         let res = platform_ref.merge(&mut buf, default_labels(), &Default::default())?;
         assert_eq!(res, (Pick::Buffer, Resolution::Complete), "merge drivers always merge ");
-        let mut lines = cleaned_driver_lines(&buf)?;
-        for tmp_file in lines.by_ref().take(3) {
-            assert!(tmp_file.contains_str(&b".tmp"[..]), "{tmp_file}");
-        }
+        let mut lines = driver_lines(&buf);
+        lines.by_ref().take(3).for_each(assert_is_file_name);
 
         let lines: Vec<_> = lines.collect();
         assert_eq!(
@@ -387,10 +385,8 @@ theirs
             Ok(Some(marker)),
             "the id is created by hashing the merge buffer"
         );
-        let mut lines = cleaned_driver_lines(&buf)?;
-        for tmp_file in lines.by_ref().take(3) {
-            assert!(tmp_file.contains_str(&b".tmp"[..]), "{tmp_file}");
-        }
+        let mut lines = driver_lines(&buf);
+        lines.by_ref().take(3).for_each(assert_is_file_name);
         let lines: Vec<_> = lines.collect();
         assert_eq!(
             lines,
@@ -420,13 +416,10 @@ theirs
             [gix_merge::blob::Driver {
                 name: "b".into(),
                 command: r#"for input in "%O" "%A" "%B"; do
-    case "$input" in
-        "$GIT_WORK_TREE"/*) ;;
-        *)
-            echo "$input is outside of $GIT_WORK_TREE" >&2
-            exit 1
-            ;;
-    esac
+    test -f "$GIT_WORK_TREE/$input" || {
+        echo "$input is outside of $GIT_WORK_TREE" >&2
+        exit 1
+    }
 done
 meta="%A.mergiraf"
 printf '%s\n' "$GIT_DIR" "$GIT_WORK_TREE" "%O" "%A" "%B" "%P" "%S" "%X" "%Y" "%L" > "$meta"
@@ -474,12 +467,8 @@ cat "%B" >> "%A""#
             Path::new(lines.next().expect("worktree dir").to_str()?),
             worktree.path()
         );
-        for tmp_path in lines.by_ref().take(3) {
-            assert!(
-                Path::new(tmp_path.to_str()?).starts_with(worktree.path()),
-                "{:?}",
-                tmp_path.as_bstr()
-            );
+        for tmp_name in lines.by_ref().take(3) {
+            assert!(tmp_name.starts_with_str(".tmp"), "{:?}", tmp_name.as_bstr());
         }
 
         let lines = lines
@@ -501,6 +490,58 @@ cat "%B" >> "%A""#
             "a mergiraf-like driver can create sidecar files next to %A and gets tempfiles inside GIT_WORK_TREE"
         );
 
+        Ok(())
+    }
+
+    /// `make_external_driver_repo.sh` shows what Git gives a driver: `%` as `strbuf_expand_step()` reads it, and only the
+    /// names of its files in the directory it runs in, so a shell doesn't interpret the path of the repository.
+    #[test]
+    fn external_drivers_receive_what_git_gives_them() -> TestResult {
+        use std::io::Read;
+
+        let fixture = gix_testtools::scripted_fixture_writable("make_external_driver_repo.sh")?;
+        let worktree = fixture.path().join("repo $(touch injected)");
+        let mut platform = new_platform(None, pipeline::Mode::ToGit);
+        // All sides come from the object database, as they do for `git merge`.
+        platform.filter.roots.common_ancestor_root = None;
+        let db = object_db();
+        for (content, kind) in [
+            ("base\n", ResourceKind::CommonAncestorOrBase),
+            ("ours\n", ResourceKind::CurrentOrOurs),
+            ("theirs\n", ResourceKind::OtherOrTheirs),
+        ] {
+            let id = insert(&db, content)?;
+            platform.set_resource(id, EntryKind::Blob, "with space".into(), kind, &db)?;
+        }
+        let platform_ref = platform.prepare_merge(&db, Default::default())?;
+
+        let command = std::fs::read(fixture.path().join("driver-command"))?;
+        let ancestor = std::fs::read(fixture.path().join("ancestor-label"))?;
+        let mut cmd = platform_ref.prepare_external_driver(
+            command.trim_end().into(),
+            builtin_driver::text::Labels {
+                ancestor: Some(ancestor.trim_end().as_bstr()),
+                current: Some("HEAD".into()),
+                other: Some("feature".into()),
+            },
+            gix_command::Context {
+                git_dir: Some(worktree.join(".git")),
+                worktree_dir: Some(worktree.clone()),
+                ..Default::default()
+            },
+        )?;
+        assert!(cmd.status()?.success());
+        let mut received = Vec::new();
+        cmd.open_result_file()?.read_to_end(&mut received)?;
+        assert_eq!(
+            received.as_bstr(),
+            std::fs::read(worktree.join("with space"))?.as_bstr(),
+            "the driver left what `git merge` made it leave"
+        );
+        assert!(
+            !worktree.join("injected").exists(),
+            "no shell interpreted the path of the repository"
+        );
         Ok(())
     }
 
@@ -548,10 +589,8 @@ cat "%B" >> "%A""#
         let print_all = "for arg in $@ %O %A %B %L %P %S %X %Y %F; do echo $arg; done";
         let mut cmd = platform_ref.prepare_external_driver(print_all.into(), default_labels(), Default::default())?;
         let stdout = cmd.stdout(Stdio::piped()).output()?.stdout;
-        let mut lines = cleaned_driver_lines(&stdout)?;
-        for tmp_file in lines.by_ref().take(3) {
-            assert!(tmp_file.contains_str(&b".tmp"[..]), "{tmp_file}");
-        }
+        let mut lines = driver_lines(&stdout);
+        lines.by_ref().take(3).for_each(assert_is_file_name);
         let lines: Vec<_> = lines.collect();
         assert_eq!(
             lines,
@@ -626,11 +665,14 @@ cat "%B" >> "%A""#
         Ok(())
     }
 
-    fn cleaned_driver_lines(buf: &[u8]) -> std::io::Result<impl Iterator<Item = &BStr>> {
-        let current_dir = gix_path::into_bstr(std::env::current_dir()?).expect("fixture path is representable");
-        Ok(buf
-            .lines()
-            .map(move |line| line.strip_prefix(current_dir.as_bytes()).unwrap_or(line).as_bstr()))
+    fn driver_lines(buf: &[u8]) -> impl Iterator<Item = &BStr> {
+        buf.lines().map(ByteSlice::as_bstr)
+    }
+
+    /// Assert that `line` shows the name of a tempfile without a directory, which can follow what the file held before a
+    /// driver appended to it.
+    fn assert_is_file_name(line: &BStr) {
+        assert!(line.contains_str(".tmp") && !line.contains(&b'/'), "{line}");
     }
 
     fn default_labels() -> builtin_driver::text::Labels<'static> {
