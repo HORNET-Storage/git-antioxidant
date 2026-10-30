@@ -101,6 +101,33 @@ pub fn expand_path(user: Option<&expand_path::ForUser>, path: &BStr) -> Result<P
     })
 }
 
+/// Decode the `%xx` escapes of `url` as Git's `url_decode_mem()` does: what comes before the first colon stays as it is,
+/// which is the scheme of a URL, and so do escapes that aren't complete or that encode NUL.
+pub fn decode(url: &[u8]) -> BString {
+    fn hex_digit(byte: u8) -> Option<u8> {
+        char::from(byte).to_digit(16).map(|digit| digit as u8)
+    }
+
+    let (scheme, mut rest) = match url.find_byte(b':') {
+        Some(colon) if colon > 0 => url.split_at(colon),
+        _ => (&[][..], url),
+    };
+    let mut out = BString::from(scheme);
+    while let Some((&byte, tail)) = rest.split_first() {
+        if let [b'%', high, low, ..] = rest
+            && let Some(value) = hex_digit(*high).zip(hex_digit(*low)).map(|(high, low)| high << 4 | low)
+            && value != 0
+        {
+            out.push(value);
+            rest = &rest[3..];
+            continue;
+        }
+        out.push(byte);
+        rest = tail;
+    }
+    out
+}
+
 /// Classification of a portion of a URL by whether it is *syntactically* safe to pass as an argument to a command-line program.
 ///
 /// Various parts of URLs can be specified to begin with `-`. If they are used as options to a command-line application

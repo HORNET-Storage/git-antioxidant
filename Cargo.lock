@@ -1976,6 +1976,7 @@ dependencies = [
  "gix-object",
  "gix-odb",
  "gix-testtools",
+ "gix-url",
  "gix-validate",
 ]
 

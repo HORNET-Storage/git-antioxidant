@@ -1,5 +1,4 @@
-//! Git's check of submodule URLs in `.gitmodules`, `check_submodule_url()`, with the URL normalization and decoding
-//! it relies on.
+//! Git's check of submodule URLs in `.gitmodules`, `check_submodule_url()`, with the URL normalization it relies on.
 //!
 //! URLs are read as Git reads them, as text that ends at a NUL byte, so reading past the end of a URL yields NUL.
 
@@ -18,7 +17,7 @@ pub(super) fn is_allowed_submodule_url(url: &[u8]) -> bool {
         return false;
     }
     if starts_with_dot_slash(url) || starts_with_dot_dot_slash(url) || url.starts_with(b"git://") {
-        if decode(url).contains(&b'\n') {
+        if gix_url::decode(url).contains(&b'\n') {
             return false;
         }
         let mut rest = url;
@@ -45,7 +44,7 @@ pub(super) fn is_allowed_submodule_url(url: &[u8]) -> bool {
                 .then_some(url)
         });
     match curl_url {
-        Some(curl_url) => normalize(curl_url).is_some_and(|normalized| !decode(&normalized).contains(&b'\n')),
+        Some(curl_url) => normalize(curl_url).is_some_and(|normalized| !gix_url::decode(&normalized).contains(&b'\n')),
         None => true,
     }
 }
@@ -56,31 +55,6 @@ fn starts_with_dot_slash(path: &[u8]) -> bool {
 
 fn starts_with_dot_dot_slash(path: &[u8]) -> bool {
     matches!(path, [b'.', b'.', b'/' | b'\\', ..])
-}
-
-/// `url` with percent-escapes decoded after its scheme, as Git's `url_decode()` does: escapes that are invalid or
-/// encode NUL stay as they are.
-fn decode(url: &[u8]) -> Vec<u8> {
-    let (scheme, rest) = match url.iter().position(|&b| b == b':') {
-        Some(colon) if colon > 0 => url.split_at(colon),
-        _ => (&[][..], url),
-    };
-    let mut out = scheme.to_vec();
-    let mut i = 0;
-    while i < rest.len() {
-        let c = rest[i];
-        if c == b'%'
-            && let Some(value) = rest.get(i + 1..i + 3).and_then(|hex| hex_byte(hex[0], hex[1]))
-            && value > 0
-        {
-            out.push(value);
-            i += 3;
-            continue;
-        }
-        out.push(c);
-        i += 1;
-    }
-    out
 }
 
 /// The byte the hexadecimal digits `high` and `low` encode, in either case.

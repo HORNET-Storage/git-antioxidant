@@ -145,22 +145,22 @@ impl Credential {
             Some(at) if at < slash => {
                 match rest.find_byte(b':') {
                     Some(colon) if colon < at => {
-                        credential.username = Some(url_decode(&rest[..colon]));
-                        credential.password = Some(url_decode(&rest[colon + 1..at]));
+                        credential.username = Some(gix_url::decode(&rest[..colon]));
+                        credential.password = Some(gix_url::decode(&rest[colon + 1..at]));
                     }
-                    _ => credential.username = Some(url_decode(&rest[..at])),
+                    _ => credential.username = Some(gix_url::decode(&rest[..at])),
                 }
                 at + 1
             }
             _ => 0,
         };
-        credential.host = Some(url_decode(&rest[host_start..slash]));
+        credential.host = Some(gix_url::decode(&rest[host_start..slash]));
         let mut path = &rest[slash..];
         while let [b'/', tail @ ..] = path {
             path = tail;
         }
         if !path.is_empty() {
-            let mut path = url_decode(path);
+            let mut path = gix_url::decode(path);
             while path.len() > 1 && path.ends_with(b"/") {
                 path.pop();
             }
@@ -377,34 +377,6 @@ fn is_reserved_or_unreserved(byte: u8) -> bool {
                 | b'['
                 | b']'
         )
-}
-
-/// Decode the `%xx` escapes of `input` as Git's `url_decode_mem()` does: what comes before the first colon stays as it
-/// is, and so do escapes of NUL and incomplete escapes.
-fn url_decode(input: &[u8]) -> BString {
-    let (verbatim, mut rest) = match input.find_byte(b':') {
-        Some(colon) if colon > 0 => input.split_at(colon),
-        _ => (&[][..], input),
-    };
-    let mut out = BString::from(verbatim);
-    while let Some((&byte, tail)) = rest.split_first() {
-        if let [b'%', high, low, ..] = rest
-            && let Some(value) = hex_digit(*high).zip(hex_digit(*low)).map(|(high, low)| high << 4 | low)
-            && value != 0
-        {
-            out.push(value);
-            rest = &rest[3..];
-            continue;
-        }
-        out.push(byte);
-        rest = tail;
-    }
-    out
-}
-
-/// Return the value of the hexadecimal digit `byte`.
-fn hex_digit(byte: u8) -> Option<u8> {
-    char::from(byte).to_digit(16).map(|digit| digit as u8)
 }
 
 /// Return `bytes` up to their first NUL, as Git ends them there as C strings.
