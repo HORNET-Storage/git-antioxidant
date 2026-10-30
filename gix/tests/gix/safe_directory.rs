@@ -268,3 +268,56 @@ fn reopening_keeps_comparing_the_same_directory() -> Result {
     assert!(err.downcast_any_ref::<DubiousOwnership>().is_some(), "{err:#}");
     Ok(())
 }
+
+/// Configuration inside of an allowed repository is as trusted as the repository. An include can lead out of it with `..`
+/// while its path still starts with the repository, and that file isn't what `safe.directory` allowed.
+#[test]
+fn includes_leaving_an_allowed_repository_are_not_trusted_with_it() -> Result {
+    if gix_testtools::run_in_isolated_process()? {
+        return Ok(());
+    }
+    let dir = gix_testtools::tempfile::tempdir()?;
+    let repo_dir = dir.path().join("repo");
+    gix::init(&repo_dir)?;
+    std::fs::write(dir.path().join("outside"), "[outside]\n\tkey = value\n")?;
+    let mut config = std::fs::read(repo_dir.join(".git/config"))?;
+    config.extend_from_slice(b"[inside]\n\tkey = value\n[include]\n\tpath = ../../outside\n");
+    std::fs::write(repo_dir.join(".git/config"), config)?;
+
+    let _env = gix_testtools::Env::new().set("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1");
+    let err = gix::open_opts(&repo_dir, gix::open::Options::default().bail_if_untrusted(true))
+        .expect_err("nothing allows the repository");
+    let dubious_ownership = err
+        .downcast_any_ref::<DubiousOwnership>()
+        .expect("the dubious ownership is the reason");
+    let allowed = format!("safe.directory={}", dubious_ownership.directory);
+    let repo = gix::open_opts(
+        &repo_dir,
+        gix::open::Options::default()
+            .bail_if_untrusted(true)
+            .config_overrides([allowed.as_str()]),
+    )?;
+    assert_eq!(repo.git_dir_trust(), Trust::Full, "the repository is allowed");
+
+    let config = repo.config_snapshot();
+    let trust_of = |name: &str| -> Vec<Trust> {
+        config
+            .plumbing()
+            .sections_by_name(name)
+            .into_iter()
+            .flatten()
+            .map(|section| section.meta().trust)
+            .collect()
+    };
+    assert_eq!(
+        trust_of("inside"),
+        [Trust::Full],
+        "the configuration of the repository is trusted with it"
+    );
+    assert_eq!(
+        trust_of("outside"),
+        [Trust::Reduced],
+        "the included file is outside of the repository, and `safe.directory` doesn't allow it"
+    );
+    Ok(())
+}

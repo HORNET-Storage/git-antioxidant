@@ -521,11 +521,18 @@ impl ThreadSafeRepository {
             // Repository configuration within a trusted repository is trusted. Configuration files elsewhere, or within
             // an untrusted repository, are only trusted if `safe.directory` allows them.
             let is_trusted = *git_dir_trust == gix_sec::Trust::Full;
-            let repository_dirs = [
-                Some(safe_directory_path.clone()),
-                Some(current_dir.join(&git_dir)),
-                common_dir.as_deref().map(|dir| current_dir.join(dir)),
-            ];
+            // A path can start with a directory and still lead out of it with `..`, so normalized paths are compared.
+            let normalized =
+                |path: &Path| gix_path::normalize(current_dir.join(path).into(), current_dir).map(Cow::into_owned);
+            let repository_dirs: Vec<_> = [
+                Some(safe_directory_path.as_path()),
+                Some(git_dir.as_path()),
+                common_dir.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .filter_map(normalized)
+            .collect();
             let Ok(mut resolved) = gix_parallel::OwnShared::try_unwrap(config.resolved) else {
                 unreachable!("Shared ownership was just established, with one reference")
             };
@@ -543,7 +550,11 @@ impl ThreadSafeRepository {
                 };
                 let config_file_is_safe = *is_safe_by_path.entry(meta_path.to_owned()).or_insert_with(|| {
                     let meta_path = current_dir.join(meta_path);
-                    (is_trusted && repository_dirs.iter().flatten().any(|dir| meta_path.starts_with(dir)))
+                    let is_in_repository = || {
+                        normalized(&meta_path)
+                            .is_some_and(|path| repository_dirs.iter().any(|dir| path.starts_with(dir)))
+                    };
+                    (is_trusted && is_in_repository())
                         || gix_path::into_bstr(meta_path.as_path())
                             .ok()
                             .and_then(|path| safe_directory::git_realpath(path.as_ref(), current_dir))
