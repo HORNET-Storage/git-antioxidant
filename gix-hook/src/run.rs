@@ -427,9 +427,17 @@ fn locate_in_path(command: &Path, search_path: &OsStr, working_dir: &Path) -> Op
 
 /// Find the program to start for `command` as Git for Windows' `mingw_spawnvpe()` does: look it up in `search_path`
 /// unless it contains a slash or backslash, and if it's a script, start the interpreter its `#!` line names with the
-/// path of the script, written with slashes.
+/// path of the script, written with slashes. Relative entries of `search_path` are taken from `working_dir`, the
+/// directory the hook runs in, where Git works when it runs hooks.
 #[cfg(not(unix))]
 fn resolve(command: &Path, search_path: &OsStr, working_dir: &Path) -> Result<Program> {
+    use gix_command::mingw;
+
+    let dirs = || {
+        std::env::split_paths(search_path)
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .map(|dir| working_dir.join(dir))
+    };
     let has_separator = command
         .as_os_str()
         .as_encoded_bytes()
@@ -438,91 +446,22 @@ fn resolve(command: &Path, search_path: &OsStr, working_dir: &Path) -> Result<Pr
     let program = if has_separator {
         working_dir.join(command)
     } else {
-        lookup(command.as_os_str(), search_path, working_dir, false).ok_or_raise(|| not_found(command))?
+        mingw::path_lookup(command.as_os_str(), dirs(), false).ok_or_raise(|| not_found(command))?
     };
-    Ok(match interpreter(&program) {
+    Ok(match mingw::interpreter(&program) {
         Some(name) => Program {
-            program: lookup(&name, search_path, working_dir, true).ok_or_raise(|| {
+            program: mingw::path_lookup(&name, dirs(), true).ok_or_raise(|| {
                 message("Could not find the interpreter of a hook in PATH")
                     .not_found()
                     .with_program(&name)
             })?,
-            leading_args: vec![with_slashes(program)],
+            leading_args: vec![mingw::script_argument(&program)],
         },
         None => Program {
             program,
             leading_args: Vec::new(),
         },
     })
-}
-
-/// Look up `name` in the non-empty entries of `search_path` as Git for Windows' `path_lookup()` does: in each, first as
-/// `name` with `.exe` appended unless `name` ends in `.exe`, then as `name`, if that's not a directory and `exe_only`
-/// is `false` or `name` ends in `.exe`. Relative entries are taken from `working_dir`, the directory the hook runs in,
-/// where Git works when it runs hooks.
-#[cfg(not(unix))]
-fn lookup(name: &OsStr, search_path: &OsStr, working_dir: &Path, exe_only: bool) -> Option<PathBuf> {
-    let is_exe = has_exe_extension(name);
-    std::env::split_paths(search_path)
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .find_map(|dir| {
-            let path = working_dir.join(dir).join(name);
-            if !is_exe {
-                let mut with_exe = path.clone().into_os_string();
-                with_exe.push(".exe");
-                let with_exe = PathBuf::from(with_exe);
-                if with_exe.exists() {
-                    return Some(with_exe);
-                }
-            }
-            ((!exe_only || is_exe) && path.exists() && !path.is_dir()).then_some(path)
-        })
-}
-
-#[cfg(not(unix))]
-fn has_exe_extension(name: &OsStr) -> bool {
-    Path::new(name)
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
-}
-
-/// Return `path` with slashes instead of backslashes, as Git for Windows names files, so that a script finds the files
-/// next to it through the path it receives as `$0`.
-#[cfg(not(unix))]
-fn with_slashes(path: PathBuf) -> OsString {
-    match path.to_str() {
-        Some(path) => path.replace('\\', "/").into(),
-        None => path.into_os_string(),
-    }
-}
-
-/// Return the name of the interpreter of the script at `program` as Git for Windows' `parse_interpreter()` does: the
-/// last component of the path on its `#!` line, without arguments, or `None` if `program` ends in `.exe` or doesn't
-/// have such a line, ended within its first 99 bytes.
-#[cfg(not(unix))]
-fn interpreter(program: &Path) -> Option<OsString> {
-    use std::io::Read;
-
-    if has_exe_extension(program.as_os_str()) {
-        return None;
-    }
-    let mut buf = [0; 99];
-    let len = std::fs::File::open(program).ok()?.read(&mut buf).ok()?;
-    let buf = &buf[..len];
-    if len < 4 || !buf.starts_with(b"#!") {
-        return None;
-    }
-    let end = buf.iter().position(|byte| matches!(byte, b'\r' | b'\n' | 0))?;
-    if buf[end] == 0 {
-        return None;
-    }
-    let line = &buf[2..end];
-    let start = line.rfind_byte(b'/').or_else(|| line.rfind_byte(b'\\'))? + 1;
-    let name = &line[start..];
-    let name = name.find_byte(b' ').map_or(name, |space| &name[..space]);
-    gix_path::from_byte_slice(name)
-        .ok()
-        .map(|name| name.as_os_str().to_owned())
 }
 
 #[cfg(test)]

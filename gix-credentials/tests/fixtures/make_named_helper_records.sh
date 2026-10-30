@@ -2,7 +2,8 @@
 set -eu -o pipefail
 
 # Git runs `recorder`, a helper named in the configuration, as the program `git-credential-recorder` in `bin`, which is
-# in `PATH`, and the tests run the same helper through gix-credentials to compare its records with those Git made.
+# in `PATH`, and the tests run the same helper through gix-credentials to compare its records with those Git made. Other
+# scenarios run that program from a script or through a path, whose text Git completes with the operation for the shell.
 #
 # `git-credential-recorder` appends its arguments, its input and `---` to `$CREDENTIAL_RECORDS`, and answers `get` with
 # a fictitious credential. Each scenario is a repository in which Git ran `git credential fill` for a URL, and then
@@ -48,3 +49,8 @@ scenario plain recorder false
 scenario quoted-arguments 'recorder --mode="two words"' false
 scenario shell-arguments 'recorder --mode=$RECORDER_MODE' false
 scenario http-path recorder true
+scenario script '!git-credential-recorder' false
+scenario script-function '!f() { git-credential-recorder --in-function "$@"; }; f' false
+scenario script-mentioning-arguments '!git-credential-recorder "$@" --last' false
+scenario script-name '!git-credential-recorder "$0"' false
+scenario absolute-path "/bin/sh -c 'git-credential-recorder --from-path \"\$@\"' name" false

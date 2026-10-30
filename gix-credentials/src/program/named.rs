@@ -1,7 +1,7 @@
 //! Helpers named in the configuration, like `manager`, which Git runs as `git credential-<name>` through the shell.
 
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     path::{Path, PathBuf},
 };
 
@@ -14,7 +14,7 @@ use crate::program::store;
 pub(crate) enum Resolution {
     /// As Git's `credential-store`, in this process.
     Store(store::Options),
-    /// As the program that implements it, prepared with the arguments configured for it, to which the action is added.
+    /// As the program that implements it, prepared for the operation with the arguments configured for it.
     Program(gix_command::Prepare),
     /// As `git credential-<name>`, which needs `git`.
     Git,
@@ -28,7 +28,9 @@ pub(crate) enum Resolution {
 /// and the program runs where it's found without starting Git. The others run as `git credential-<name>`: `cache`,
 /// which talks to Git's daemon, a name that the shell would change or that is a path, and a helper whose program
 /// isn't found, as Git may find it in its exec path.
-pub(crate) fn resolve(name_and_args: &BStr) -> Result<Resolution> {
+///
+/// `operation` is what the helper is asked to do, which Git adds to the text of the command.
+pub(crate) fn resolve(name_and_args: &BStr, operation: &str) -> Result<Resolution> {
     // The name ends where the shell ends the word, and a newline, which would end the command, leaves it to Git.
     let (name, args) = match name_and_args.find_byteset(b" \t") {
         Some(end) => (&name_and_args.as_bytes()[..end], name_and_args[end + 1..].as_bstr()),
@@ -50,7 +52,7 @@ pub(crate) fn resolve(name_and_args: &BStr) -> Result<Resolution> {
     let mut file_name = String::from("git-credential-");
     file_name.extend(name.iter().copied().map(char::from));
     Ok(match find(OsStr::new(&file_name), &search_path()) {
-        Some(found) => Resolution::Program(found.into_command(args)?),
+        Some(found) => Resolution::Program(found.into_command(args, operation)?),
         None => Resolution::Git,
     })
 }
@@ -142,13 +144,13 @@ struct Found {
 }
 
 impl Found {
-    /// Prepare the command that starts the program with `args`, the arguments configured for the helper, through the
-    /// shell only if they need one.
-    fn into_command(self, args: &BStr) -> Result<gix_command::Prepare> {
+    /// Prepare the command that starts the program for `operation` with `args`, the arguments configured for the helper,
+    /// through the shell only if they need one.
+    fn into_command(self, args: &BStr, operation: &str) -> Result<gix_command::Prepare> {
         let args = args.trim_start_with(|c| matches!(c, ' ' | '\t'));
-        let script = self.script.map(with_slashes);
+        let script = self.script.as_deref().map(gix_command::mingw::script_argument);
         if args.is_empty() {
-            return Ok(gix_command::prepare(self.program).args(script));
+            return Ok(gix_command::prepare(self.program).args(script).arg(operation));
         }
         let mut command = quote(&self.program)?;
         if let Some(script) = &script {
@@ -157,6 +159,8 @@ impl Found {
         }
         command.push(b' ');
         command.extend_from_slice(args);
+        command.push(b' ');
+        command.extend_from_slice(operation.as_bytes());
         Ok(
             gix_command::prepare(gix_path::from_bstr(command.as_bstr())?.into_owned())
                 .command_may_be_shell_script_allow_manual_argument_splitting(),
@@ -169,15 +173,6 @@ fn quote(path: &Path) -> Result<BString> {
     Ok(gix_quote::single(
         gix_path::to_unix_separators_on_windows(gix_path::into_bstr(path)?).as_ref(),
     ))
-}
-
-/// Return `path` with slashes instead of backslashes, as Git for Windows passes a script to its interpreter, so that
-/// the script finds the files next to it through the path it receives as `$0`.
-fn with_slashes(path: PathBuf) -> OsString {
-    match path.to_str() {
-        Some(path) => path.replace('\\', "/").into(),
-        None => path.into_os_string(),
-    }
 }
 
 /// Find `file_name` in `search_path` as Git's `locate_in_PATH()` finds a program: the first regular file that its owner
@@ -206,71 +201,14 @@ fn find(file_name: &OsStr, search_path: &[PathBuf]) -> Option<Found> {
 /// interpreter that its `#!` line names if it's a script, or return `None` if Git for Windows couldn't start it.
 #[cfg(not(unix))]
 fn find(file_name: &OsStr, search_path: &[PathBuf]) -> Option<Found> {
-    let program = lookup(file_name, search_path, false)?;
-    match interpreter(&program) {
+    use gix_command::mingw;
+
+    let program = mingw::path_lookup(file_name, search_path.iter().cloned(), false)?;
+    match mingw::interpreter(&program) {
         Some(interpreter) => Some(Found {
-            program: lookup(&interpreter, search_path, true)?,
+            program: mingw::path_lookup(&interpreter, search_path.iter().cloned(), true)?,
             script: Some(program),
         }),
-        None => has_exe_extension(program.as_os_str()).then_some(Found { program, script: None }),
+        None => mingw::is_exe(program.as_os_str()).then_some(Found { program, script: None }),
     }
-}
-
-/// Look up `name` in the non-empty entries of `search_path` as Git for Windows' `path_lookup()` does: in each, first as
-/// `name` with `.exe` appended unless `name` ends in `.exe`, then as `name`, if that's not a directory and `exe_only`
-/// is `false` or `name` ends in `.exe`.
-#[cfg(not(unix))]
-fn lookup(name: &OsStr, search_path: &[PathBuf], exe_only: bool) -> Option<PathBuf> {
-    let is_exe = has_exe_extension(name);
-    search_path
-        .iter()
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .find_map(|dir| {
-            let path = dir.join(name);
-            if !is_exe {
-                let mut with_exe = path.clone().into_os_string();
-                with_exe.push(".exe");
-                let with_exe = PathBuf::from(with_exe);
-                if with_exe.exists() {
-                    return Some(with_exe);
-                }
-            }
-            ((!exe_only || is_exe) && path.exists() && !path.is_dir()).then_some(path)
-        })
-}
-
-#[cfg(not(unix))]
-fn has_exe_extension(name: &OsStr) -> bool {
-    Path::new(name)
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
-}
-
-/// Return the name of the interpreter of the script at `program` as Git for Windows' `parse_interpreter()` does: the
-/// last component of the path on its `#!` line, without arguments, or `None` if `program` ends in `.exe` or doesn't
-/// have such a line, ended within its first 99 bytes.
-#[cfg(not(unix))]
-fn interpreter(program: &Path) -> Option<OsString> {
-    use std::io::Read;
-
-    if has_exe_extension(program.as_os_str()) {
-        return None;
-    }
-    let mut buf = [0; 99];
-    let len = std::fs::File::open(program).ok()?.read(&mut buf).ok()?;
-    let buf = &buf[..len];
-    if len < 4 || !buf.starts_with(b"#!") {
-        return None;
-    }
-    let end = buf.iter().position(|byte| matches!(byte, b'\r' | b'\n' | 0))?;
-    if buf[end] == 0 {
-        return None;
-    }
-    let line = &buf[2..end];
-    let start = line.rfind_byte(b'/').or_else(|| line.rfind_byte(b'\\'))? + 1;
-    let name = &line[start..];
-    let name = name.find_byte(b' ').map_or(name, |space| &name[..space]);
-    gix_path::from_byte_slice(name)
-        .ok()
-        .map(|name| name.as_os_str().to_owned())
 }

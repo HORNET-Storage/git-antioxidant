@@ -18,48 +18,16 @@
 
 use std::{
     ffi::{OsStr, OsString},
-    io::Read,
     path::{Path, PathBuf},
 };
 
-use bstr::{BString, ByteSlice};
+use bstr::BString;
 
+pub mod mingw;
 ///
 pub mod parse;
 
 mod prepare;
-
-///
-pub mod shebang {
-    use std::{ffi::OsString, path::PathBuf};
-
-    use bstr::{BStr, ByteSlice};
-
-    /// Parse `buf` to extract all shebang information.
-    pub fn parse(buf: &BStr) -> Option<Data> {
-        let mut line = buf.lines().next()?;
-        line = line.strip_prefix(b"#!")?;
-
-        let slash_idx = line.rfind_byteset(br"/\")?;
-        let space_idx = line[slash_idx..]
-            .find_byte(b' ')
-            .map_or(line.len(), |space_idx| slash_idx + space_idx);
-        let (interpreter, args) = line.split_at(space_idx);
-        Some(Data {
-            interpreter: gix_path::from_byte_slice(interpreter.trim()).ok()?.to_owned(),
-            args: crate::parse::arguments(args.trim().as_bstr()).unwrap_or_default(),
-        })
-    }
-
-    /// Shebang information as [parsed](parse()) from a buffer that should contain at least one line.
-    #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-    pub struct Data {
-        /// The interpreter to run.
-        pub interpreter: PathBuf,
-        /// Arguments following the interpreter, split like [`crate::parse::command_line()`], or empty if malformed.
-        pub args: Vec<OsString>,
-    }
-}
 
 /// A structure to keep settings to use when invoking a command via [`spawn()`][Prepare::spawn()],
 /// after creating it with [`prepare()`].
@@ -153,11 +121,6 @@ pub struct Context {
     pub stderr: Option<bool>,
 }
 
-#[cfg(windows)]
-fn is_exe(executable: &Path) -> bool {
-    executable.extension() == Some(std::ffi::OsStr::new("exe"))
-}
-
 /// Split a joined `PATH` value according to platform conventions, omitting empty entries.
 ///
 /// Git's Windows lookup skips empty entries instead of treating them as the current directory. This also prevents an
@@ -171,47 +134,13 @@ fn is_bare_command(command: &Path) -> bool {
     command.components().take(2).count() == 1
 }
 
-/// Try to find `command` in `joined_paths` using [`split_paths()`].
-/// Commands with an explicit extension are matched verbatim. Otherwise, `.exe` is preferred over an extensionless file.
+/// Try to find `command` in `joined_paths` using [`split_paths()`] with [`mingw::path_lookup()`].
 /// Note that just like Git, no lookup is performed if a slash or backslash is in `command`.
-fn win_path_lookup(command: &Path, joined_paths: &std::ffi::OsStr) -> Option<PathBuf> {
-    fn lookup(root: &Path, command: &Path, has_extension: bool) -> Option<PathBuf> {
-        let mut path = root.join(command);
-        if has_extension {
-            return path.is_file().then_some(path);
-        }
-
-        path.set_extension("exe");
-        if path.is_file() {
-            return Some(path);
-        }
-        path.set_extension("");
-        path.is_file().then_some(path)
-    }
+fn win_path_lookup(command: &Path, joined_paths: &OsStr) -> Option<PathBuf> {
     if !is_bare_command(command) {
         return None;
     }
-    let has_extension = command.extension().is_some();
-
-    for root in split_paths(joined_paths) {
-        if let Some(executable) = lookup(&root, command, has_extension) {
-            return Some(executable);
-        }
-    }
-    None
-}
-
-/// Parse the shebang (`#!<path>`) from the first line of `executable`, and return the shebang
-/// data when available.
-pub fn extract_interpreter(executable: &Path) -> Option<shebang::Data> {
-    #[cfg(windows)]
-    if is_exe(executable) {
-        return None;
-    }
-    let mut buf = [0; 100]; // Note: just like Git
-    let mut file = std::fs::File::open(executable).ok()?;
-    let n = file.read(&mut buf).ok()?;
-    shebang::parse(buf[..n].as_bstr())
+    mingw::path_lookup(command.as_os_str(), split_paths(joined_paths), false)
 }
 
 /// Prepare `cmd` for [spawning][std::process::Command::spawn()] by configuring it with various builder methods.

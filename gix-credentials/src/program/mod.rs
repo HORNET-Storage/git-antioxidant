@@ -18,8 +18,9 @@ fn external_name_command(
     let mut args = gix_quote::single(git_program.as_ref());
     args.push_str(" credential-");
     args.push_str(name_and_args);
+    args.push_str(" ");
+    args.push_str(action.as_arg(true));
     gix_command::prepare(gix_path::from_bstr(args.as_bstr())?.into_owned())
-        .arg(action.as_arg(true))
         .command_may_be_shell_script_allow_manual_argument_splitting()
         .try_into()
 }
@@ -97,13 +98,14 @@ pub enum Kind {
         /// Note that a shell is only used if it's needed.
         name_and_args: BString,
     },
-    /// A custom credentials helper, as identified just by the absolute path to the program and optional arguments. The program is executed through a shell.
+    /// A custom credentials helper, as identified just by the absolute path to the program and optional arguments. The program is executed through a shell,
+    /// with the operation added to the text of the command, as Git does.
     ExternalPath {
         /// The absolute path to the executable, like `/path/to/exe` along with optional args, like `/path/to/exe --arg --bar="a b"`, with arguments using `sh`
         /// shell quoting rules.
         path_and_args: BString,
     },
-    /// A script to execute with `sh`.
+    /// A script to execute with `sh`, with the operation added to its text, as Git does.
     ExternalShellScript(BString),
 }
 
@@ -170,15 +172,16 @@ impl Program {
 
     /// Decide how the program runs to invoke `action`, as a command or in this process.
     pub(crate) fn to_run(&self, action: &helper::Action) -> Result<Run> {
+        let operation = action.as_arg(true);
         let mut cmd = match &self.kind {
             Kind::Builtin => {
                 let mut cmd = Command::try_from(gix_command::prepare(gix_path::env::exe_invocation()))?;
                 cmd.arg("credential").arg(action.as_arg(false));
                 cmd
             }
-            Kind::ExternalName { name_and_args } => match named::resolve(name_and_args.as_bstr())? {
+            Kind::ExternalName { name_and_args } => match named::resolve(name_and_args.as_bstr(), operation)? {
                 named::Resolution::Store(options) => return Ok(Run::Store(options)),
-                named::Resolution::Program(program) => Command::try_from(program.arg(action.as_arg(true)))?,
+                named::Resolution::Program(program) => Command::try_from(program)?,
                 named::Resolution::Git => {
                     external_name_command(gix_path::env::exe_invocation(), name_and_args.as_bstr(), action)?
                 }
@@ -186,10 +189,16 @@ impl Program {
             Kind::ExternalShellScript(for_shell)
             | Kind::ExternalPath {
                 path_and_args: for_shell,
-            } => gix_command::prepare(gix_path::from_bstr(for_shell.as_bstr())?.as_ref())
-                .command_may_be_shell_script()
-                .arg(action.as_arg(true))
-                .try_into()?,
+            } => {
+                // As `credential_do()` in Git's `credential.c` does, so that what the shell makes of the operation doesn't
+                // depend on `$@`, which a helper's command may also use.
+                let mut command = for_shell.clone();
+                command.push_str(" ");
+                command.push_str(operation);
+                gix_command::prepare(gix_path::from_bstr(command.as_bstr())?.as_ref())
+                    .command_may_be_shell_script()
+                    .try_into()?
+            }
         };
         configure_io(&mut cmd, action, self.stderr);
         Ok(Run::Command(cmd))
@@ -271,9 +280,9 @@ mod tests {
         assert_eq!(
             script,
             OsStr::new(if cfg!(windows) {
-                r#"'C:/Program Files/Git/mingw64/bin/git.exe' credential-manager --config=~/credentials "$@""#
+                r"'C:/Program Files/Git/mingw64/bin/git.exe' credential-manager --config=~/credentials get"
             } else {
-                r#"'C:\Program Files\Git\mingw64\bin\git.exe' credential-manager --config=~/credentials "$@""#
+                r"'C:\Program Files\Git\mingw64\bin\git.exe' credential-manager --config=~/credentials get"
             }),
             "the Git executable is a single shell token even when its path contains spaces"
         );

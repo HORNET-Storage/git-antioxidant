@@ -8,9 +8,7 @@ use std::{
 use bstr::ByteSlice;
 use gix_error::Result;
 
-use crate::{
-    Context, ManualArgumentSplitting, Prepare, extract_interpreter, is_bare_command, split_paths, win_path_lookup,
-};
+use crate::{Context, ManualArgumentSplitting, Prepare, is_bare_command, mingw, split_paths, win_path_lookup};
 
 /// Builder
 impl Prepare {
@@ -21,10 +19,9 @@ impl Prepare {
     /// Commands are inspected using their native encoded bytes, including commands that cannot
     /// be represented as UTF-8.
     ///
-    /// If a shell is used, then arguments given here with [arg()](Self::arg) or
-    /// [args()](Self::args) will be substituted via `"$@"` if it's not already present in the
-    /// command.
-    ///
+    /// If a shell is used, it runs the command as Git's `prepare_shell_cmd()` does: the arguments given here with
+    /// [arg()](Self::arg) or [args()](Self::args) reach it with a `"$@"` that is added to the command, even if the
+    /// command mentions `$@` itself, and the command is also the `$0` of the shell.
     ///
     /// The [`command_may_be_shell_script_allow_manual_argument_splitting()`](Self::command_may_be_shell_script_allow_manual_argument_splitting())
     /// and [`command_may_be_shell_script_disallow_manual_argument_splitting()`](Self::command_may_be_shell_script_disallow_manual_argument_splitting())
@@ -46,8 +43,8 @@ impl Prepare {
     /// This uses `sh` to execute it, or whatever is set as
     /// [`with_shell_program()`](Self::with_shell_program()).
     ///
-    /// Arguments given here with [arg()](Self::arg) or [args()](Self::args) will be
-    /// substituted via `"$@"` if it's not already present in the command.
+    /// Arguments given here with [arg()](Self::arg) or [args()](Self::args) reach the command as
+    /// [`command_may_be_shell_script()`](Self::command_may_be_shell_script()) describes.
     ///
     /// If neither this method nor
     /// [`command_may_be_shell_script()`](Self::command_may_be_shell_script()) is called,
@@ -85,9 +82,8 @@ impl Prepare {
     /// using the default shell which is `sh`.
     ///
     /// Note that shells that are not Bourne-style cannot be expected to work correctly,
-    /// because POSIX shell syntax is assumed when searching for and conditionally adding
-    /// `"$@"` to receive arguments, where applicable (and in the behaviour of
-    /// [`with_quoted_command()`](Self::with_quoted_command()), if called).
+    /// because POSIX shell syntax is assumed when adding `"$@"` to receive arguments, where applicable (and in the
+    /// behaviour of [`with_quoted_command()`](Self::with_quoted_command()), if called).
     pub fn with_shell_program(mut self, program: impl Into<OsString>) -> Self {
         self.shell_program = Some(program.into());
         self
@@ -221,33 +217,20 @@ impl TryFrom<Prepare> for Command {
                     {
                         cmd.env("PATH", path);
                     }
-                    // Passed as `command_name` after `-c <script>`; the shell uses it
-                    // as `$0`, which prefixes its own diagnostic messages. If the
-                    // shell path has no extractable basename — reachable only via
-                    // degenerate input like `""` or `/` — fall back to `_`, the
-                    // conventional placeholder for an unused `$0`, rather than
-                    // making a false claim about which shell is running.
-                    let arg0 = std::path::Path::new(cmd.get_program())
-                        .file_name()
-                        .unwrap_or(std::ffi::OsStr::new("_"))
-                        .to_os_string();
+                    // As `prepare_shell_cmd()` in Git's `run-command.c` does, pass the command as `$0`, which prefixes the
+                    // diagnostics of the shell, and add `"$@"` for arguments even if the command mentions `$@` itself, as
+                    // `f() { cmd "$@"; }; f` does.
+                    let name = prep.command.clone();
                     cmd.arg("-c");
                     if !prep.args.is_empty() {
-                        if !prep.command.as_encoded_bytes().contains_str("$@") {
-                            if prep.quote_command {
-                                let command = gix_path::os_str_into_bstr(&prep.command)?;
-                                prep.command = gix_path::from_bstring(gix_quote::single(command))?.into();
-                            }
-                            prep.command.push(r#" "$@""#);
-                        } else {
-                            gix_trace::debug!(
-                                r#"Will not add '"$@"' to '{:?}' as it seems to contain '$@' already"#,
-                                prep.command
-                            );
+                        if prep.quote_command {
+                            let command = gix_path::os_str_into_bstr(&prep.command)?;
+                            prep.command = gix_path::from_bstring(gix_quote::single(command))?.into();
                         }
+                        prep.command.push(r#" "$@""#);
                     }
                     cmd.arg(prep.command);
-                    cmd.arg(arg0);
+                    cmd.arg(name);
                     cmd
                 }
             }
@@ -333,9 +316,9 @@ fn default_shell_exists(env: &[(OsString, OsString)]) -> bool {
 /// The last `PATH` in `inline_env` overrides the last one in `env`. Without either, the inherited `PATH` (of this
 /// process) is used with the [directories of Git's programs](gix_path::env::git_program_dirs()) in front, and the
 /// command receives this `PATH` as well, as programs started by Git do. The selected `PATH` is searched in order.
-/// A resolved shebang script is launched through its interpreter, ignoring shebang arguments. If `PATH` does not
-/// resolve a bare command, the missing program remains anchored in its first entry so Rust's broader Windows lookup
-/// cannot find it elsewhere.
+/// A script is launched through the interpreter that [`mingw::interpreter()`] names, found in the same `PATH`. If `PATH`
+/// does not resolve a bare command, the missing program remains anchored in its first entry so Rust's broader Windows
+/// lookup cannot find it elsewhere.
 fn windows_command(command: OsString, env: &[(OsString, OsString)], inline_env: &[(String, OsString)]) -> Command {
     let explicit_joined_paths = explicit_path(env, inline_env);
     let git_joined_paths = match explicit_joined_paths {
@@ -351,13 +334,13 @@ fn windows_command(command: OsString, env: &[(OsString, OsString)], inline_env: 
         .and_then(|joined_paths| win_path_lookup(command.as_ref(), joined_paths));
     let mut cmd = match looked_up {
         // Use the manually resolved path.
-        Some(program) => program_command(&program),
+        Some(program) => program_command(&program, joined_paths.as_deref()),
         // A bare PATH miss must neither probe a worktree file nor use Rust's broader Windows search.
         None if is_bare_command(Path::new(&command)) => Command::new(prevent_further_path_lookup(
             command.as_ref(),
             joined_paths.as_deref().unwrap_or_else(|| OsStr::new("")),
         )),
-        None => program_command(command.as_ref()),
+        None => program_command(command.as_ref(), joined_paths.as_deref()),
     };
     if let Some(joined_paths) = &git_joined_paths {
         cmd.env("PATH", joined_paths);
@@ -365,17 +348,20 @@ fn windows_command(command: OsString, env: &[(OsString, OsString)], inline_env: 
     cmd
 }
 
-/// Create a command to run `program`, through its interpreter if it's a script with a shebang.
-fn program_command(program: &Path) -> Command {
-    match extract_interpreter(program) {
-        Some(shebang) => {
-            let mut cmd = Command::new(shebang.interpreter);
-            // Git for Windows ignores shebang arguments and passes only the script path.
-            cmd.arg(program);
-            cmd
-        }
-        None => Command::new(program),
-    }
+/// Create a command to run `program`, through its interpreter if it's a script, which Git for Windows looks up in `PATH`,
+/// `joined_paths`, as a program. It fails to start if there is none, as it does in Git for Windows.
+fn program_command(program: &Path, joined_paths: Option<&OsStr>) -> Command {
+    let Some(interpreter) = mingw::interpreter(program) else {
+        return Command::new(program);
+    };
+    let joined_paths = joined_paths.unwrap_or_default();
+    let mut cmd = Command::new(
+        mingw::path_lookup(&interpreter, split_paths(joined_paths), true)
+            .unwrap_or_else(|| prevent_further_path_lookup(interpreter.as_ref(), joined_paths)),
+    );
+    // Git for Windows ignores the arguments of the `#!` line and passes only the path of the script.
+    cmd.arg(mingw::script_argument(program));
+    cmd
 }
 
 /// Return the `PATH` that the last assignment in `inline_env` sets, or else the last one in `env`, matching the name
@@ -474,16 +460,30 @@ mod tests {
             "the executable selected from PATH is also the one passed to the process launcher"
         );
         let script = format!("./{program}");
+        let interpreter = bin.join("interpreter.exe");
+        std::fs::write(&interpreter, b"executable placeholder")?;
         let explicit_script = windows_command(script.as_str().into(), &[], &[]);
         assert_eq!(
             explicit_script.get_program(),
-            Path::new("/untrusted/interpreter"),
-            "an explicitly requested script retains shebang support"
+            interpreter,
+            "an explicitly requested script runs with the interpreter of that name in `PATH`"
         );
         assert_eq!(
             explicit_script.get_args().collect::<Vec<_>>(),
             [OsStr::new(&script)],
             "the interpreter receives the explicitly requested script"
+        );
+
+        std::fs::remove_file(&interpreter)?;
+        let mut missing_interpreter = windows_command(script.as_str().into(), &[], &[]);
+        assert_eq!(
+            missing_interpreter.get_program(),
+            git_dirs.first().unwrap_or(&bin).join("interpreter"),
+            "without an interpreter in `PATH`, the path in the script doesn't count either"
+        );
+        assert!(
+            missing_interpreter.spawn().is_err(),
+            "a script without interpreter fails to start"
         );
         Ok(())
     }

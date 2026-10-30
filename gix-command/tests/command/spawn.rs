@@ -43,8 +43,8 @@ fn script_with_dollar_at() -> TestResult {
     .wait_with_output()?;
     assert_eq!(
         out.stdout.to_str_lossy().trim(),
-        "arg",
-        "the argument is just mentioned once"
+        "arg arg",
+        "as in Git, the arguments are added to the command whether or not it mentions them"
     );
     Ok(())
 }
@@ -191,38 +191,27 @@ mod with_shell {
         Ok(())
     }
 
-    #[cfg(unix)]
     #[test]
-    fn dollar_zero_in_minus_c_is_basename_of_default_shell() -> TestResult {
-        let out = gix_command::prepare(r#"printf %s "$0""#)
-            .command_may_be_shell_script()
-            .spawn()?
-            .wait_with_output()?;
-        assert_eq!(
-            out.stdout.as_bstr(),
-            "sh",
-            "with the default shell on Unix, $0 should be the shell's basename, \
-                 since that is the command_name passed after the -c operand"
-        );
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn dollar_zero_in_minus_c_reflects_with_shell_program() -> TestResult {
-        let out = std::process::Command::try_from(
-            gix_command::prepare(r#"printf %s "$0""#)
+    fn commands_see_the_parameters_they_see_in_git() -> TestResult {
+        let dir = gix_testtools::tempfile::tempdir()?;
+        for command in [
+            r#"printf '[%s]\n' "$0" "$#" "$@""#,
+            r#"f() { printf '[%s]\n' "$0" "$#" "$@"; }; f"#,
+            r#"printf '[%s]\n' "$1""#,
+            "printf",
+        ] {
+            let git = gix_testtools::git_command(dir.path())
+                .args(["-c", &format!("alias.run=!{command}"), "run", "[%s]", "b c"])
+                .output()?;
+            assert!(git.status.success(), "Git ran {command:?}: {}", git.stderr.as_bstr());
+            let ours = gix_command::prepare(command)
                 .command_may_be_shell_script()
-                .with_shell_program(gix_testtools::bash_program()),
-        )?
-        .spawn()?
-        .wait_with_output()?;
-        assert_eq!(
-            out.stdout.as_bstr(),
-            "bash",
-            "$0 should be the basename of the shell selected via with_shell_program, \
-                 so a configured bash identifies as 'bash' rather than as some other shell"
-        );
+                .args(["[%s]", "b c"])
+                .spawn()?
+                .wait_with_output()?;
+            assert!(ours.status.success(), "{command:?}");
+            assert_eq!(ours.stdout.as_bstr(), git.stdout.as_bstr(), "{command:?}");
+        }
         Ok(())
     }
 }

@@ -1,4 +1,4 @@
-//! Compare how helpers named in the configuration run with what Git did in the scenarios of
+//! Compare how helpers run, which are mostly named in the configuration, with what Git did in the scenarios of
 //! `make_named_helper_records.sh`.
 
 use std::path::{Path, PathBuf};
@@ -13,7 +13,17 @@ use gix_testtools::Result;
 
 /// The scenarios of the fixture, each a repository with the helper Git ran, what `git credential fill` printed, and the
 /// records of the helper.
-const SCENARIOS: &[&str] = &["plain", "quoted-arguments", "shell-arguments", "http-path"];
+const SCENARIOS: &[&str] = &[
+    "plain",
+    "quoted-arguments",
+    "shell-arguments",
+    "http-path",
+    "script",
+    "script-function",
+    "script-mentioning-arguments",
+    "script-name",
+    "absolute-path",
+];
 
 /// Return the root of the fixture, whose `bin` holds `git-credential-recorder`, the program of the helper `recorder`.
 fn fixture() -> Result<PathBuf> {
@@ -62,7 +72,7 @@ fn fill_approve_reject(scenario: &Path) -> Result<BString> {
 }
 
 #[test]
-fn named_helpers_receive_what_git_sends_them() -> Result {
+fn helpers_receive_what_git_sends_them() -> Result {
     if gix_testtools::run_in_isolated_process()? {
         return Ok(());
     }

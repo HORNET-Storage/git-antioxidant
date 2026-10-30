@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 
 use bstr::{BStr, BString};
-use gix_error::{ExnResult, Result, ResultExt};
+use gix_error::{ExnResult, ResultExt};
 
 /// The result of [`command_line()`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,14 +94,6 @@ pub fn command_line(input: &BStr) -> ExnResult<Outcome, Error> {
         command,
         args: args.map(into_os_string).collect::<ExnResult<_, Error>>()?,
     })
-}
-
-pub(crate) fn arguments(input: &BStr) -> Result<Vec<OsString>> {
-    parse_words(input)
-        .or_error()?
-        .into_iter()
-        .map(|word| into_os_string(word.value).or_error())
-        .collect()
 }
 
 fn parse_words(input: &BStr) -> std::result::Result<Vec<Word>, Error> {
