@@ -393,7 +393,7 @@ where
     ///
     /// - `push.default` and `branch.<name>.merge` decide what to push if no refspec is given, and `remote.pushDefault`,
     ///   `branch.<name>.remote` and the remotes that are configured decide which remote is the upstream of the current
-    ///   branch.
+    ///   branch. Only values that we deem [trustworthy][crate::open::Options::filter_config_section()] are used.
     /// - `push.followTags` and `push.pushOption` are used unless `options` set them.
     /// - `gitoxide.userAgent` is read to obtain the application user agent for git servers and for HTTP servers as well.
     ///

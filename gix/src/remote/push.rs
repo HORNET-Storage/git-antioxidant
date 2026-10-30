@@ -25,6 +25,8 @@ impl crate::Repository {
     /// If `name_or_url` is `None`, take the name of the remote from `branch.<name>.pushRemote` of the branch `HEAD` points to,
     /// then from `remote.pushDefault`, then from `branch.<name>.remote`, and finally use the only configured remote,
     /// or `origin` if it is configured among several. A name taken from the configuration may also be a URL.
+    /// Only values that we deem [trustworthy][crate::open::Options::filter_config_section()] are used, as they decide where
+    /// the objects of the repository are sent.
     ///
     /// Fail with the message of `git push` if no remote is found.
     pub fn find_push_remote(&self, name_or_url: Option<&BStr>) -> Result<Remote<'_>> {

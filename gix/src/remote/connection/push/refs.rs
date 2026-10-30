@@ -121,7 +121,7 @@ pub(super) fn refspecs(
 fn push_default(repo: &Repository) -> Result<Option<push::Default>> {
     repo.config
         .resolved
-        .string(Push::DEFAULT)
+        .string_filter(Push::DEFAULT, repo.filter_config_section())
         .map(|value| Push::DEFAULT.try_into_default(value))
         .transpose()
         .with_leniency(repo.config.lenient_config)
@@ -206,10 +206,16 @@ fn mapped(
 /// `branch.<name>.remote` isn't set, as `set_merge()` in Git's `remote.c` reads them.
 fn upstream_merge(repo: &Repository, branch: &BStr) -> Vec<BString> {
     let config = &repo.config.resolved;
-    if config.string_by("branch", Some(branch), "remote").is_none() {
+    let filter = repo.filter_config_section();
+    if config
+        .string_filter_by("branch", Some(branch), "remote", filter)
+        .is_none()
+    {
         return Vec::new();
     }
-    config.strings_by("branch", Some(branch), "merge").unwrap_or_default()
+    config
+        .strings_filter_by("branch", Some(branch), "merge", filter)
+        .unwrap_or_default()
 }
 
 /// The refspec that `push.default` implies for pushing the current branch to `remote`, as
@@ -288,7 +294,11 @@ fn remote_name(remote: &Remote<'_>) -> BString {
 /// The name of the remote of the local branch with the short name `branch`: `branch.<name>.remote`, else the only
 /// remote, else `origin`, as `remotes_remote_for_branch()` in Git's `remote.c` names it.
 fn remote_for_branch(repo: &Repository, branch: &BStr) -> BString {
-    if let Some(name) = repo.config.resolved.string_by("branch", Some(branch), "remote") {
+    if let Some(name) =
+        repo.config
+            .resolved
+            .string_filter_by("branch", Some(branch), "remote", repo.filter_config_section())
+    {
         return name;
     }
     let names = repo.remote_names();

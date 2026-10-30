@@ -203,7 +203,9 @@ impl Cache {
             .unwrap_or(DEFAULT))
     }
 
-    #[cfg(feature = "command")]
+    /// Return whether `commit.gpgSign` asks for commits to be signed. Only trusted configuration can ask for it, as the
+    /// signing program signs with the keys of the user what the repository contains.
+    #[cfg(any(feature = "command", feature = "index"))]
     pub(crate) fn may_sign_commits(&self) -> Result<bool> {
         use crate::config::tree::Commit;
 
@@ -211,7 +213,10 @@ impl Cache {
             .expect("commit.gpgSign default is a valid boolean")
             .0;
         Ok(Commit::GPG_SIGN
-            .enrich_error(self.resolved.boolean(Commit::GPG_SIGN))
+            .enrich_error(
+                self.resolved
+                    .boolean_filter(Commit::GPG_SIGN, &mut self.filter_config_section.clone()),
+            )
             .with_lenient_default_value(self.lenient_config, Some(default))?
             .unwrap_or(default))
     }

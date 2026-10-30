@@ -432,6 +432,55 @@ mod branch_remote {
         Ok(())
     }
 
+    #[test]
+    fn untrusted_configuration_is_ignored() -> TestResult {
+        let untrusted = gix::open::Options::isolated().with(gix_sec::Trust::Reduced);
+        let main: &gix::refs::FullNameRef = "refs/heads/main".try_into()?;
+
+        let repo = named_subrepo_opts("make_remote_config_repos.sh", "push-remote", untrusted.clone())?;
+        for direction in [remote::Direction::Fetch, remote::Direction::Push] {
+            assert!(
+                repo.branch_remote_name("main", direction).is_none(),
+                "`branch.main.pushRemote` and `branch.main.remote` don't count"
+            );
+        }
+        assert!(
+            repo.branch_remote_ref_name(main, remote::Direction::Fetch).is_none(),
+            "`branch.main.merge` doesn't count"
+        );
+
+        let repo = named_subrepo_opts("make_remote_config_repos.sh", "push-remote-default", untrusted.clone())?;
+        assert!(
+            repo.branch_remote_name("main", remote::Direction::Push).is_none(),
+            "`remote.pushDefault` doesn't count"
+        );
+
+        let trusted_remote = "remote.origin.url=.";
+        let repo = named_subrepo_opts(
+            "make_remote_config_repos.sh",
+            "push-default-current",
+            untrusted.clone().config_overrides([trusted_remote]),
+        )?;
+        assert!(
+            repo.branch_remote_ref_name(main, remote::Direction::Push).is_none(),
+            "`push.default=current` of the repository doesn't count, and the default needs an upstream"
+        );
+
+        let repo = named_subrepo_opts(
+            "make_remote_config_repos.sh",
+            "push-default-current",
+            untrusted.config_overrides([trusted_remote, "push.default=current"]),
+        )?;
+        assert_eq!(
+            repo.branch_remote_ref_name(main, remote::Direction::Push)
+                .expect("trusted configuration counts")?
+                .as_bstr(),
+            "refs/heads/main",
+            "the values of the caller stay in use"
+        );
+        Ok(())
+    }
+
     fn repo(name: &str) -> std::result::Result<gix::Repository, gix_error::Error> {
         named_subrepo_opts("make_remote_config_repos.sh", name, gix::open::Options::isolated())
     }

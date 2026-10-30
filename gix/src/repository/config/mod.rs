@@ -159,7 +159,7 @@ impl crate::Repository {
         crate::commit::sign::signing_options(self)
     }
 
-    /// Resolve all Git configuration needed to sign a commit if `commit.gpgSign` enables signing.
+    /// Resolve all Git configuration needed to sign a commit if `commit.gpgSign` of trusted configuration enables signing.
     ///
     /// If signing is disabled, signer-specific configuration isn't resolved or validated.
     #[cfg(feature = "command")]

@@ -301,6 +301,44 @@ mod signature {
         Ok(())
     }
 
+    #[test]
+    fn only_trusted_configuration_enables_signing() -> TestResult {
+        use gix::sec::Trust;
+
+        let fixture = gix_testtools::scripted_fixture_writable("make_basic_repo.sh")?;
+        let config = fixture.path().join(".git").join("config");
+        let mut content = std::fs::read(&config)?;
+        content.extend_from_slice(b"[commit]\n\tgpgSign = true\n");
+        std::fs::write(&config, content)?;
+
+        let open = |trust, overrides: &[&str]| {
+            let identity = ["user.name=Gitoxide Signing Fixture", "user.email=signing@example.com"];
+            gix::open_opts(
+                fixture.path(),
+                gix::open::Options::isolated()
+                    .with(trust)
+                    .config_overrides(identity.iter().chain(overrides).copied()),
+            )
+        };
+        assert!(
+            open(Trust::Full, &[])?.commit_signing_options_if_enabled()?.is_some(),
+            "the configuration of the repository counts if it is trusted"
+        );
+        assert!(
+            open(Trust::Reduced, &[])?
+                .commit_signing_options_if_enabled()?
+                .is_none(),
+            "another owner can't make the keys of the user sign what the repository contains"
+        );
+        assert!(
+            open(Trust::Reduced, &["commit.gpgSign=true"])?
+                .commit_signing_options_if_enabled()?
+                .is_some(),
+            "the configuration of the caller stays in use"
+        );
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn resolves_the_default_ssh_key_command() -> TestResult {

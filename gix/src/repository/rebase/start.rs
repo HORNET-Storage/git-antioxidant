@@ -25,7 +25,7 @@ use crate::{
     bstr::{BStr, BString, ByteSlice},
     config::{
         cache::util::ApplyLeniency,
-        tree::{Commit, Rebase, keys},
+        tree::{Rebase, keys},
     },
     error::{ResultExt, bail, message},
     rebase::{Empty, Error, Merges, Options, Outcome, Programs},
@@ -286,9 +286,7 @@ pub(super) fn rebase(repo: &Repository, options: Options, should_interrupt: &Ato
         branch_base,
         head: orig_head,
     };
-    let gpg_sign = config_bool(repo, &Commit::GPG_SIGN)?
-        .unwrap_or(false)
-        .then(BString::default);
+    let gpg_sign = repo.config.may_sign_commits()?.then(BString::default);
     let state = State {
         head_name: head_name.clone(),
         onto,

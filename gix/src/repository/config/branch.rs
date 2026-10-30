@@ -32,6 +32,7 @@ impl crate::Repository {
     /// similar to what would happen when running `git push <name>`.
     ///
     /// Returns `None` if there is nothing configured, or if no remote or remote ref is configured.
+    /// Only values that we deem [trustworthy][crate::open::Options::filter_config_section()] are used.
     ///
     /// ### Note
     ///
@@ -46,7 +47,12 @@ impl crate::Repository {
                 let short_name = name.shorten();
                 self.config
                     .resolved
-                    .string_by("branch", Some(short_name), Branch::MERGE.name)
+                    .string_filter_by(
+                        "branch",
+                        Some(short_name),
+                        Branch::MERGE.name,
+                        self.filter_config_section(),
+                    )
                     .map(|name| {
                         if name.starts_with(b"refs/") {
                             crate::config::tree::branch::Merge::try_into_fullrefname(name)
@@ -214,6 +220,9 @@ impl crate::Repository {
     /// * if `direction` is [remote::Direction::Push], the push remote will be queried by means of `branch.<short_name>.pushRemote`
     ///   or `remote.pushDefault` as fallback.
     ///
+    /// Only values that we deem [trustworthy][crate::open::Options::filter_config_section()] are used, as the name decides
+    /// where a push sends the objects of the repository.
+    ///
     /// See also [`Reference::remote_name()`](crate::Reference::remote_name()) for a more typesafe version
     /// to be used when a `Reference` is available.
     ///
@@ -226,14 +235,15 @@ impl crate::Repository {
     ) -> Option<remote::Name<'_>> {
         let name = short_branch_name.into();
         let config = &self.config.resolved;
+        let filter = self.filter_config_section();
         (direction == remote::Direction::Push)
             .then(|| {
                 config
-                    .string_by("branch", Some(name), Branch::PUSH_REMOTE.name)
-                    .or_else(|| config.string(crate::config::tree::Remote::PUSH_DEFAULT))
+                    .string_filter_by("branch", Some(name), Branch::PUSH_REMOTE.name, filter)
+                    .or_else(|| config.string_filter(crate::config::tree::Remote::PUSH_DEFAULT, filter))
             })
             .flatten()
-            .or_else(|| config.string_by("branch", Some(name), Branch::REMOTE.name))
+            .or_else(|| config.string_filter_by("branch", Some(name), Branch::REMOTE.name, filter))
             .map(Into::into)
     }
 
@@ -269,7 +279,7 @@ impl crate::Repository {
     fn push_default(&self) -> Result<push::Default> {
         self.config
             .resolved
-            .string(Push::DEFAULT)
+            .string_filter(Push::DEFAULT, self.filter_config_section())
             .map_or(Ok(Default::default()), |v| {
                 Push::DEFAULT
                     .try_into_default(v)

@@ -464,6 +464,30 @@ fn exec_lines_of_a_rebase_in_progress_need_a_fully_trusted_git_directory() -> cr
     Ok(())
 }
 
+/// Hooks don't run in such a repository, and only a rebase without them gets to the commits that `gpg_sign_opt` of its
+/// state asks to sign. Signing with a program that doesn't exist would fail.
+#[cfg(not(feature = "hooks"))]
+#[test]
+#[parallel]
+fn a_rebase_in_progress_asks_for_no_signatures_without_trust_in_the_git_directory() -> crate::Result {
+    let scenario = scenario("break")?;
+    let stop = stopped(rebase(&scenario, interactive("main"))?);
+    assert_eq!(stop.reason, StopReason::Break, "the rebase stops for `break`");
+    std::fs::write(
+        scenario.path().join(".git").join("rebase-merge").join("gpg_sign_opt"),
+        "-S",
+    )?;
+    let repo = super::commit::baseline::open_with(scenario.path(), ["gpg.program=missing-signing-program"])?;
+    let repo = gix::open_opts(
+        scenario.path(),
+        repo.open_options().clone().with(gix_sec::Trust::Reduced),
+    )?;
+    let before = repo.head_id()?;
+    assert_finished(&repo.rebase_continue(step(), &AtomicBool::new(false))?);
+    assert_ne!(repo.head_id()?, before, "commits were made, without a signature");
+    Ok(())
+}
+
 #[test]
 #[parallel]
 fn interactive_without_programs_uses_the_todo_list_as_made() -> crate::Result {

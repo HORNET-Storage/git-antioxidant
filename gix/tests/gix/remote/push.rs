@@ -67,6 +67,25 @@ mod find_push_remote {
         );
         Ok(())
     }
+
+    #[test]
+    fn untrusted_configuration_names_no_remote() -> gix_testtools::Result {
+        for case in ["fast-forward", "push-default-remote", "branch-push-remote"] {
+            let repo = named_subrepo_opts(
+                "make_push_repos.sh",
+                &format!("{case}/before/local"),
+                restricted().with(gix::sec::Trust::Reduced),
+            )?;
+            let Err(err) = repo.find_push_remote(None) else {
+                panic!("{case}: the configuration of another owner must not decide where objects are sent");
+            };
+            assert!(
+                err.to_string().starts_with("No configured push destination."),
+                "{case}: nothing that is trusted names a remote: {err}"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[cfg(any(feature = "blocking-network-client", feature = "async-network-client-async-std"))]
@@ -243,6 +262,41 @@ mod blocking_and_async_io {
                 continue;
             }
             push_case(&fixture.path().join(name), name, daemon.as_ref(), expect).await?;
+        }
+        Ok(())
+    }
+
+    /// Without refspecs, `push.default`, `branch.<name>.remote` and `branch.<name>.merge` decide what is pushed, but not
+    /// from the configuration of a repository that isn't trusted. The refspecs are decided before the handshake, so
+    /// nothing is started.
+    #[cfg(feature = "blocking-network-client")]
+    #[test]
+    fn untrusted_configuration_doesnt_decide_what_is_pushed() -> Result {
+        let before = gix_testtools::scripted_fixture_read_only("make_push_repos.sh")?.join("default-nothing/before");
+        let url = before.join("remote.git");
+        let url = format!("remote.trusted.url={}", url.display().to_string().replace('\\', "/"));
+        for (overrides, expected) in [
+            (vec![url.clone()], "The current branch main has no upstream branch."),
+            (
+                vec![url, "push.default=nothing".into()],
+                "You didn't specify any refspecs to push, and push.default is \"nothing\".",
+            ),
+        ] {
+            let repo = gix::open_opts(
+                before.join("local"),
+                restricted().with(gix::sec::Trust::Reduced).config_overrides(overrides),
+            )?;
+            let Err(err) = repo
+                .find_push_remote(Some("trusted".into()))?
+                .connect(Push)?
+                .prepare_push(gix::progress::Discard, push::Options::default())
+            else {
+                panic!("without trust in the repository, nothing says what to push");
+            };
+            assert!(
+                err.to_string().starts_with(expected),
+                "the local repository sets `push.default=nothing` and an upstream, which don't count: {err}"
+            );
         }
         Ok(())
     }

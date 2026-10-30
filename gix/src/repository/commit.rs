@@ -111,7 +111,8 @@ impl Repository {
     /// * The author and committer are those of [`author()`](Self::author()) and [`committer()`](Self::committer()),
     ///   unless [`Options::author`] or the amended commit give the author, and the commit is signed through
     ///   [`commit_signing_options()`](Self::commit_signing_options()) if [`Options::sign`] or `commit.gpgSign` ask for
-    ///   it. The parents of a merge that `MERGE_HEAD` names with signed tags get their `mergetag` headers.
+    ///   it, which it only does from trusted configuration. The parents of a merge that `MERGE_HEAD` names with signed
+    ///   tags get their `mergetag` headers.
     /// * The hooks run as Git runs them, with `GIT_INDEX_FILE`, `GIT_EDITOR=:` and the `GIT_AUTHOR_*` variables of the
     ///   author: `pre-commit` before the message is prepared, `prepare-commit-msg` with the message file and its
     ///   source after that, then `commit-msg`, and once `HEAD` changed, `post-commit` and, after an amended commit,
@@ -547,13 +548,10 @@ impl Repository {
 
     /// Return whether a commit is signed: as `sign` says, or without it, as `commit.gpgSign` says.
     fn wants_signature(&self, sign: Option<bool>) -> Result<bool> {
-        Ok(match sign {
-            Some(sign) => sign,
-            None => Commit::GPG_SIGN
-                .enrich_error(self.config.resolved.boolean(Commit::GPG_SIGN))
-                .with_lenient_default(self.config.lenient_config)?
-                .unwrap_or_default(),
-        })
+        match sign {
+            Some(sign) => Ok(sign),
+            None => self.config.may_sign_commits(),
+        }
     }
 
     /// Read the merge in progress that a commit concludes from `MERGE_HEAD` and `MERGE_MODE` in `git_dir`, or return
