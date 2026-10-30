@@ -116,11 +116,16 @@ fn resources_of_worktree_and_odb_and_check_link() -> TestResult {
     );
 
     let command = platform.prepare_diff_command("test --flag".into(), Default::default(), 0, 1)?;
-    assert!(
-        command
-            .get_args()
-            .any(|arg| arg.to_string_lossy().contains("test --flag")),
-        "configured command lines with arguments are interpreted by a shell"
+    let args = command.get_args().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>();
+    let script = args
+        .iter()
+        .position(|arg| arg == "-c")
+        .expect("the shell receives the command after -c")
+        + 1;
+    assert_eq!(
+        args[script..script + 3],
+        [r#"test --flag "$@""#, "test --flag", "a"],
+        "configured command lines with arguments are interpreted by a shell, which passes on the arguments of the diff"
     );
 
     platform.set_resource(id, EntryKind::Link, "a".into(), ResourceKind::NewOrDestination, &db)?;
@@ -236,6 +241,34 @@ fn comparable_ext_diff(cmd: gix_error::Result<gix_diff::blob::platform::prepare_
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// `make_external_diff_repo.sh` shows what Git gives an external command that the shell has to run.
+#[test]
+fn external_commands_receive_what_git_gives_them() -> TestResult {
+    let fixture = crate::scripted_fixture_read_only("make_external_diff_repo.sh")?;
+    let mut platform = new_platform(None, gix_diff::blob::pipeline::Mode::default());
+    // Both sides come from the object database, as they do for `git diff` of two commits.
+    platform.filter.roots.old_root = None;
+    let db = object_db();
+    for (content, kind) in [
+        ("old\n", ResourceKind::OldOrSource),
+        ("new\n", ResourceKind::NewOrDestination),
+    ] {
+        let id = insert(&db, content)?;
+        platform.set_resource(id, EntryKind::Blob, "file".into(), kind, &db)?;
+    }
+
+    let command = std::fs::read(fixture.join("command"))?;
+    let mut command = platform.prepare_diff_command(command.trim_end().into(), Default::default(), 0, 1)?;
+    let output = command.stdout(std::process::Stdio::piped()).output()?;
+    assert!(output.status.success());
+    assert_eq!(
+        output.stdout.as_bstr(),
+        std::fs::read(fixture.join("received"))?.as_bstr(),
+        "the command received its arguments as `git diff` gave them to it"
+    );
+    Ok(())
 }
 
 #[test]

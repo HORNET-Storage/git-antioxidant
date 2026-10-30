@@ -1,5 +1,5 @@
 use gix_error::Result;
-use std::{cmp::Ordering, io::Write, process::Stdio};
+use std::{cmp::Ordering, ffi::OsString, io::Write, process::Stdio};
 
 use bstr::{BStr, BString, ByteSlice};
 use gix_error::{ExnResult, OptionExt, ResultExt, bail, message, validation};
@@ -402,9 +402,9 @@ pub mod prepare_diff_command {
     pub struct Command {
         pub(crate) cmd: std::process::Command,
         /// Possibly a tempfile to be removed after the run, or `None` if there is no old version.
-        pub(crate) old: Option<gix_tempfile::Handle<gix_tempfile::handle::Closed>>,
+        pub(crate) _old: Option<gix_tempfile::Handle<gix_tempfile::handle::Closed>>,
         /// Possibly a tempfile to be removed after the run, or `None` if there is no new version.
-        pub(crate) new: Option<gix_tempfile::Handle<gix_tempfile::handle::Closed>>,
+        pub(crate) _new: Option<gix_tempfile::Handle<gix_tempfile::handle::Closed>>,
     }
 
     impl Deref for Command {
@@ -512,6 +512,8 @@ impl Platform {
     ///
     /// If one of the resources is binary, the operation reports an error as such resources don't make their data available
     /// which is required for the external diff to run.
+    /// If the paths of the resources differ, the new path is the last argument, while Git also passes a description of
+    /// the rename after it.
     // TODO: fix this - the diff shouldn't fail if binary (or large) files are used, just copy them into tempfiles.
     pub fn prepare_diff_command(
         &self,
@@ -521,12 +523,12 @@ impl Platform {
         total: usize,
     ) -> Result<prepare_diff_command::Command> {
         fn add_resource(
-            cmd: &mut std::process::Command,
+            args: &mut Vec<OsString>,
             res: Resource<'_>,
         ) -> Result<Option<gix_tempfile::Handle<gix_tempfile::handle::Closed>>> {
             let tmpfile = match res.data {
                 resource::Data::Missing => {
-                    cmd.args(["/dev/null", ".", "."]);
+                    args.extend(["/dev/null", ".", "."].map(OsString::from));
                     None
                 }
                 resource::Data::Buffer { buf, is_derived: _ } => {
@@ -548,7 +550,7 @@ impl Platform {
                         )
                     })?;
                     tmp.with_mut(|f| {
-                        cmd.arg(f.path());
+                        args.push(f.path().into());
                     })
                     .or_raise(|| {
                         message!(
@@ -556,7 +558,8 @@ impl Platform {
                             res.rela_path
                         )
                     })?;
-                    cmd.arg(res.id.to_string()).arg(res.mode.as_octal_str().to_string());
+                    args.push(res.id.to_string().into());
+                    args.push(res.mode.as_octal_str().to_string().into());
                     let tmp = tmp.close().or_raise(|| {
                         message!(
                             "Could not close tempfile for \"{}\" while preparing external diff command",
@@ -577,31 +580,27 @@ impl Platform {
         let (old, new) = self
             .resources()
             .ok_or_raise(|| message("Either the source or the destination of the diff operation were not set"))?;
-        let mut cmd: std::process::Command = gix_command::prepare(gix_path::from_bstring(diff_command)?)
-            .command_may_be_shell_script_disallow_manual_argument_splitting()
-            .with_context(context)
-            .env("GIT_DIFF_PATH_COUNTER", (count + 1).to_string())
-            .env("GIT_DIFF_PATH_TOTAL", total.to_string())
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .try_into()?;
-
-        cmd.arg(gix_path::from_bstr(old.rela_path)?.into_owned());
-        let mut out = prepare_diff_command::Command {
-            cmd,
-            old: None,
-            new: None,
-        };
-
-        out.old = add_resource(&mut out.cmd, old)?;
-        out.new = add_resource(&mut out.cmd, new)?;
-
+        let mut args = vec![gix_path::from_bstr(old.rela_path)?.into_owned().into_os_string()];
+        let old_tmp = add_resource(&mut args, old)?;
+        let new_tmp = add_resource(&mut args, new)?;
         if old.rela_path != new.rela_path {
-            out.cmd.arg(gix_path::from_bstr(new.rela_path)?.into_owned());
+            args.push(gix_path::from_bstr(new.rela_path)?.into_owned().into_os_string());
         }
 
-        Ok(out)
+        Ok(prepare_diff_command::Command {
+            cmd: gix_command::prepare(gix_path::from_bstring(diff_command)?)
+                .command_may_be_shell_script_disallow_manual_argument_splitting()
+                .args(args)
+                .with_context(context)
+                .env("GIT_DIFF_PATH_COUNTER", (count + 1).to_string())
+                .env("GIT_DIFF_PATH_TOTAL", total.to_string())
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .try_into()?,
+            _old: old_tmp,
+            _new: new_tmp,
+        })
     }
 
     /// Returns the resource of the given kind if it was set.
