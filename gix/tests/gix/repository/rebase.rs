@@ -434,6 +434,27 @@ fn exec_needs_a_fully_trusted_git_directory() -> crate::Result {
     Ok(())
 }
 
+/// `post-checkout` runs after the state of the rebase was written, even with `--no-verify`, and as with a checkout that
+/// fails, nothing of the rebase stays if its hooks aren't available, which would leave a rebase that can't be continued.
+#[cfg(feature = "hooks")]
+#[test]
+#[parallel]
+fn hooks_that_are_not_available_leave_no_rebase_behind() -> crate::Result {
+    let scenario = scenario("pick")?;
+    let head = scenario.repo.head_id()?.detach();
+    let options = Options {
+        no_verify: true,
+        ..onto("main")
+    };
+    let err = untrusted(&scenario)?
+        .rebase(options, &AtomicBool::new(false))
+        .expect_err("hooks only run in fully trusted repositories");
+    assert!(err.is_permission_denied(), "{err:?}");
+    assert_eq!(rebase_state(scenario.path())?, BTreeMap::new(), "the state is gone");
+    assert_eq!(scenario.repo.head_id()?.detach(), head, "`HEAD` stays where it was");
+    Ok(())
+}
+
 #[test]
 #[parallel]
 fn exec_lines_of_a_rebase_in_progress_need_a_fully_trusted_git_directory() -> crate::Result {

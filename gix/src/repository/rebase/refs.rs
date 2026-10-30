@@ -11,7 +11,7 @@ use gix_ref::{
 
 use super::Sequencer;
 use crate::{
-    Repository, Result,
+    Error, Repository, Result,
     bstr::{BStr, BString, ByteSlice},
     commit::message::normalize_reflog_message,
     error::{ErrorExt, ResultExt, bail, message},
@@ -30,8 +30,8 @@ impl Sequencer<'_> {
     /// fails, the state of the rebase is removed, as Git removes it.
     pub(super) fn checkout_onto(&self, onto_name: &BStr, onto: ObjectId, orig_head: ObjectId) -> Result<()> {
         #[cfg(feature = "hooks")]
-        let hooks = self.repo.hooks()?;
-        let head = self.head_commit()?;
+        let hooks = self.repo.hooks().or_else(|err| self.abandon(err))?;
+        let head = self.head_commit().or_else(|err| self.abandon(err))?;
         let checkout = || -> Result<()> {
             if let Some(refused) = self.switch_worktree(head, onto)? {
                 bail!(message!("{refused}").validation());
@@ -41,11 +41,7 @@ impl Sequencer<'_> {
             text.extend_from_slice(onto_name);
             detach_head(self.repo, onto, self.reflog_message("start", Some(&text)).as_bstr())
         };
-        if let Err(err) = checkout() {
-            let edits = self.dir.remove()?;
-            self.apply_edits(edits)?;
-            return Err(err.and_raise(message("could not detach HEAD")));
-        }
+        checkout().or_else(|err| self.abandon(err))?;
         #[cfg(feature = "hooks")]
         hooks.post_checkout(
             &head.unwrap_or_else(|| self.repo.object_hash().null()),
@@ -53,6 +49,13 @@ impl Sequencer<'_> {
             gix_hook::invocation::Checkout::Branch,
         )?;
         Ok(())
+    }
+
+    /// Remove the state of the rebase as Git does if it can't check out what it rebases onto, and return `err`.
+    fn abandon<T>(&self, err: Error) -> Result<T> {
+        let edits = self.dir.remove()?;
+        self.apply_edits(edits)?;
+        Err(err.and_raise(message("could not detach HEAD")))
     }
 
     /// Switch the index and the worktree from the tree of the commit `from`, or from nothing, to the tree of the commit
