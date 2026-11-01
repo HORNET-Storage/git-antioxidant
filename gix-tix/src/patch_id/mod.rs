@@ -255,7 +255,7 @@ fn changes(repo: &gix::Repository, base_tree_id: ObjectId, tree_id: ObjectId, wo
     gix::diff::tree(
         gix::objs::TreeRefIter::from_bytes(&base.data, base.id.kind()),
         gix::objs::TreeRefIter::from_bytes(&tree.data, tree.id.kind()),
-        &mut gix::diff::tree::State::default(),
+        &mut gix::diff::tree::State::new(repo.max_tree_depth()?),
         repo,
         &mut recorder,
     )

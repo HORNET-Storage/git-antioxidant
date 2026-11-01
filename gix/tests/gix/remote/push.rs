@@ -109,8 +109,8 @@ mod blocking_and_async_io {
         /// Do as [`AsGit`] says where `git push` has at least this version, which first did what `gix` does. The records
         /// of older Git differ, so the case isn't pushed then.
         AsGitSince((u8, u8, u8)),
-        /// Fail with an error containing `gix` and change nothing, where `git push` failed with `git` in its output before
-        /// it reported on any reference.
+        /// Fail with an error containing `gix` and change nothing, where `git push` failed with `git` in its output and
+        /// updated no reference.
         Fail { git: &'static str, gix: &'static str },
     }
     use Expect::{AsGit, AsGitSince, Fail};
@@ -225,6 +225,7 @@ mod blocking_and_async_io {
         ("glob-refspec", AsGit),
         ("negative-refspec", AsGit),
         ("negative-refspec-source", AsGit),
+        ("max-tree-depth", fail("exceeded maximum allowed tree depth")),
     ];
 
     #[bisync::bisync]
@@ -346,8 +347,8 @@ mod blocking_and_async_io {
             Fail { git, gix } => {
                 let stderr = std::fs::read(dir.join("stderr"))?;
                 assert!(
-                    reported.is_empty() && !succeeded,
-                    "{name}: `git push` failed before it reported on any reference"
+                    reported.iter().all(|line| line.starts_with(b"!")) && !succeeded,
+                    "{name}: `git push` failed without updating a reference"
                 );
                 assert!(
                     stderr.contains_str(git),

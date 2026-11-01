@@ -117,6 +117,7 @@ where
 
     let repo = gix::discover(repository_path)?;
     let pack_compression = repo.pack_compression()?;
+    let max_tree_depth = repo.max_tree_depth()?;
     let repo = repo.into_sync();
     progress.init(Some(2), progress::steps());
     let tips = tips.into_iter();
@@ -210,6 +211,7 @@ where
                     thread_limit,
                     chunk_size,
                     input_object_expansion,
+                    max_tree_depth,
                 },
             )?
         } else {
@@ -219,6 +221,7 @@ where
                 &progress,
                 &interrupt::IS_INTERRUPTED,
                 input_object_expansion,
+                max_tree_depth,
             )?
         };
         stats.counts = count_stats;

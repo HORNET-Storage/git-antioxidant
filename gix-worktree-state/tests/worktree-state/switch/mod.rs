@@ -180,6 +180,7 @@ impl Case {
         Ok(Options {
             checkout,
             fscache: false,
+            max_tree_depth: gix_object::tree::DEFAULT_MAX_DEPTH,
         })
     }
 

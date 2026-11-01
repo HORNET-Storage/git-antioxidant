@@ -48,6 +48,7 @@ fn count_objects_unthreaded(odb: &Memory, ids: &[gix_hash::ObjectId]) -> Vec<out
         &progress::Discard,
         &AtomicBool::new(false),
         count::objects::ObjectExpansion::AsIs,
+        gix_object::tree::DEFAULT_MAX_DEPTH,
     )
     .expect("counting in-memory objects succeeds");
     counts

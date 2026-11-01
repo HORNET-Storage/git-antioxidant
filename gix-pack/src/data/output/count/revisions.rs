@@ -23,14 +23,19 @@ pub struct Options {
     /// The trees of at most this many commits at the edge of what is sent give preferred bases, as Git takes them from as
     /// many commits as its window has objects (`pack.window`).
     pub window: usize,
+    /// The depth of the deepest tree to read, with the root tree at depth 0. A deeper tree is an error, as
+    /// `core.maxTreeDepth` makes it one in Git.
+    pub max_tree_depth: usize,
 }
 
 impl Default for Options {
-    /// No preferred bases, from at most as many commits as the default window of `git pack-objects` has objects, 10.
+    /// No preferred bases, from at most as many commits as the default window of `git pack-objects` has objects, 10, and
+    /// the default limit of the depth of trees.
     fn default() -> Self {
         Options {
             thin: false,
             window: 10,
+            max_tree_depth: gix_object::tree::DEFAULT_MAX_DEPTH,
         }
     }
 }
@@ -172,7 +177,7 @@ pub fn objects<F: Find>(
     };
 
     let mut seen = uninteresting.clone();
-    let mut walk = Walk::new(objects, should_interrupt);
+    let mut walk = Walk::new(objects, should_interrupt).max_tree_depth(options.max_tree_depth);
     for item in pending {
         match item {
             Pending::Tag(id, name) => {

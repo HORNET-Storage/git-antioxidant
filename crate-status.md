@@ -111,6 +111,10 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
         * [x] commit graphs
         * [x] make [git-notes](https://git-scm.com/docs/git-notes) accessible
         * [x] tree entries
+            * [x] `core.maxTreeDepth`, from trusted configuration, for the walks through trees that read, compare, merge, blame and pack them
+                - **deviation**
+                    * The walks of `gix_odb::repack` and `gix-bundle` have no limit, as they remember the trees they saw and read each once.
+                    * As in Git, the limit stops a tree that contains itself, but not a tree that holds another tree many times below the limit.
     * **diffs/changes**
         * [x] tree with other tree
             * [x] respect case-sensitivity of host filesystem.

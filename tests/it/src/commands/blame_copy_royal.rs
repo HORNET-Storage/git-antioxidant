@@ -69,6 +69,7 @@ pub(super) mod function {
             gix::blame::Start::Commit(suspect),
             cache,
             &mut resource_cache,
+            &mut gix::diff::tree::State::new(repo.max_tree_depth()?),
             file.as_bstr(),
             options,
         )?;

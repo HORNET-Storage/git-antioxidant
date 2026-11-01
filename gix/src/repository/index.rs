@@ -203,7 +203,7 @@ impl crate::Repository {
     /// Note that this is an expensive operation as it requires recursively traversing the entire tree to unpack it into the index.
     pub fn index_from_tree(&self, tree: &gix_hash::oid) -> Result<gix_index::File> {
         Ok(gix_index::File::from_state(
-            gix_index::State::from_tree(tree, self, self.config.protect_options()?)
+            gix_index::State::from_tree(tree, self, self.config.index_from_tree_options()?)
                 .or_raise(|| gix_error::message!("Could not create index from tree at {tree}"))?,
             self.index_path(),
         ))

@@ -1,10 +1,27 @@
 /// The state used and potentially shared by multiple tree traversals, reusing memory.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct State {
     freelist: Vec<Vec<u8>>,
+    /// The depth of the deepest tree to read, with the root tree at depth 0. A deeper tree fails the traversal, as
+    /// `core.maxTreeDepth` makes it fail in Git.
+    pub max_depth: usize,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        State::new(gix_object::tree::DEFAULT_MAX_DEPTH)
+    }
 }
 
 impl State {
+    /// Create a state for traversals that read trees down to `max_depth`.
+    pub fn new(max_depth: usize) -> Self {
+        State {
+            freelist: Vec::new(),
+            max_depth,
+        }
+    }
+
     /// Pop one empty buffer from the free-list.
     pub fn pop_buf(&mut self) -> Vec<u8> {
         match self.freelist.pop() {
@@ -23,7 +40,7 @@ impl State {
 }
 
 pub(super) mod function {
-    use gix_error::{Result, corruption};
+    use gix_error::{Result, bail, corruption, validation};
     use std::borrow::BorrowMut;
 
     use gix_error::ResultExt;
@@ -36,7 +53,7 @@ pub(super) mod function {
     /// A depth-first traversal of the `root` tree, that preserves the natural order of a tree while immediately descending
     /// into sub-trees.
     ///
-    /// `state` can be passed to re-use memory during multiple invocations.
+    /// `state` can be passed to re-use memory during multiple invocations, and decides how deep the traversal may go.
     pub fn depthfirst<StateMut, Find, V>(root: ObjectId, mut state: StateMut, objects: Find, delegate: &mut V) -> Result
     where
         Find: gix_object::Find,
@@ -56,6 +73,10 @@ pub(super) mod function {
         'outer: while let Some(item) = stack.pop() {
             match item {
                 Machine::GetTree(id) => {
+                    // The stack has one tree to continue with for each tree above this one.
+                    if stack.len() > state.max_depth {
+                        bail!(validation("exceeded maximum allowed tree depth"));
+                    }
                     let mut buf = state.pop_buf();
                     objects.find_tree_iter(&id, &mut buf)?;
                     stack.push(Machine::Iterate {

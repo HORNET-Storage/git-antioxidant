@@ -40,6 +40,8 @@ mod shallow;
 mod state;
 #[cfg(feature = "attributes")]
 mod submodule;
+#[cfg(all(feature = "blob-diff", feature = "revision"))]
+mod tree_depth;
 mod worktree;
 
 mod format_version {

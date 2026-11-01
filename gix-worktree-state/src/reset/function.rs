@@ -7,6 +7,7 @@ use gix_hash::oid;
 use gix_index::{
     Entry, State,
     entry::{Flags, Stage, Stat, stat},
+    init::from_tree,
 };
 use gix_worktree::validate::path::component;
 
@@ -65,7 +66,11 @@ where
         bail!("The stack has to provide both attributes and exclude patterns".validation());
     }
     let _span = gix_trace::coarse!("gix_worktree_state::reset()", entries = index.entries().len());
-    let target = tree_index(tree, &objects, options.checkout.validate)?;
+    let tree_options = from_tree::Options {
+        validate: options.checkout.validate,
+        max_tree_depth: options.max_tree_depth,
+    };
+    let target = tree_index(tree, &objects, tree_options)?;
     if head_tree.is_none() {
         return one_way(index, worktree, &target, mode, objects, ctx, options);
     }
@@ -196,13 +201,13 @@ fn validate_removed_paths(plan: &Plan, validate: component::Options) -> Result<(
 /// ### Errors
 ///
 /// Nothing changes if `index` is sparse or has entries that are excluded from a sparse checkout, if `tree` doesn't use the
-/// hash of `index`, can't be read, has a path that `validate` refuses or more than one entry at a path.
+/// hash of `index`, can't be read, has a path or a depth that `tree_options` refuse, or more than one entry at a path.
 pub fn mixed<O>(
     index: &mut State,
     tree: &oid,
     objects: &O,
     mut is_selected: impl FnMut(&BStr) -> bool,
-    validate: component::Options,
+    tree_options: from_tree::Options,
     stat_options: stat::Options,
 ) -> Result<Changes>
 where
@@ -211,7 +216,7 @@ where
     check_index_and_trees(index, tree, None)?;
     let _span = gix_trace::coarse!("gix_worktree_state::reset::mixed()", entries = index.entries().len());
     let start = FileTime::now();
-    let target = tree_index(tree, objects, validate)?;
+    let target = tree_index(tree, objects, tree_options)?;
     let reset = reset_entries(index, &target, &mut is_selected);
     if let Some(mut cache_tree) = index.remove_tree() {
         for path in &reset.paths {
@@ -247,13 +252,13 @@ fn check_index_and_trees(index: &State, tree: &oid, head_tree: Option<&oid>) -> 
     Ok(())
 }
 
-/// Return an index with the entries of `tree`, sorted by their paths. Fails if `tree` can't be read, if `validate` refuses
-/// one of its paths, or if a path has more than one entry, as a file and a directory for example.
-fn tree_index<O>(tree: &oid, objects: &O, validate: component::Options) -> Result<State>
+/// Return an index with the entries of `tree`, sorted by their paths. Fails if `tree` can't be read, if `options` refuse
+/// one of its paths or its depth, or if a path has more than one entry, as a file and a directory for example.
+fn tree_index<O>(tree: &oid, objects: &O, options: from_tree::Options) -> Result<State>
 where
     O: gix_object::Find,
 {
-    let mut index = State::from_tree(tree, WithEmptyTree(objects), validate)
+    let mut index = State::from_tree(tree, WithEmptyTree(objects), options)
         .or_raise(|| message!("Could not read the tree {tree}"))?;
     index.sort_entries();
     let entries = index.entries();

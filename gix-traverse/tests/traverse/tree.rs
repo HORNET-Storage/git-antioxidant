@@ -241,6 +241,24 @@ mod depthfirst {
         );
         Ok(())
     }
+
+    #[test]
+    fn stops_at_trees_below_the_limit() -> gix_testtools::TestResult {
+        let db = odb()?;
+        let mut buf = Vec::new();
+        let tree = db
+            .find_commit(&hex_to_id("85df34aa34848b8138b2b3dcff5fb5c2b734e0ce"), &mut buf)?
+            .tree();
+        let traverse = |max_depth| {
+            let state = tree::depthfirst::State::new(max_depth);
+            tree::depthfirst(tree, state, &db, &mut tree::Recorder::default())
+        };
+
+        traverse(2)?;
+        let err = traverse(1).expect_err("the tree `f/d` has the depth 2");
+        assert_eq!(err.to_string(), "exceeded maximum allowed tree depth");
+        Ok(())
+    }
 }
 
 mod breadthfirst {
@@ -424,6 +442,30 @@ mod breadthfirst {
         for path in recorder.records.into_iter().map(|e| e.filepath) {
             assert_eq!(path, "", "path should be empty as it's not tracked at all");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn stops_at_trees_below_the_limit() -> gix_testtools::TestResult {
+        let db = odb()?;
+        let mut buf = Vec::new();
+        let mut commit = db
+            .find_commit_iter(&hex_to_id("85df34aa34848b8138b2b3dcff5fb5c2b734e0ce"), &mut buf)?
+            .0;
+        let tree_id = commit.tree_id()?;
+        let traverse = |max_depth| -> gix_error::Result {
+            let mut buf = Vec::new();
+            tree::breadthfirst(
+                db.find_tree_iter(&tree_id, &mut buf).expect("present").0,
+                tree::breadthfirst::State::new(max_depth),
+                &db,
+                &mut tree::Recorder::default(),
+            )
+        };
+
+        traverse(2)?;
+        let err = traverse(1).expect_err("the tree `f/d` has the depth 2");
+        assert_eq!(err.to_string(), "exceeded maximum allowed tree depth");
         Ok(())
     }
 }

@@ -22,8 +22,8 @@ pub(super) mod function {
     /// Note that `first_commit` and `second_commit` are expected to have been popped off `others`, so `first_commit`
     /// was the last provided merge-base of function that provides multiple merge-bases for a pair of commits.
     ///
-    /// The parameters `graph`, `diff_resource_cache`, `blob_merge`, `objects`, `abbreviate_hash` and `options` are passed
-    /// directly to [`tree()`](crate::tree()) for merging the trees of two merge-bases at a time.
+    /// The parameters `graph`, `diff_state`, `diff_resource_cache`, `blob_merge`, `objects`, `abbreviate_hash` and `options`
+    /// are passed directly to [`tree()`](crate::tree()) for merging the trees of two merge-bases at a time.
     /// Note that most of `options` are overwritten to match the requirements of a merge-base merge.
     ///
     /// As in Git, the merged merge-bases keep their conflicts. Conflicting text keeps conflict markers, two
@@ -38,6 +38,7 @@ pub(super) mod function {
         second_commit: gix_hash::ObjectId,
         mut others: Vec<gix_hash::ObjectId>,
         graph: &mut gix_revwalk::Graph<'_, '_, gix_revwalk::graph::Commit<gix_revision::merge_base::Flags>>,
+        diff_state: &mut gix_diff::tree::State,
         diff_resource_cache: &mut gix_diff::blob::Platform,
         blob_merge: &mut crate::blob::Platform,
         objects: &'objects (impl gix_object::FindObjectOrHeader + gix_object::Write),
@@ -76,6 +77,7 @@ pub(super) mod function {
                 next_commit_id,
                 labels,
                 graph,
+                diff_state,
                 diff_resource_cache,
                 blob_merge,
                 objects,

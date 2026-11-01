@@ -282,6 +282,7 @@ mod from_tree {
             head_tree,
             odb.clone(),
             noop_pipeline(),
+            gix_object::tree::DEFAULT_MAX_DEPTH,
             move |rela_path, mode, attrs| {
                 cache
                     .at_entry(rela_path, Some(mode.into()), &odb)

@@ -86,7 +86,10 @@ fn reset_index(
                 &new_tree,
                 &case.objects()?,
                 |path| is_selected(&pathspec, path),
-                case.options()?.checkout.validate,
+                gix_index::init::from_tree::Options {
+                    validate: case.options()?.checkout.validate,
+                    ..Default::default()
+                },
                 STAT,
             );
             return Ok(changes.map(Outcome::Reset));

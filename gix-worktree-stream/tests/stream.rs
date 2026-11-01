@@ -82,6 +82,7 @@ mod from_tree {
             gix_testtools::object_hash().null(),
             FailObjectRetrieval,
             mutating_pipeline(false),
+            gix_object::tree::DEFAULT_MAX_DEPTH,
             |_, _, _| -> std::result::Result<_, Infallible> { unreachable!("must not be called") },
         );
         let err = stream.next_entry().unwrap_err();
@@ -97,9 +98,13 @@ mod from_tree {
     #[test]
     fn can_receive_err_if_attribute_not_found() -> gix_testtools::TestResult {
         let (_dir, head_tree, odb, _cache) = basic()?;
-        let mut stream = gix_worktree_stream::from_tree(head_tree, odb, mutating_pipeline(false), |_, _, _| {
-            Err(Error::other("attribute retrieval failed"))
-        });
+        let mut stream = gix_worktree_stream::from_tree(
+            head_tree,
+            odb,
+            mutating_pipeline(false),
+            gix_object::tree::DEFAULT_MAX_DEPTH,
+            |_, _, _| Err(Error::other("attribute retrieval failed")),
+        );
         let err = stream.next_entry().unwrap_err();
         insta::assert_debug_snapshot!(err, "can receive err if attribute not found", @r#"
         Could not query attributes for path ".gitattributes"
@@ -120,13 +125,18 @@ mod from_tree {
             .drivers
             .first_mut()
             .expect("the filter driver was configured") = driver_with_process("fail-on-shutdown");
-        let mut stream =
-            gix_worktree_stream::from_tree(head_tree, odb.clone(), pipeline, move |rela_path, mode, attrs| {
+        let mut stream = gix_worktree_stream::from_tree(
+            head_tree,
+            odb.clone(),
+            pipeline,
+            gix_object::tree::DEFAULT_MAX_DEPTH,
+            move |rela_path, mode, attrs| {
                 cache
                     .at_entry(rela_path, Some(mode.into()), &odb)
                     .map(|entry| entry.matching_attributes(attrs))
                     .map(|_| ())
-            });
+            },
+        );
 
         while let Some(mut entry) = stream.next_entry()? {
             std::io::copy(&mut entry, &mut std::io::sink())?;
@@ -141,6 +151,7 @@ mod from_tree {
             head_tree,
             odb.clone(),
             mutating_pipeline(true),
+            gix_object::tree::DEFAULT_MAX_DEPTH,
             move |rela_path, mode, attrs| {
                 cache
                     .at_entry(rela_path, Some(mode.into()), &odb)
@@ -306,12 +317,40 @@ mod from_tree {
     }
 
     #[test]
+    fn stops_at_trees_below_the_limit() -> gix_testtools::TestResult {
+        let (_dir, head_tree, odb, mut cache) = basic()?;
+        let mut stream = gix_worktree_stream::from_tree(
+            head_tree,
+            odb.clone(),
+            mutating_pipeline(false),
+            0,
+            move |rela_path, mode, attrs| {
+                cache
+                    .at_entry(rela_path, Some(mode.into()), &odb)
+                    .map(|entry| entry.matching_attributes(attrs))
+                    .map(|_| ())
+            },
+        );
+        let err = loop {
+            match stream.next_entry() {
+                Ok(Some(mut entry)) => _ = std::io::copy(&mut entry, &mut std::io::sink())?,
+                Ok(None) => panic!("the tree has a directory"),
+                Err(err) => break err,
+            }
+        };
+        let message = format!("{err:?}");
+        assert!(message.contains("exceeded maximum allowed tree depth"), "{message}");
+        Ok(())
+    }
+
+    #[test]
     fn can_drop_entry_without_reading_it() -> gix_testtools::TestResult {
         let (_dir, head_tree, odb, mut cache) = basic()?;
         let mut stream = gix_worktree_stream::from_tree(
             head_tree,
             odb.clone(),
             mutating_pipeline(false),
+            gix_object::tree::DEFAULT_MAX_DEPTH,
             move |rela_path, mode, attrs| {
                 cache
                     .at_entry(rela_path, Some(mode.into()), &odb)

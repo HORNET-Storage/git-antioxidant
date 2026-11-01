@@ -38,6 +38,7 @@ pub fn objects<Find>(
     Options {
         thread_limit,
         input_object_expansion,
+        max_tree_depth,
         chunk_size,
     }: Options,
 ) -> Result<(Vec<output::Count>, Outcome)>
@@ -76,6 +77,7 @@ where
                 expand::this(
                     &db,
                     input_object_expansion,
+                    max_tree_depth,
                     seen_objs,
                     &mut oids.into_iter(),
                     buf1,
@@ -91,12 +93,15 @@ where
 }
 
 /// Like [`objects()`] but using a single thread only to mostly save on the otherwise required overhead.
+///
+/// Trees below `max_tree_depth`, with the root tree at depth 0, are an error, as `core.maxTreeDepth` makes them one in Git.
 pub fn objects_unthreaded(
     db: &dyn crate::Find,
     object_ids: &mut dyn Iterator<Item = Result<ObjectId>>,
     objects: &dyn gix_utils::progress::Count,
     should_interrupt: &AtomicBool,
     input_object_expansion: ObjectExpansion,
+    max_tree_depth: usize,
 ) -> Result<(Vec<output::Count>, Outcome)> {
     let seen_objs = RefCell::new(gix_hashtable::HashSet::default());
 
@@ -104,6 +109,7 @@ pub fn objects_unthreaded(
     expand::this(
         db,
         input_object_expansion,
+        max_tree_depth,
         &seen_objs,
         object_ids,
         &mut buf1,
@@ -139,6 +145,7 @@ mod expand {
     pub fn this(
         db: &dyn crate::Find,
         input_object_expansion: ObjectExpansion,
+        max_tree_depth: usize,
         seen_objs: &impl util::InsertImmutable,
         oids: &mut dyn Iterator<Item = Result<ObjectId>>,
         buf1: &mut Vec<u8>,
@@ -150,8 +157,8 @@ mod expand {
         use ObjectExpansion::*;
 
         let mut out = Vec::new();
-        let mut tree_traversal_state = gix_traverse::tree::breadthfirst::State::default();
-        let mut tree_diff_state = gix_diff::tree::State::default();
+        let mut tree_traversal_state = gix_traverse::tree::breadthfirst::State::new(max_tree_depth);
+        let mut tree_diff_state = gix_diff::tree::State::new(max_tree_depth);
         let mut parent_commit_ids = Vec::new();
         let mut traverse_delegate = tree::traverse::AllUnseen::new(seen_objs);
         let mut changes_delegate = tree::changes::AllNew::new(seen_objs);

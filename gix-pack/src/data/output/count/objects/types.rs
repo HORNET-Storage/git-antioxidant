@@ -65,6 +65,9 @@ pub struct Options {
     pub chunk_size: usize,
     /// The way input objects are handled
     pub input_object_expansion: ObjectExpansion,
+    /// The depth of the deepest tree to read, with the root tree at depth 0. A deeper tree is an error, as
+    /// `core.maxTreeDepth` makes it one in Git.
+    pub max_tree_depth: usize,
 }
 
 impl Default for Options {
@@ -73,6 +76,7 @@ impl Default for Options {
             thread_limit: None,
             chunk_size: 10,
             input_object_expansion: Default::default(),
+            max_tree_depth: gix_object::tree::DEFAULT_MAX_DEPTH,
         }
     }
 }

@@ -19,6 +19,8 @@ use crate::{blob::builtin_driver, commit::Options};
 /// The `graph` is used to find the merge-base between `our_commit` and `their_commit`, and can also act as cache
 /// to speed up subsequent merge-base queries.
 ///
+/// `diff_state` is reusable scratch space, and decides how deep the [tree diffs](gix_diff::tree()) of the merge may go.
+///
 /// Use `abbreviate_hash(id)` to shorten the given `id` according to standard git shortening rules. It's used in case
 /// the ancestor-label isn't explicitly set so that the merge base label becomes the shortened `id`.
 /// Note that it's a dyn closure only to make it possible to recursively call this function in case of multiple merge-bases.
@@ -47,6 +49,7 @@ pub fn commit<'objects>(
     their_commit: gix_hash::ObjectId,
     labels: builtin_driver::text::Labels<'_>,
     graph: &mut gix_revwalk::Graph<'_, '_, gix_revwalk::graph::Commit<gix_revision::merge_base::Flags>>,
+    diff_state: &mut gix_diff::tree::State,
     diff_resource_cache: &mut gix_diff::blob::Platform,
     blob_merge: &mut crate::blob::Platform,
     objects: &'objects (impl gix_object::FindObjectOrHeader + gix_object::Write),
@@ -55,9 +58,8 @@ pub fn commit<'objects>(
 ) -> Result<super::Outcome<'objects>> {
     let merge_bases = gix_revision::merge_base(our_commit, &[their_commit], graph)?;
     let mut virtual_merge_bases = Vec::new();
-    let mut state = gix_diff::tree::State::default();
     let mut commit_to_tree =
-        |commit_id: gix_hash::ObjectId| objects.find_commit(&commit_id, &mut state.buf1).map(|c| c.tree());
+        |commit_id: gix_hash::ObjectId| objects.find_commit(&commit_id, &mut diff_state.buf1).map(|c| c.tree());
 
     let (merge_base_tree_id, ancestor_name): (_, Cow<'_, str>) = match merge_bases.clone() {
         Some(base_commit) if base_commit.len() == 1 => (
@@ -76,6 +78,7 @@ pub fn commit<'objects>(
                     second,
                     base_commits,
                     graph,
+                    diff_state,
                     diff_resource_cache,
                     blob_merge,
                     objects,
@@ -101,8 +104,8 @@ pub fn commit<'objects>(
         labels.ancestor = Some(ancestor_name.as_ref().into());
     }
 
-    let our_tree_id = objects.find_commit(&our_commit, &mut state.buf1)?.tree();
-    let their_tree_id = objects.find_commit(&their_commit, &mut state.buf1)?.tree();
+    let our_tree_id = objects.find_commit(&our_commit, &mut diff_state.buf1)?.tree();
+    let their_tree_id = objects.find_commit(&their_commit, &mut diff_state.buf1)?.tree();
 
     let outcome = crate::tree(
         &merge_base_tree_id,
@@ -111,7 +114,7 @@ pub fn commit<'objects>(
         labels,
         objects,
         |buf| objects.write_buf(gix_object::Kind::Blob, buf),
-        &mut state,
+        diff_state,
         diff_resource_cache,
         blob_merge,
         options.tree_merge,

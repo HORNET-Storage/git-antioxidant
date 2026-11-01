@@ -153,6 +153,27 @@ impl Cache {
             .unwrap_or(512 * 1024 * 1024))
     }
 
+    /// `core.maxTreeDepth`, or Git's default, which a repository without full trust can't raise to keep a walk through a
+    /// corrupt tree going.
+    pub(crate) fn max_tree_depth(&self) -> Result<usize> {
+        Ok(Core::MAX_TREE_DEPTH
+            .try_into_usize(
+                self.resolved
+                    .integer_filter(Core::MAX_TREE_DEPTH, &mut self.filter_config_section.clone()),
+            )
+            .with_leniency(self.lenient_config)?
+            .unwrap_or(gix_object::tree::DEFAULT_MAX_DEPTH))
+    }
+
+    /// The options for reading a tree into an index.
+    #[cfg(feature = "index")]
+    pub(crate) fn index_from_tree_options(&self) -> Result<gix_index::init::from_tree::Options> {
+        Ok(gix_index::init::from_tree::Options {
+            validate: self.protect_options()?,
+            max_tree_depth: self.max_tree_depth()?,
+        })
+    }
+
     /// Returns a user agent for use with servers.
     #[cfg(any(feature = "async-network-client", feature = "blocking-network-client"))]
     pub(crate) fn user_agent_tuple(&self) -> (&'static str, Option<String>) {

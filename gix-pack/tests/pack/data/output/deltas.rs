@@ -106,7 +106,11 @@ impl Case {
             haves,
             &progress::Discard,
             &should_interrupt,
-            revisions::Options { thin: true, window: 10 },
+            revisions::Options {
+                thin: true,
+                window: 10,
+                ..Default::default()
+            },
         )?;
         let mut tagged = HashSet::new();
         for id in std::fs::read_to_string(self.dir.join("tags.list"))?.split_whitespace() {

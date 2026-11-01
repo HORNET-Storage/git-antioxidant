@@ -6,7 +6,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
 
-use gix_error::{Result, ResultExt, bail, cancelled, message};
+use gix_error::{Result, ResultExt, bail, cancelled, message, validation};
 use gix_hash::{ObjectId, oid};
 use gix_hashtable::HashSet;
 use gix_object::Find;
@@ -23,11 +23,14 @@ pub struct Walk<'a, F> {
     should_interrupt: &'a AtomicBool,
     /// Whether trees that can't be read are skipped, as with Git's `ignore_missing_links`, rather than errors.
     ignore_missing_links: bool,
+    /// The depth of the deepest tree to enter, with the root tree at depth 0.
+    max_tree_depth: usize,
 }
 
 impl<'a, F: Find> Walk<'a, F> {
     /// Prepare a walk that reads objects from `objects`, and stops with an error once `should_interrupt` is set, which it
-    /// checks every 4096 objects that it reads. Trees that can't be read are errors.
+    /// checks every 4096 objects that it reads. Trees that can't be read are errors. Trees can be as deep as they are, as
+    /// `seen` ends the walk of trees that contain themselves.
     pub fn new(objects: &'a F, should_interrupt: &'a AtomicBool) -> Self {
         Walk {
             objects,
@@ -35,7 +38,15 @@ impl<'a, F: Find> Walk<'a, F> {
             reads: 0,
             should_interrupt,
             ignore_missing_links: false,
+            max_tree_depth: usize::MAX,
         }
+    }
+
+    /// Fail at trees that are deeper than `max_tree_depth`, with the root tree at depth 0, as `core.maxTreeDepth` makes
+    /// Git's walk fail.
+    pub fn max_tree_depth(mut self, max_tree_depth: usize) -> Self {
+        self.max_tree_depth = max_tree_depth;
+        self
     }
 
     /// Skip the trees that can't be read, and read the entries of a tree up to the first one that is malformed, as Git's
@@ -146,6 +157,10 @@ impl<'a, F: Find> Walk<'a, F> {
                 EntryKind::Tree => {
                     if seen.contains(&id) {
                         continue;
+                    }
+                    // The stack has a level for each tree above this one.
+                    if stack.len() > self.max_tree_depth {
+                        bail!(validation("exceeded maximum allowed tree depth"));
                     }
                     let Some(entries) = self.read_tree(&id)? else {
                         continue;

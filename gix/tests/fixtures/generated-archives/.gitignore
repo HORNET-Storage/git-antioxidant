@@ -139,3 +139,6 @@
 # so this push fixture is always made by the test host instead of being archived.
 /make_push_repos.tar
 /make_push_repos_sha256.tar
+# Generate this small fixture, whose trees are compared with what the Git of the test host does with them.
+/make_deep_trees.tar
+/make_deep_trees_sha256.tar

@@ -13,6 +13,25 @@ pub mod from_tree {
         entry::{Flags, Mode, Stat},
     };
 
+    /// Options for [`State::from_tree()`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct Options {
+        /// The validations to perform on every path component.
+        pub validate: gix_validate::path::component::Options,
+        /// The depth of the deepest tree to read, with the root tree at depth 0. A deeper tree is an error, as
+        /// `core.maxTreeDepth` makes it one in Git.
+        pub max_tree_depth: usize,
+    }
+
+    impl Default for Options {
+        fn default() -> Self {
+            Options {
+                validate: Default::default(),
+                max_tree_depth: tree::DEFAULT_MAX_DEPTH,
+            }
+        }
+    }
+
     /// Initialization
     impl State {
         /// Return a new and empty in-memory index assuming the given `object_hash`.
@@ -36,7 +55,7 @@ pub mod from_tree {
 
         /// Create an index [`State`] by traversing `tree` recursively, accessing sub-trees
         /// with `objects`.
-        /// `validate` is used to determine which validations to perform on every path component we see.
+        /// `options` determine which validations to perform on every path component we see, and how deep the trees may be.
         ///
         /// # Security
         ///
@@ -49,17 +68,14 @@ pub mod from_tree {
         /// and its conflicting child, for example `a`, `a.`, `a/x`.
         ///
         /// **No extension data is currently produced**.
-        pub fn from_tree<Find>(
-            tree: &gix_hash::oid,
-            objects: Find,
-            validate: gix_validate::path::component::Options,
-        ) -> Result<Self>
+        pub fn from_tree<Find>(tree: &gix_hash::oid, objects: Find, options: Options) -> Result<Self>
         where
             Find: gix_object::Find,
         {
             let _span = gix_trace::coarse!("gix_index::State::from_tree()");
-            let mut delegate = CollectEntries::new(validate);
-            let traversal = depthfirst(tree.to_owned(), depthfirst::State::default(), &objects, &mut delegate);
+            let mut delegate = CollectEntries::new(options.validate);
+            let state = depthfirst::State::new(options.max_tree_depth);
+            let traversal = depthfirst(tree.to_owned(), state, &objects, &mut delegate);
 
             if let Some((path, err)) = delegate.invalid_path.take() {
                 bail!(err.and_raise(message!("The path \"{path}\" is invalid").validation()));

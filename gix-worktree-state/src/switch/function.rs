@@ -93,7 +93,13 @@ where
             ..Default::default()
         }));
     }
-    let changes = plan::changes(old_tree, new_tree, &objects, options.checkout.validate)?;
+    let changes = plan::changes(
+        old_tree,
+        new_tree,
+        &objects,
+        options.checkout.validate,
+        options.max_tree_depth,
+    )?;
     check_interrupt(should_interrupt, operation)?;
     let mut refusals = Refusals::default();
     let plan = plan::Plan::new(index, changes, &mut refusals.staged_changes);

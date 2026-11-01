@@ -43,6 +43,7 @@ pub fn diff(
         location: options.location,
         objects,
         tracked: options.rewrites.map(rewrites::Tracker::new),
+        max_tree_depth: tree_diff_state.max_depth,
         err: None,
     };
     match crate::tree(lhs, rhs, tree_diff_state, objects, &mut delegate) {
@@ -67,6 +68,8 @@ struct Delegate<'a, 'old, VisitFn, Objects> {
     visit: VisitFn,
     tracked: Option<rewrites::Tracker<crate::tree::visit::Change>>,
     location: Option<crate::tree::recorder::Location>,
+    /// How deep the walk through the old tree that finds copies may go.
+    max_tree_depth: usize,
     err: Option<gix_error::Error>,
 }
 
@@ -171,7 +174,7 @@ where
             self.objects,
             |push| {
                 let mut delegate = tree_to_changes::Delegate::new(push, self.location);
-                let state = gix_traverse::tree::breadthfirst::State::default();
+                let state = gix_traverse::tree::breadthfirst::State::new(self.max_tree_depth);
                 gix_traverse::tree::breadthfirst(self.src_tree, state, self.objects, &mut delegate)
             },
         )?;

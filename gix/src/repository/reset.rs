@@ -106,7 +106,7 @@ impl Repository {
                     &tree,
                     &self.objects,
                     |_| true,
-                    self.config.protect_options()?,
+                    self.config.index_from_tree_options()?,
                     self.config.stat_options()?,
                 )?;
                 self.write_locked_index(lock, &index)?;
@@ -203,7 +203,7 @@ impl Repository {
             &tree,
             &self.objects,
             |path| pathspec.is_included(path, Some(false)),
-            self.config.protect_options()?,
+            self.config.index_from_tree_options()?,
             self.config.stat_options()?,
         )?;
         self.write_locked_index(lock, &index)?;
@@ -235,6 +235,7 @@ impl Repository {
         let options = gix_worktree_state::switch::Options {
             checkout: self.checkout_options(gix_worktree::stack::state::attributes::Source::IdMappingThenWorktree)?,
             fscache,
+            max_tree_depth: self.max_tree_depth()?,
         };
         Ok(WorktreeContext {
             worktree,

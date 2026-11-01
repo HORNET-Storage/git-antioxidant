@@ -55,8 +55,10 @@ where
     ///
     /// ### Deviation
     ///
-    /// Git sends the objects of updates it rejected before pushing as well, while here only the objects of the updates
-    /// that are sent are in the pack.
+    /// * Git sends the objects of updates it rejected before pushing as well, while here only the objects of the updates
+    ///   that are sent are in the pack.
+    /// * A tree below `core.maxTreeDepth` fails the push with an error before anything is sent, while `git push` finds it
+    ///   while it sends the pack, and reports that the remote rejected the updates.
     #[gix_protocol::bisync::bisync]
     pub async fn push<P>(self, progress: P, should_interrupt: &AtomicBool) -> Result<Outcome>
     where

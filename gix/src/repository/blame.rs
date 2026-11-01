@@ -43,6 +43,7 @@ impl Repository {
             Start::Commit(suspect.into()),
             cache,
             &mut resource_cache,
+            &mut gix_diff::tree::State::new(self.max_tree_depth()?),
             file_path,
             options,
         )?;

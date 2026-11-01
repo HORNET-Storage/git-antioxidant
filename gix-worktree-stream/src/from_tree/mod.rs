@@ -11,6 +11,7 @@ use crate::{AdditionalEntry, SharedErrorSlot, Stream, entry, protocol};
 ///
 /// `pipeline` is used to convert blobs to their worktree representation, and `attributes` is used to read
 /// the `export-ignore` attribute. If set on a directory or blob, it won't be added to the archive.
+/// Trees below `max_tree_depth`, with `tree` at depth 0, are an error, as `core.maxTreeDepth` makes them one in Git.
 ///
 /// ### Types of entries in stream
 ///
@@ -38,6 +39,7 @@ pub fn from_tree<Find, E>(
     tree: gix_hash::ObjectId,
     objects: Find,
     pipeline: gix_filter::Pipeline,
+    max_tree_depth: usize,
     attributes: impl FnMut(
         &BStr,
         gix_object::tree::EntryMode,
@@ -58,6 +60,7 @@ where
                 tree,
                 objects,
                 pipeline,
+                max_tree_depth,
                 attributes,
                 &mut write,
                 slot.clone(),
@@ -78,10 +81,12 @@ where
     stream
 }
 
+#[expect(clippy::too_many_arguments)]
 fn run<Find, E>(
     tree: gix_hash::ObjectId,
     objects: Find,
     mut pipeline: gix_filter::Pipeline,
+    max_tree_depth: usize,
     mut attributes: impl FnMut(
         &BStr,
         gix_object::tree::EntryMode,
@@ -122,7 +127,7 @@ where
     };
     gix_traverse::tree::breadthfirst(
         tree_iter,
-        gix_traverse::tree::breadthfirst::State::default(),
+        gix_traverse::tree::breadthfirst::State::new(max_tree_depth),
         &objects,
         &mut dlg,
     )

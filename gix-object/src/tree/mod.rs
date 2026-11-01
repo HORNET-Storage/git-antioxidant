@@ -12,6 +12,10 @@ pub mod editor;
 mod ref_iter;
 pub use ref_iter::next_entry;
 
+/// The depth of the deepest tree that a walk through trees reads by default, the default of `core.maxTreeDepth` in Git,
+/// with the root tree at depth 0. It ends the walk of a corrupt tree that contains itself.
+pub const DEFAULT_MAX_DEPTH: usize = 2048;
+
 /// Compare entry names according to Git's canonical tree ordering.
 ///
 /// Trees compare as if their name had a trailing `/`, whereas non-tree entries compare as if their name ended in a

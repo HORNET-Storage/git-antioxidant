@@ -44,7 +44,15 @@ pub fn blame_file(
     // object ID, and we make sure that worktree contents can't possibly be used.
     resource_cache.filter.roots = Default::default();
     resource_cache.clear_resource_cache_keep_allocation();
-    let outcome = gix::blame::file(&repo.objects, start, cache, &mut resource_cache, file.as_ref(), options)?;
+    let outcome = gix::blame::file(
+        &repo.objects,
+        start,
+        cache,
+        &mut resource_cache,
+        &mut gix::diff::tree::State::new(repo.max_tree_depth()?),
+        file.as_ref(),
+        options,
+    )?;
     let statistics = outcome.statistics;
     show_blame_entries(out, outcome, file.as_ref()).or_error()?;
 

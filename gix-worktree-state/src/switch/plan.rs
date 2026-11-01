@@ -280,12 +280,13 @@ pub(crate) fn checked_out(change: &Change, action: Action) -> Option<Side> {
 /// Without `old_tree`, every entry of `new_tree` is a change.
 ///
 /// Fails if a path appears more than once, if an entry has a mode that is neither that of a tree, a file, a symbolic link
-/// nor a submodule, or if a path can't be checked out, as `validate` decides.
+/// nor a submodule, if a path can't be checked out, as `validate` decides, or if a tree is deeper than `max_tree_depth`.
 pub(crate) fn changes<O>(
     old_tree: Option<&oid>,
     new_tree: &oid,
     objects: &O,
     validate: component::Options,
+    max_tree_depth: usize,
 ) -> Result<Vec<Change>>
 where
     O: gix_object::Find,
@@ -302,8 +303,14 @@ where
         .find_tree_iter(new_tree, &mut new_buf)
         .or_raise(|| message!("Could not read the new tree {new_tree}"))?;
     let mut recorder = gix_diff::tree::Recorder::default();
-    gix_diff::tree(old, new, gix_diff::tree::State::default(), &objects, &mut recorder)
-        .or_raise(|| message("Could not compare the old tree with the new one"))?;
+    gix_diff::tree(
+        old,
+        new,
+        gix_diff::tree::State::new(max_tree_depth),
+        &objects,
+        &mut recorder,
+    )
+    .or_raise(|| message("Could not compare the old tree with the new one"))?;
 
     let mut changes = Vec::with_capacity(recorder.records.len());
     for record in recorder.records {

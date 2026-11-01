@@ -37,6 +37,7 @@ impl Commit {
 pub struct Commits<'a> {
     objects: &'a dyn gix_object::Find,
     object_hash: gix_hash::Kind,
+    max_tree_depth: usize,
     cache: HashMap<ObjectId, Commit>,
     buf: Vec<u8>,
 }
@@ -47,14 +48,26 @@ impl<'a> Commits<'a> {
         Commits {
             objects,
             object_hash,
+            max_tree_depth: gix_object::tree::DEFAULT_MAX_DEPTH,
             cache: HashMap::new(),
             buf: Vec::new(),
         }
     }
 
+    /// Compare trees down to `max_tree_depth`, with the root trees at depth 0, as `core.maxTreeDepth` limits them in Git.
+    pub fn with_max_tree_depth(mut self, max_tree_depth: usize) -> Self {
+        self.max_tree_depth = max_tree_depth;
+        self
+    }
+
     /// Return the object database.
     pub fn objects(&self) -> &'a dyn gix_object::Find {
         self.objects
+    }
+
+    /// Return how deep trees are compared.
+    pub fn max_tree_depth(&self) -> usize {
+        self.max_tree_depth
     }
 
     /// Return the kind of the ids of the objects.

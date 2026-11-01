@@ -109,6 +109,25 @@ fn from_tree_returns_file_directory_conflicts_until_fixed() -> gix_testtools::Te
 }
 
 #[test]
+fn from_tree_stops_at_trees_below_the_limit() -> gix_testtools::TestResult {
+    let worktree_dir = scripted_fixture_read_only("make_index/v2_more_files.sh")?;
+    let tree_id = tree_id(&worktree_dir);
+    let odb = odb_at(worktree_dir.join(".git").join("objects"))?;
+    let from_tree = |max_tree_depth| {
+        let options = gix_index::init::from_tree::Options {
+            max_tree_depth,
+            ..Default::default()
+        };
+        State::from_tree(&tree_id, &odb, options)
+    };
+
+    from_tree(1)?;
+    let err = from_tree(0).expect_err("the tree `d` has the depth 1");
+    assert_eq!(err.to_string(), "exceeded maximum allowed tree depth");
+    Ok(())
+}
+
+#[test]
 fn new() {
     let state = State::new(gix_hash::Kind::Sha1);
     assert_eq!(state.entries().len(), 0);

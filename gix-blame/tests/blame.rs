@@ -221,6 +221,7 @@ impl Fixture {
             gix_blame::Start::Commit(self.suspect),
             None,
             &mut self.resource_cache,
+            &mut Default::default(),
             source_file_name,
             options,
         )
@@ -240,6 +241,7 @@ impl Fixture {
             },
             None,
             &mut self.resource_cache,
+            &mut Default::default(),
             source_file_name,
             options,
         )
@@ -263,6 +265,7 @@ macro_rules! mktest {
                 gix_blame::Start::Commit(suspect),
                 None,
                 &mut resource_cache,
+                &mut Default::default(),
                 source_file_name.as_ref(),
                 gix_blame::Options {
                     diff_algorithm: gix_diff::blob::Algorithm::Histogram,
@@ -360,6 +363,7 @@ fn diff_algorithm_parity() {
             gix_blame::Start::Commit(suspect),
             None,
             &mut resource_cache,
+            &mut Default::default(),
             source_file_name.as_ref(),
             gix_blame::Options {
                 diff_algorithm,
@@ -397,6 +401,7 @@ fn file_that_was_added_in_two_branches() -> gix_testtools::TestResult {
         gix_blame::Start::Commit(suspect),
         None,
         &mut resource_cache,
+        &mut Default::default(),
         source_file_name.into(),
         gix_blame::Options::default(),
     )?
@@ -467,6 +472,7 @@ fn since() -> gix_testtools::TestResult {
         gix_blame::Start::Commit(suspect),
         None,
         &mut resource_cache,
+        &mut Default::default(),
         source_file_name.as_ref(),
         gix_blame::Options {
             diff_algorithm: gix_diff::blob::Algorithm::Histogram,
@@ -507,6 +513,7 @@ mod blame_ranges {
             gix_blame::Start::Commit(suspect),
             None,
             &mut resource_cache,
+            &mut Default::default(),
             source_file_name.as_ref(),
             gix_blame::Options {
                 diff_algorithm: gix_diff::blob::Algorithm::Histogram,
@@ -550,6 +557,7 @@ mod blame_ranges {
             gix_blame::Start::Commit(suspect),
             None,
             &mut resource_cache,
+            &mut Default::default(),
             source_file_name.as_ref(),
             gix_blame::Options {
                 diff_algorithm: gix_diff::blob::Algorithm::Histogram,
@@ -591,6 +599,7 @@ mod blame_ranges {
             gix_blame::Start::Commit(suspect),
             None,
             &mut resource_cache,
+            &mut Default::default(),
             source_file_name.as_ref(),
             gix_blame::Options {
                 diff_algorithm: gix_diff::blob::Algorithm::Histogram,
@@ -637,6 +646,7 @@ mod rename_tracking {
             gix_blame::Start::Commit(suspect),
             None,
             &mut resource_cache,
+            &mut Default::default(),
             source_file_name.into(),
             gix_blame::Options {
                 diff_algorithm: gix_diff::blob::Algorithm::Histogram,

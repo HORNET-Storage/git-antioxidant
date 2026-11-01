@@ -56,6 +56,7 @@ pub(super) fn select(
         output::count::revisions::Options {
             thin,
             window: search.window,
+            max_tree_depth: repo.max_tree_depth()?,
         },
     )?;
     mark_tagged(&repo, &mut outcome.counts)?;

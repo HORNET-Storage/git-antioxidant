@@ -116,7 +116,7 @@ pub(super) fn rebase(repo: &Repository, options: Options, should_interrupt: &Ato
         None => config_bool(repo, &Rebase::RESCHEDULE_FAILED_EXEC)?.unwrap_or(false),
     };
     let object_hash = repo.object_hash();
-    let mut commits = Commits::new(&repo.objects, object_hash);
+    let mut commits = Commits::new(&repo.objects, object_hash).with_max_tree_depth(repo.max_tree_depth()?);
 
     let (upstream_name, upstream) = if options.root {
         (None, None)

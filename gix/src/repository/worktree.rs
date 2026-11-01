@@ -180,6 +180,7 @@ impl crate::Repository {
             id,
             objects.clone(),
             pipeline,
+            self.max_tree_depth()?,
             move |path, mode, attrs| -> std::io::Result<()> {
                 let entry = cache.at_entry(path, Some(mode.into()), &objects)?;
                 entry.matching_attributes(attrs);

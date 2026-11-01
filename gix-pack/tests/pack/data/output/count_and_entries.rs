@@ -526,6 +526,7 @@ fn tree_additions_from_each_merge_parent_are_kept() -> gix_testtools::TestResult
         &progress::Discard,
         &AtomicBool::new(false),
         count::objects::ObjectExpansion::TreeAdditionsComparedToAncestor,
+        gix_object::tree::DEFAULT_MAX_DEPTH,
     )?;
 
     let expected_ids = std::collections::BTreeSet::from([

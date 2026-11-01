@@ -520,4 +520,14 @@ record glob-refspec origin 'refs/heads/*:refs/heads/mirror/*'
 record negative-refspec origin 'refs/heads/*:refs/heads/mirror/*' '^refs/heads/mirror/topic'
 record negative-refspec-source origin 'refs/heads/*:refs/heads/mirror/*' '^refs/heads/topic'
 
+# `core.maxTreeDepth` keeps the trees below it from being sent, and with them all that is pushed.
+start max-tree-depth
+git -C "$local_repo" config core.maxTreeDepth 1
+mkdir -p "$local_repo/a/b"
+echo deep > "$local_repo/a/b/file"
+tick
+git -C "$local_repo" add a
+git -C "$local_repo" commit -q -m deep
+record max-tree-depth origin main
+
 rm -rf template

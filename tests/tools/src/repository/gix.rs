@@ -321,11 +321,7 @@ fn index(git_dir: &Path, hash: Kind, objects: &gix_odb::Handle) -> Result<Vec<In
             let prefix = path
                 .strip_suffix(b"/")
                 .ok_or("a sparse-index directory path must end in a slash")?;
-            let expanded = gix_index::State::from_tree(
-                entry.id.as_ref(),
-                objects,
-                gix_index::validate::path::component::Options::default(),
-            )?;
+            let expanded = gix_index::State::from_tree(entry.id.as_ref(), objects, Default::default())?;
             for entry in expanded.entries() {
                 let mut path = BString::from(prefix);
                 if !path.is_empty() {

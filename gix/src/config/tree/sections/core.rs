@@ -113,6 +113,9 @@ impl Core {
         .with_environment_override("GIT_NO_REPLACE_OBJECTS");
     /// The `core.commitGraph` key.
     pub const COMMIT_GRAPH: keys::Boolean = keys::Boolean::new_boolean("commitGraph", &config::Tree::CORE);
+    /// The `core.maxTreeDepth` key.
+    pub const MAX_TREE_DEPTH: keys::UnsignedInteger =
+        keys::UnsignedInteger::new_unsigned_integer("maxTreeDepth", &config::Tree::CORE);
     /// The `core.safecrlf` key.
     #[cfg(feature = "attributes")]
     pub const SAFE_CRLF: SafeCrlf = SafeCrlf::new_with_validate("safecrlf", &config::Tree::CORE, validate::SafeCrlf);
@@ -175,6 +178,7 @@ impl Section for Core {
             &Self::SSH_COMMAND,
             &Self::USE_REPLACE_REFS,
             &Self::COMMIT_GRAPH,
+            &Self::MAX_TREE_DEPTH,
             #[cfg(feature = "attributes")]
             &Self::SAFE_CRLF,
             #[cfg(feature = "attributes")]

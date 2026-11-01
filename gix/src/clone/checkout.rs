@@ -97,8 +97,7 @@ pub mod main_worktree {
                 }
             };
 
-            let protect_options = repo.config.protect_options()?;
-            let index = gix_index::State::from_tree(&root_tree, &repo.objects, protect_options)
+            let index = gix_index::State::from_tree(&root_tree, &repo.objects, repo.config.index_from_tree_options()?)
                 .or_raise(|| message!("Could not create index from tree at {root_tree}"))?;
             let mut index = gix_index::File::from_state(index, repo.index_path());
 

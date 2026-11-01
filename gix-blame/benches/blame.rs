@@ -88,8 +88,16 @@ fn bench_blame(c: &mut Criterion) {
                     let start = gix_blame::Start::Commit(head_id);
 
                     std::hint::black_box(
-                        gix_blame::file(&odb, start, None, resource_cache, file.as_ref(), Default::default())
-                            .expect("blame to not fail"),
+                        gix_blame::file(
+                            &odb,
+                            start,
+                            None,
+                            resource_cache,
+                            &mut Default::default(),
+                            file.as_ref(),
+                            Default::default(),
+                        )
+                        .expect("blame to not fail"),
                     )
                 },
                 BatchSize::SmallInput,

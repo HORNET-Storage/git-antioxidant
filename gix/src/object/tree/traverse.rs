@@ -51,7 +51,7 @@ impl Platform<'_, '_> {
         V: gix_traverse::tree::Visit,
     {
         let root = gix_object::TreeRefIter::from_bytes(&self.root.data, self.root.id.kind());
-        let state = gix_traverse::tree::breadthfirst::State::default();
+        let state = gix_traverse::tree::breadthfirst::State::new(self.root.repo.max_tree_depth()?);
         gix_traverse::tree::breadthfirst(root, state, &self.root.repo.objects, delegate)
     }
 
@@ -64,7 +64,7 @@ impl Platform<'_, '_> {
     where
         V: gix_traverse::tree::Visit,
     {
-        let state = gix_traverse::tree::depthfirst::State::default();
+        let state = gix_traverse::tree::depthfirst::State::new(self.root.repo.max_tree_depth()?);
         gix_traverse::tree::depthfirst(self.root.id, state, &self.root.repo.objects, delegate)
     }
 }

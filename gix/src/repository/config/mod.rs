@@ -224,6 +224,13 @@ impl crate::Repository {
         self.config.big_file_threshold()
     }
 
+    /// Return the depth of the deepest tree that walks through trees read, with the root tree at depth 0, as configured by
+    /// `core.maxTreeDepth`, or the default value. A deeper tree fails them, as it does in Git. The configuration of a
+    /// repository without full trust doesn't count.
+    pub fn max_tree_depth(&self) -> Result<usize> {
+        self.config.max_tree_depth()
+    }
+
     /// Create a low-level parser for ignore patterns, for instance for use in [`excludes()`](crate::Repository::excludes()).
     ///
     /// Depending on the configuration, precious-file parsing in `.gitignore-files` is supported.

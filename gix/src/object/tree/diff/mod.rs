@@ -127,7 +127,7 @@ impl<'repo> Tree<'repo> {
     #[doc(alias = "diff_tree_to_tree", alias = "git2")]
     pub fn changes<'a>(&'a self) -> Result<Platform<'a, 'repo>> {
         Ok(Platform {
-            state: Default::default(),
+            state: gix_diff::tree::State::new(self.repo.max_tree_depth()?),
             lhs: self,
             options: crate::diff::Options::from_configuration(&self.repo.config)?,
         })

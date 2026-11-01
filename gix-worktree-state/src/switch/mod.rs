@@ -84,6 +84,9 @@ pub struct Options {
     /// Whether to read the metadata of the files of a directory all at once while comparing the worktree with the index,
     /// which makes the comparison faster on Windows and has no effect elsewhere.
     pub fscache: bool,
+    /// The depth of the deepest tree to read, with the root tree at depth 0. A deeper tree is an error, as
+    /// `core.maxTreeDepth` makes it one in Git.
+    pub max_tree_depth: usize,
 }
 
 /// What [`switch()`](crate::switch()) did.

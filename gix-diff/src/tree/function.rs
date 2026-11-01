@@ -8,7 +8,7 @@ use crate::tree::{
 };
 
 /// Calculate the changes that would need to be applied to `lhs` to get `rhs` using `objects` to obtain objects as needed for traversal.
-/// `state` can be used between multiple calls to re-use memory.
+/// `state` can be used between multiple calls to re-use memory, and decides how deep the diff may go.
 ///
 /// * The `state` maybe owned or mutably borrowed to allow reuses allocated data structures through multiple runs.
 /// * `delegate` will receive the computed changes, see the [`Visit`] trait for more information on what to expect.
@@ -22,8 +22,8 @@ use crate::tree::{
 /// * does not do rename tracking but attempts to reduce allocations to zero (so performance is mostly determined
 ///   by the delegate implementation which should be as specific as possible. Rename tracking can be computed on top of the changes
 ///   received by the `delegate`.
-/// * cycle checking is not performed, but can be performed in the delegate which can return
-///   [`std::ops::ControlFlow::Break`] to stop the traversal.
+/// * cycles aren't checked for, as [`State::max_depth`] ends the diff of a corrupt tree that contains itself, but the
+///   delegate can check for them and return [`std::ops::ControlFlow::Break`] to stop the traversal.
 ///
 /// [git_cmp_c]: https://github.com/git/git/blob/ef8ce8f3d4344fd3af049c17eeba5cd20d98b69f/tree-diff.c#L72-L88
 /// [git_cmp_rs]: https://github.com/GitoxideLabs/gitoxide/blob/795962b107d86f58b1f7c75006da256d19cc80ad/gix-object/src/tree/mod.rs#L263-L273
@@ -44,6 +44,8 @@ where
     let mut rhs_entries = peekable(rhs);
     let mut relation = None;
     let mut pop_path = false;
+    let mut depth = 0;
+    let mut trees_left_at_depth = 0;
 
     loop {
         if pop_path {
@@ -53,6 +55,15 @@ where
 
         match (lhs_entries.next(), rhs_entries.next()) {
             (None, None) => {
+                // The trees of the next depth are queued behind those of the current one.
+                if trees_left_at_depth == 0 {
+                    trees_left_at_depth = state.trees.len();
+                    depth += 1;
+                }
+                if depth > state.max_depth && !state.trees.is_empty() {
+                    return Err(gix_error::validation("exceeded maximum allowed tree depth").into());
+                }
+                trees_left_at_depth = trees_left_at_depth.saturating_sub(1);
                 match state.trees.pop_front() {
                     Some((None, Some(rhs), relation_to_propagate)) => {
                         delegate.pop_front_tracked_path_and_set_current();

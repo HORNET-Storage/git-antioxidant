@@ -65,7 +65,7 @@ impl Repository {
             TreeRefIter::from_bytes(&old_tree.data, old_tree.id.kind()),
             TreeRefIter::from_bytes(&new_tree.data, new_tree.id.kind()),
             &mut cache,
-            &mut Default::default(),
+            &mut gix_diff::tree::State::new(self.max_tree_depth()?),
             &self.objects,
             |change| -> Result<_> {
                 out.push(change.into_owned());

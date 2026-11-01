@@ -71,19 +71,39 @@ pub trait Visit {
 }
 
 /// The state required to run [tree-diffs](super::tree()).
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct State {
     /// A buffer for object data.
     pub buf1: Vec<u8>,
     /// Another buffer for object data.
     pub buf2: Vec<u8>,
+    /// The depth of the deepest trees to compare, with the root trees at depth 0. Deeper trees fail the diff, as
+    /// `core.maxTreeDepth` makes them fail in Git.
+    pub max_depth: usize,
     trees: VecDeque<TreeInfoTuple>,
     change_id: visit::ChangeId,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        State::new(gix_object::tree::DEFAULT_MAX_DEPTH)
+    }
 }
 
 type TreeInfoTuple = (Option<ObjectId>, Option<ObjectId>, Option<Relation>);
 
 impl State {
+    /// Create a state for diffs that compare trees down to `max_depth`.
+    pub fn new(max_depth: usize) -> Self {
+        State {
+            buf1: Vec::new(),
+            buf2: Vec::new(),
+            max_depth,
+            trees: VecDeque::new(),
+            change_id: Default::default(),
+        }
+    }
+
     fn clear(&mut self) {
         self.trees.clear();
         self.buf1.clear();

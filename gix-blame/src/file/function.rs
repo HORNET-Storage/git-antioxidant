@@ -34,6 +34,8 @@ use crate::{
 ///    - Optionally, the commitgraph cache.
 /// * `resource_cache`
 ///    - Used for diffing trees.
+/// * `tree_diff_state`
+///    - Reusable memory for diffing trees, which also decides how deep the diffs may go.
 /// * `file_path`
 ///    - A *slash-separated* worktree-relative path to the file to blame.
 /// * `options`
@@ -73,6 +75,7 @@ pub fn file(
     start: Start,
     cache: Option<gix_commitgraph::Graph>,
     resource_cache: &mut gix_diff::blob::Platform,
+    tree_diff_state: &mut gix_diff::tree::State,
     file_path: &BStr,
     options: Options,
 ) -> Result<Outcome> {
@@ -115,7 +118,6 @@ pub fn file(
         queue.insert(commit.commit_time()?, first_suspect);
     }
 
-    let mut diff_state = gix_diff::tree::State::default();
     let mut previous_entry: Option<(ObjectId, PathEntry)> = None;
     let mut blame_path = if options.debug_track_path {
         Some(Vec::new())
@@ -279,7 +281,7 @@ pub fn file(
                 *parent_id,
                 cache.as_ref(),
                 &mut stats,
-                &mut diff_state,
+                tree_diff_state,
                 resource_cache,
                 &mut buf,
                 &mut buf2,

@@ -37,17 +37,25 @@ pub fn of_commit(commits: &mut Commits<'_>, commit: &oid) -> Result<Option<Objec
         [parent] => Some(commits.get(parent)?.tree),
         _ => return Ok(None),
     };
-    of_trees(commits.objects(), commits.object_hash(), parent_tree.as_deref(), &tree).map(Some)
+    of_trees(
+        commits.objects(),
+        commits.object_hash(),
+        parent_tree.as_deref(),
+        &tree,
+        commits.max_tree_depth(),
+    )
+    .map(Some)
 }
 
 /// Return the patch ID of the changes from `old_tree`, or from the empty tree if it is `None`, to `new_tree` in
 /// `objects`, as `diff_get_patch_id()` computes it for a recursive diff without renames. It is the null id if nothing
-/// changed.
+/// changed. Trees below `max_tree_depth`, with the root trees at depth 0, are an error.
 pub fn of_trees(
     objects: &dyn gix_object::Find,
     object_hash: gix_hash::Kind,
     old_tree: Option<&oid>,
     new_tree: &oid,
+    max_tree_depth: usize,
 ) -> Result<ObjectId> {
     let (mut old_buf, mut new_buf) = (Vec::new(), Vec::new());
     let old = match old_tree {
@@ -59,7 +67,7 @@ pub fn of_trees(
     gix_diff::tree(
         gix_object::TreeRefIter::from_bytes(old, object_hash),
         gix_object::TreeRefIter::from_bytes(new, object_hash),
-        gix_diff::tree::State::default(),
+        gix_diff::tree::State::new(max_tree_depth),
         ByRef(objects),
         &mut recorder,
     )
