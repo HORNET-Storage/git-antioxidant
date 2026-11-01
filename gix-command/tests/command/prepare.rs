@@ -465,6 +465,17 @@ fn quoted_command_without_argument_splitting() -> TestResult {
 }
 
 #[test]
+fn quoted_command_without_arguments() -> TestResult {
+    let cmd = std::process::Command::try_from(gix_command::prepare("with space").with_shell().with_quoted_command())?;
+    assert_eq!(
+        format!("{cmd:?}"),
+        quoted_default_shell(&["-c", "'with space'", "with space"]),
+        "the path stays in one piece as it does with arguments"
+    );
+    Ok(())
+}
+
+#[test]
 fn quoted_windows_command_without_argument_splitting() -> TestResult {
     let cmd = std::process::Command::try_from(
         gix_command::prepare(r"C:\Users\O'Shaughnessy\with space.exe")

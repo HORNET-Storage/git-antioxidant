@@ -222,11 +222,11 @@ impl TryFrom<Prepare> for Command {
                     // `f() { cmd "$@"; }; f` does.
                     let name = prep.command.clone();
                     cmd.arg("-c");
+                    if prep.quote_command {
+                        let command = gix_path::os_str_into_bstr(&prep.command)?;
+                        prep.command = gix_path::from_bstring(gix_quote::single(command))?.into();
+                    }
                     if !prep.args.is_empty() {
-                        if prep.quote_command {
-                            let command = gix_path::os_str_into_bstr(&prep.command)?;
-                            prep.command = gix_path::from_bstring(gix_quote::single(command))?.into();
-                        }
                         prep.command.push(r#" "$@""#);
                     }
                     cmd.arg(prep.command);
