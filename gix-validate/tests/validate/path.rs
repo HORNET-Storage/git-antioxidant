@@ -21,12 +21,17 @@ mod component {
         protect_hfs: true,
         protect_ntfs: true,
     };
+    const UNIX_OPTS: component::Options = component::Options {
+        protect_windows: false,
+        protect_hfs: true,
+        protect_ntfs: true,
+    };
 
     mod valid {
         use bstr::ByteSlice;
-        use gix_validate::path::{component, component::Mode::Symlink};
+        use gix_validate::path::component::Mode::Symlink;
 
-        use crate::path::component::{ALL_OPTS, NO_OPTS};
+        use crate::path::component::{ALL_OPTS, NO_OPTS, UNIX_OPTS};
         macro_rules! mktest {
             ($name:ident, $input:expr) => {
                 mktest!($name, $input, ALL_OPTS);
@@ -45,12 +50,6 @@ mod component {
             };
         }
 
-        const UNIX_OPTS: component::Options = component::Options {
-            protect_windows: false,
-            protect_hfs: true,
-            protect_ntfs: true,
-        };
-
         mktest!(ascii, b"ascii-only_and-that");
         mktest!(unicode, "😁👍👌".as_bytes());
         mktest!(backslashes_on_unix, br"\", UNIX_OPTS);
@@ -64,11 +63,9 @@ mod component {
         mktest!(not_dot_gitmodules_longer, b".gitmodulesa", Symlink, NO_OPTS);
         mktest!(not_dot_gitmodules_longer_all, b".gitmodulesa", Symlink, ALL_OPTS);
         mktest!(dot_gitmodules_as_file, b".gitmodules", UNIX_OPTS);
-        mktest!(
-            starts_with_dot_git_with_backslashes_on_linux,
-            br".git\hooks\pre-commit",
-            UNIX_OPTS
-        );
+        mktest!(backslash_in_a_name_on_unix, br"a\b", UNIX_OPTS);
+        mktest!(not_dot_git_after_a_backslash_on_unix, br"a\.gitu", UNIX_OPTS);
+        mktest!(dot_gitmodules_as_file_after_a_backslash, br"a\.gitmodules", UNIX_OPTS);
         mktest!(not_dot_git_shorter, b".gi", NO_OPTS);
         mktest!(not_dot_git_shorter_ntfs_8_3, b"gi~1");
         mktest!(not_dot_git_longer_ntfs_8_3, b"gitu~1");
@@ -106,7 +103,7 @@ mod component {
         use bstr::ByteSlice;
         use gix_validate::path::component::{Error, Mode::Symlink};
 
-        use crate::path::component::{ALL_OPTS, NO_OPTS};
+        use crate::path::component::{ALL_OPTS, NO_OPTS, UNIX_OPTS};
 
         macro_rules! mktest {
             ($name:ident, $input:expr, $expected:pat, @$snapshot:literal) => {
@@ -139,6 +136,18 @@ mod component {
             starts_with_dot_git_with_backslashes_on_windows,
             br".git\hooks\pre-commit",
             Error::PathSeparator, @"PathSeparator");
+        mktest!(
+            starts_with_dot_git_with_backslashes_on_unix,
+            br".git\hooks\pre-commit",
+            Error::DotGitDir,
+            UNIX_OPTS, @"DotGitDir");
+        mktest!(dot_git_after_a_backslash_on_unix, br"a\.git", Error::DotGitDir, UNIX_OPTS, @"DotGitDir");
+        mktest!(
+            dot_gitmodules_symlink_after_a_backslash_on_unix,
+            br"a\gitmod~1",
+            Error::SymlinkedGitModules,
+            Symlink,
+            UNIX_OPTS, @"SymlinkedGitModules");
         mktest!(dot_git_upper_hfs, ".GIT\u{200e}".as_bytes(), Error::DotGitDir, @"DotGitDir");
         mktest!(dot_git_upper_ntfs_8_3, b"GIT~1", Error::DotGitDir, @"DotGitDir");
         mktest!(dot_git_mixed, b".gIt", Error::DotGitDir, NO_OPTS, @"DotGitDir");
@@ -341,5 +350,65 @@ mod component {
                     .unwrap_or_else(|_| panic!("{valid:?} should have been valid"));
             }
         }
+    }
+
+    /// `git update-index` passes the names that it adds through `verify_path()`.
+    #[test]
+    fn names_with_backslashes_are_refused_as_git_refuses_them() -> gix_testtools::TestResult {
+        const FILE: &str = "100644";
+        const SYMLINK: &str = "120000";
+        let cases = [
+            (r".git\config", FILE),
+            (r".GIT\config", FILE),
+            (r".git \config", FILE),
+            (r".git.\config", FILE),
+            (r".git. .\config", FILE),
+            (r"git~1\config", FILE),
+            (r"GIT~1\config", FILE),
+            (r"a\.git", FILE),
+            (r"a\.git ", FILE),
+            (r"a\.git.", FILE),
+            (r"a\.git:stream", FILE),
+            (r"a\git~1", FILE),
+            (r"a\.git\config", FILE),
+            (r"a\b\.git\config", FILE),
+            (r"a\b", FILE),
+            (r"a\.gitu", FILE),
+            (r"a\.git u", FILE),
+            (r".gitu\config", FILE),
+            (r"git~2\config", FILE),
+            (r"a\.gitmodules", FILE),
+            (r"a\.gitmodules", SYMLINK),
+            (r"a\.gitmodules ", SYMLINK),
+            (r"a\.gitmodules:stream", SYMLINK),
+            (r"a\gitmod~1", SYMLINK),
+            (r"a\gi7eba~1", SYMLINK),
+            (r".gitmodules\b", SYMLINK),
+            (r"a\.gitmodules\b", SYMLINK),
+        ];
+
+        let dir = gix_testtools::tempfile::tempdir()?;
+        gix_testtools::git(dir.path(), "init -q --object-format=sha1")?;
+        for (name, mode) in cases {
+            let git_accepts = gix_testtools::git_command(dir.path())
+                .args(["-c", "core.protectNTFS=true", "-c", "core.protectHFS=false"])
+                .args(["update-index", "--add", "--cacheinfo", mode])
+                .args(["e69de29bb2d1d6434b8b29ae775ad8c2e48c5391", name])
+                .output()?
+                .status
+                .success();
+            let options = component::Options {
+                protect_windows: cfg!(windows),
+                protect_hfs: false,
+                protect_ntfs: true,
+            };
+            let symlink = (mode == SYMLINK).then_some(component::Mode::Symlink);
+            assert_eq!(
+                component(name.into(), symlink, options).is_ok(),
+                git_accepts,
+                "{name:?} as {mode}"
+            );
+        }
+        Ok(())
     }
 }

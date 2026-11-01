@@ -818,6 +818,38 @@ mod blocking_io {
     }
 
     #[test]
+    fn a_path_that_leads_into_the_git_directory_on_ntfs_ends_the_checkout() -> TestResult {
+        if gix_testtools::run_in_isolated_process()? {
+            return Ok(());
+        }
+        let fixture = gix_testtools::scripted_fixture_read_only("make_path_into_git_dir_on_ntfs.sh")?;
+        let tmp = gix_testtools::tempfile::TempDir::new()?;
+        let mut prepare = gix::clone::PrepareFetch::new(
+            fixture,
+            tmp.path(),
+            gix::create::Kind::WithWorktree,
+            Default::default(),
+            restricted(),
+        )?
+        .with_ref_name(Some("evil"))?;
+        let (mut checkout, _) = prepare.fetch_then_checkout(gix::progress::Discard, &AtomicBool::default())?;
+        let err = checkout
+            .main_worktree(gix::progress::Discard, &AtomicBool::default())
+            .expect_err("Git refuses to read the path into an index");
+        let refusal = if cfg!(windows) {
+            "Path separators like /"
+        } else {
+            "The .git name may never be used"
+        };
+        assert!(format!("{err:?}").contains(refusal), "{err:?}");
+        let names = std::fs::read_dir(tmp.path())?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        assert_eq!(names, [".git"], "no file of the tree was written");
+        Ok(())
+    }
+
+    #[test]
     #[cfg(unix)]
     fn fetch_and_checkout_does_not_follow_delayed_symlink_prefixes() -> TestResult {
         if gix_testtools::run_in_isolated_process()? {

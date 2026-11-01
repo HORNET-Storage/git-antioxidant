@@ -122,11 +122,13 @@ pub fn component(
     }
 
     if protect_ntfs {
-        if is_dot_git_ntfs(input) {
-            return Err(component::Error::DotGitDir);
-        }
-        if is_symlink(mode) && is_dot_ntfs(input, "gitmodules", "gi7eba") {
-            return Err(component::Error::SymlinkedGitModules);
+        for name in ntfs_names(input) {
+            if is_dot_git_ntfs(name) {
+                return Err(component::Error::DotGitDir);
+            }
+            if is_symlink(mode) && is_dot_ntfs(name, "gitmodules", "gi7eba") {
+                return Err(component::Error::SymlinkedGitModules);
+            }
         }
 
         if protect_windows && let Some(err) = check_win_devices_and_illegal_characters(input) {
@@ -252,7 +254,16 @@ fn is_dot_hfs(input: &BStr, search_case_insensitive: &str) -> bool {
     }
 }
 
+/// Return `input` and what follows each of its backslashes, as a backslash starts a new name on NTFS, as Git's
+/// `verify_path()` looks at them on all platforms.
+fn ntfs_names(input: &BStr) -> impl Iterator<Item = &BStr> {
+    std::iter::successors(Some(input), |&name| name.find_byte(b'\\').map(|pos| &name[pos + 1..]))
+}
+
+/// As Git's `is_ntfs_dotgit()` does, this lets `.git` end at a backslash as well, as `.git` is a directory that a path can
+/// lead into, unlike `.gitmodules`.
 fn is_dot_git_ntfs(input: &BStr) -> bool {
+    let input = input.find_byte(b'\\').map_or(input, |end| &input[..end]);
     if input.get(..4).is_some_and(|input| input.eq_ignore_ascii_case(b".git")) {
         return is_done_ntfs(input.get(4..));
     }
