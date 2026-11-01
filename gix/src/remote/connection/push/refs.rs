@@ -501,24 +501,14 @@ fn missing_tags(
 }
 
 /// The commits of `candidates` that are reachable from the commits `tips`, as `get_reachable_subset()` in Git's
-/// `commit-reach.c` finds them: without looking at commits older than the oldest candidate.
+/// `commit-reach.c` finds them. The walk can't stop at the date of a candidate, as a commit can be older than its parents,
+/// so it goes on until it found all candidates. Git stops earlier only at the generation numbers of a commit-graph.
 fn reachable_subset(repo: &Repository, tips: &[ObjectId], candidates: &[ObjectId]) -> Result<BTreeSet<ObjectId>> {
     let mut found = BTreeSet::new();
-    let oldest = candidates
-        .iter()
-        .filter_map(|id| repo.find_commit(*id).ok()?.time().ok())
-        .map(|time| time.seconds)
-        .min();
-    let Some(oldest) = oldest else {
-        return Ok(found);
-    };
     let mut remaining: BTreeSet<_> = candidates.iter().copied().collect();
     let walk = repo
         .rev_walk(tips.iter().copied())
-        .sorting(Sorting::ByCommitTimeCutoff {
-            order: CommitTimeOrder::NewestFirst,
-            seconds: oldest,
-        })
+        .sorting(Sorting::ByCommitTime(CommitTimeOrder::NewestFirst))
         .all()?;
     for info in walk {
         let id = info?.id;

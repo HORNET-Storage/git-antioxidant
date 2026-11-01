@@ -243,6 +243,17 @@ git -C follow-tags-config/before/local config push.followTags true
 record follow-tags --follow-tags origin main
 record follow-tags-config origin main
 
+# `--follow-tags` also finds a tag of a commit below a commit with an older date, which only `D` is here.
+start follow-tags-older-commit
+commit "$local_repo" C
+annotated_tag "$local_repo" below-an-older-commit
+newest_tick=$tick
+tick=1000000000
+commit "$local_repo" D
+tick=$newest_tick
+commit "$local_repo" E
+record follow-tags-older-commit --follow-tags origin main
+
 # `--force-with-lease` forces an update if the remote reference points to what its remote-tracking reference points to,
 # and rejects it as `stale info` if not, unless `--force` is given as well.
 start_diverged lease

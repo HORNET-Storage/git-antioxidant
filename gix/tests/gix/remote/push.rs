@@ -143,6 +143,7 @@ mod blocking_and_async_io {
         ("tag-force", AsGit),
         ("follow-tags", AsGit),
         ("follow-tags-config", AsGit),
+        ("follow-tags-older-commit", AsGit),
         ("lease", AsGit),
         ("lease-stale", AsGit),
         ("lease-stale-forced", AsGit),
