@@ -211,6 +211,17 @@ fn target() -> gix_testtools::TestResult {
 }
 
 #[test]
+fn chain_refuses_a_tag_it_passed_already() -> gix_testtools::TestResult {
+    let mut chain = gix_object::tag::Chain::default();
+    let tag = gix_hash::ObjectId::from_hex(b"ffa700b4aca13b80cb6b98a078e7c96804f8e0ec")?;
+    chain.add(&tag)?;
+    chain.add(&gix_hash::Kind::Sha1.null())?;
+    let err = chain.add(&tag).expect_err("the tag leads back to itself");
+    assert!(err.is_corrupted(), "{err:?}");
+    Ok(())
+}
+
+#[test]
 fn tagger() -> gix_testtools::TestResult {
     let fixture = fixture_name("tag", "tagger-with-whitespace.txt");
     let tag = TagRef::from_bytes(&fixture, gix_hash::Kind::Sha1)?;

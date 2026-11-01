@@ -120,6 +120,7 @@ fn component_len(path: &[u8]) -> usize {
 /// The tree that `id` peels to, through tags and commits, or `None` if an object on the way can't be read, as Git's
 /// `odb_read_object_peeled()` peels it.
 fn peel_to_tree(objects: &impl Find, mut id: ObjectId, buf: &mut Vec<u8>) -> Result<Option<ObjectId>> {
+    let mut tags = gix_object::tag::Chain::default();
     loop {
         if id.is_empty_tree() {
             return Ok(Some(id));
@@ -133,9 +134,12 @@ fn peel_to_tree(objects: &impl Find, mut id: ObjectId, buf: &mut Vec<u8>) -> Res
             Kind::Commit => gix_object::CommitRefIter::from_bytes(object.data, object.object_hash)
                 .tree_id()
                 .or_raise(|| message!("Could not decode the commit {id}").corrupted())?,
-            Kind::Tag => gix_object::TagRefIter::from_bytes(object.data, object.object_hash)
-                .target_id()
-                .or_raise(|| message!("Could not decode the tag {id}").corrupted())?,
+            Kind::Tag => {
+                tags.add(&id)?;
+                gix_object::TagRefIter::from_bytes(object.data, object.object_hash)
+                    .target_id()
+                    .or_raise(|| message!("Could not decode the tag {id}").corrupted())?
+            }
         };
     }
 }
@@ -150,4 +154,30 @@ fn read_tree(objects: &impl Find, id: ObjectId, buf: &mut Vec<u8>) -> Result<Opt
         .try_find(&id, buf)?
         .filter(|object| object.kind == Kind::Tree)
         .map(|object| (object.data.to_vec(), object.object_hash)))
+}
+
+#[cfg(test)]
+mod tests {
+    use gix_error::Result;
+    use gix_hash::oid;
+    use gix_object::{Data, Find, Kind};
+
+    use super::peel_to_tree;
+
+    /// An object database in which each object is a tag of itself, as reading an object doesn't verify its id.
+    struct TagsOfThemselves;
+
+    impl Find for TagsOfThemselves {
+        fn try_find<'a>(&self, id: &oid, buffer: &'a mut Vec<u8>) -> Result<Option<Data<'a>>> {
+            *buffer = format!("object {id}\ntype tag\ntag loop\n\nthe message\n").into_bytes();
+            Ok(Some(Data::new(buffer, Kind::Tag, id.kind())))
+        }
+    }
+
+    #[test]
+    fn a_tag_that_leads_back_to_itself_is_an_error() {
+        let err = peel_to_tree(&TagsOfThemselves, gix_hash::Kind::Sha1.null(), &mut Vec::new())
+            .expect_err("the tag has no end");
+        assert!(err.is_corrupted(), "{err:?}");
+    }
 }

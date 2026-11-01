@@ -94,6 +94,7 @@ impl packed::Transaction {
             } = edit.inner.change
             {
                 let mut next_id = new;
+                let mut tags = gix_object::tag::Chain::default();
                 edit.peeled = loop {
                     let data = objects
                         .try_find(&next_id, &mut buf)
@@ -104,6 +105,7 @@ impl packed::Transaction {
                             data,
                             object_hash: hash_kind,
                         }) => {
+                            tags.add(&next_id)?;
                             next_id = gix_object::TagRefIter::from_bytes(data, hash_kind)
                                 .target_id()
                                 .or_raise(|| gix_error::message!("Couldn't get target object id from tag {next_id}"))

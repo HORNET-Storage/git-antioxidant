@@ -11,22 +11,20 @@ impl<'repo> Object<'repo> {
     /// Note that this object doesn't necessarily have to be the end of the chain.
     /// Typical values are [`Kind::Commit`] or [`Kind::Tree`].
     pub fn peel_to_kind(mut self, kind: Kind) -> Result<Self> {
+        let mut tags = gix_object::tag::Chain::default();
         loop {
             match self.kind {
                 our_kind if kind == our_kind => {
                     return Ok(self);
                 }
                 Kind::Commit => {
-                    let tree_id = self
-                        .try_to_commit_ref_iter()
-                        .expect("commit")
-                        .tree_id()
-                        .expect("valid commit");
+                    let tree_id = self.try_to_commit_ref_iter().expect("commit").tree_id()?;
                     let repo = self.repo;
                     drop(self);
                     self = repo.find_object(tree_id)?;
                 }
                 Kind::Tag => {
+                    tags.add(&self.id)?;
                     let target_id = self.to_tag_ref_iter().target_id()?;
                     let repo = self.repo;
                     drop(self);
@@ -63,11 +61,13 @@ impl<'repo> Object<'repo> {
     /// Note that this method is different from [`peel_to_kind(…)`][Object::peel_to_kind()] as it won't
     /// peel commits to their tree, but handles tags only.
     pub fn peel_tags_to_end(mut self) -> Result<Self> {
+        let mut tags = gix_object::tag::Chain::default();
         loop {
             match self.kind {
                 Kind::Commit | Kind::Tree | Kind::Blob => break Ok(self),
                 Kind::Tag => {
-                    let target_id = self.to_tag_ref_iter().target_id().expect("valid tag");
+                    tags.add(&self.id)?;
+                    let target_id = self.to_tag_ref_iter().target_id()?;
                     let repo = self.repo;
                     drop(self);
                     self = repo.find_object(target_id)?;

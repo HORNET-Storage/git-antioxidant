@@ -115,6 +115,7 @@ pub(crate) fn peel(
     buf: &mut Vec<u8>,
 ) -> Result<Peeled> {
     let mut expected_kind = None;
+    let mut tags = gix_object::tag::Chain::default();
     loop {
         let Some(object) = objects.try_find(&id, buf)? else {
             return Ok(Peeled::Missing(id));
@@ -132,8 +133,39 @@ pub(crate) fn peel(
         }
         let tag = gix_object::TagRef::from_bytes(object.data, object.object_hash)
             .or_raise(|| message!("Could not decode the tag {id}").corrupted())?;
+        tags.add(&id)?;
         tag_ids.push(id);
         expected_kind = Some(tag.target_kind);
         id = tag.target();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gix_error::Result;
+    use gix_hash::oid;
+    use gix_object::{Data, Find, Kind};
+
+    use super::peel;
+
+    /// An object database in which each object is a tag of itself, as reading an object doesn't verify its id.
+    struct TagsOfThemselves;
+
+    impl Find for TagsOfThemselves {
+        fn try_find<'a>(&self, id: &oid, buffer: &'a mut Vec<u8>) -> Result<Option<Data<'a>>> {
+            *buffer = format!("object {id}\ntype tag\ntag loop\n\nthe message\n").into_bytes();
+            Ok(Some(Data::new(buffer, Kind::Tag, id.kind())))
+        }
+    }
+
+    #[test]
+    fn a_tag_that_leads_back_to_itself_is_an_error() {
+        let id = gix_hash::Kind::Sha1.null();
+        let (mut tag_ids, mut buf) = (Vec::new(), Vec::new());
+        let err = peel(&TagsOfThemselves, id, &mut tag_ids, &mut buf)
+            .err()
+            .expect("the tag has no end");
+        assert!(err.is_corrupted(), "{err:?}");
+        assert_eq!(tag_ids, [id], "the tag was followed once");
     }
 }

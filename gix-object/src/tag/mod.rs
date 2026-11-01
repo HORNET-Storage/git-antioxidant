@@ -1,5 +1,5 @@
 use bstr::ByteSlice;
-use gix_error::Result;
+use gix_error::{Result, bail, corruption};
 
 use crate::parse::parse_signature;
 use crate::{Tag, TagRef};
@@ -11,6 +11,25 @@ pub mod write;
 
 ///
 pub mod ref_iter;
+
+/// The tags passed on the way to the object that a tag points to in the end.
+///
+/// Tags with valid ids can't lead back to themselves, as the id of a tag depends on the id of its target, but reading an
+/// object doesn't verify its id, so that a corrupt tag may point to itself, which would keep following it forever.
+#[derive(Default)]
+pub struct Chain {
+    tags: gix_hashtable::HashSet<gix_hash::ObjectId>,
+}
+
+impl Chain {
+    /// Add the tag `id` to the chain, which fails if the chain has it already.
+    pub fn add(&mut self, id: &gix_hash::oid) -> Result {
+        if !self.tags.insert(id.to_owned()) {
+            bail!(corruption(format!("The tag {id} leads back to itself")));
+        }
+        Ok(())
+    }
+}
 
 impl<'a> TagRef<'a> {
     /// Deserialize a tag from `data`.

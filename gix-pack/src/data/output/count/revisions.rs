@@ -265,6 +265,7 @@ fn peel(
     mut on_tag: impl FnMut(ObjectId, &[u8]),
     buf: &mut Vec<u8>,
 ) -> Result<Option<(ObjectId, Kind)>> {
+    let mut tags = gix_object::tag::Chain::default();
     loop {
         // Git provides the empty tree whether or not a repository stores it.
         if id.is_empty_tree() {
@@ -276,6 +277,7 @@ fn peel(
         if object.kind != Kind::Tag {
             return Ok(Some((id, object.kind)));
         }
+        tags.add(&id)?;
         let (mut target, mut name): (_, &[u8]) = (None, &[]);
         for token in gix_object::TagRefIter::from_bytes(object.data, object.object_hash) {
             match token.or_raise(|| message!("Could not decode the tag {id}").corrupted())? {

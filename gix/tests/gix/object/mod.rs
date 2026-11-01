@@ -1,5 +1,6 @@
 mod blob;
 mod commit;
+mod peel;
 mod tree;
 
 use gix_testtools::size_ok;

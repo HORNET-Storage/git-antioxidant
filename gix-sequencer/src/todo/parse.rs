@@ -76,6 +76,7 @@ where
         let Some(mut id) = crate::file::id(name, self.object_hash) else {
             return Ok(Resolved::Nothing);
         };
+        let mut tags = gix_object::tag::Chain::default();
         loop {
             let Some(object) = self.objects.try_find(&id, &mut self.buf)? else {
                 return Ok(Resolved::Nothing);
@@ -91,6 +92,7 @@ where
                     });
                 }
                 gix_object::Kind::Tag => {
+                    tags.add(&id)?;
                     id = gix_object::TagRefIter::from_bytes(object.data, self.object_hash).target_id()?;
                 }
                 kind => return Ok(Resolved::NotACommit { id, kind }),

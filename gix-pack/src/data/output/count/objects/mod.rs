@@ -179,15 +179,15 @@ mod expand {
                     let mut obj = obj;
                     let mut location = location;
                     let mut id = id.to_owned();
+                    let mut tags = gix_object::tag::Chain::default();
 
                     loop {
                         push_obj_count_unique(&mut out, seen_objs, &id, location, objects, stats, false);
                         match obj.kind {
                             Tree | Blob => break,
                             Tag => {
-                                id = TagRefIter::from_bytes(obj.data, obj.object_hash)
-                                    .target_id()
-                                    .expect("every tag has a target");
+                                tags.add(&id)?;
+                                id = TagRefIter::from_bytes(obj.data, obj.object_hash).target_id()?;
                                 let tmp = db.find(&id, buf1)?;
 
                                 obj = tmp.0;
@@ -199,7 +199,7 @@ mod expand {
                             Commit => {
                                 let current_tree_iter = {
                                     let mut commit_iter = CommitRefIter::from_bytes(obj.data, obj.object_hash);
-                                    let tree_id = commit_iter.tree_id().expect("every commit has a tree");
+                                    let tree_id = commit_iter.tree_id()?;
                                     parent_commit_ids.clear();
                                     for token in commit_iter {
                                         match token {
@@ -243,8 +243,7 @@ mod expand {
                                                 parent_commit_obj.data,
                                                 parent_commit_obj.object_hash,
                                             )
-                                            .tree_id()
-                                            .expect("every commit has a tree")
+                                            .tree_id()?
                                         };
                                         let parent_tree = {
                                             let (parent_tree_obj, location) = db.find(&parent_tree_id, buf2)?;
@@ -296,6 +295,7 @@ mod expand {
                     use gix_object::Kind::*;
                     let mut id = id;
                     let mut obj = (obj, location);
+                    let mut tags = gix_object::tag::Chain::default();
                     loop {
                         push_obj_count_unique(&mut out, seen_objs, &id, obj.1.clone(), objects, stats, false);
                         match obj.0.kind {
@@ -327,18 +327,15 @@ mod expand {
                                 break;
                             }
                             Commit => {
-                                id = CommitRefIter::from_bytes(obj.0.data, obj.0.object_hash)
-                                    .tree_id()
-                                    .expect("every commit has a tree");
+                                id = CommitRefIter::from_bytes(obj.0.data, obj.0.object_hash).tree_id()?;
                                 stats.expanded_objects += 1;
                                 obj = db.find(&id, buf1)?;
                                 continue;
                             }
                             Blob => break,
                             Tag => {
-                                id = TagRefIter::from_bytes(obj.0.data, obj.0.object_hash)
-                                    .target_id()
-                                    .expect("every tag has a target");
+                                tags.add(&id)?;
+                                id = TagRefIter::from_bytes(obj.0.data, obj.0.object_hash).target_id()?;
                                 stats.expanded_objects += 1;
                                 obj = db.find(&id, buf1)?;
                                 continue;

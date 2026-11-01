@@ -137,6 +137,7 @@ impl ReferenceExt for Reference {
             None => {
                 let mut object_id = self.follow_to_object_packed(store, packed)?;
                 let mut buf = Vec::new();
+                let mut tags = gix_object::tag::Chain::default();
                 let peeled_id = loop {
                     let gix_object::Data {
                         kind,
@@ -156,6 +157,7 @@ impl ReferenceExt for Reference {
                         })?;
                     match kind {
                         gix_object::Kind::Tag => {
+                            tags.add(&object_id)?;
                             object_id = gix_object::TagRefIter::from_bytes(data, hash_kind)
                                 .target_id()
                                 .or_raise(|| {
