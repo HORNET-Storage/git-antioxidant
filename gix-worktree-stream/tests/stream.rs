@@ -331,14 +331,18 @@ mod from_tree {
                     .map(|_| ())
             },
         );
-        let err = loop {
+        // The walk has its own thread, so its error may reach the read of an entry or the read of the next one.
+        let message = loop {
             match stream.next_entry() {
-                Ok(Some(mut entry)) => _ = std::io::copy(&mut entry, &mut std::io::sink())?,
+                Ok(Some(mut entry)) => {
+                    if let Err(err) = std::io::copy(&mut entry, &mut std::io::sink()) {
+                        break format!("{err:?}");
+                    }
+                }
                 Ok(None) => panic!("the tree has a directory"),
-                Err(err) => break err,
+                Err(err) => break format!("{err:?}"),
             }
         };
-        let message = format!("{err:?}");
         assert!(message.contains("exceeded maximum allowed tree depth"), "{message}");
         Ok(())
     }
