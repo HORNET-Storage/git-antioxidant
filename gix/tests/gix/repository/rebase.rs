@@ -750,6 +750,24 @@ fn break_stops_and_continues() -> crate::Result {
 
 #[test]
 #[parallel]
+fn a_todo_list_may_name_its_commits_by_any_revision() -> crate::Result {
+    let scenario = scenario("edited-todo")?;
+    let stop = stopped(rebase(&scenario, interactive("main"))?);
+    assert_eq!(stop.reason, StopReason::Break, "the rebase stops for `break`");
+    let git_dir = scenario.path().join(".git");
+    std::fs::copy(
+        git_dir.join("edited-todo"),
+        git_dir.join("rebase-merge/git-rebase-todo"),
+    )?;
+    assert_finished(&scenario.repo.rebase_continue(step(), &AtomicBool::new(false))?);
+    if git_writes_todo_lists_as_gix() {
+        assert_same_as_git(&scenario)?;
+    }
+    Ok(())
+}
+
+#[test]
+#[parallel]
 fn drop_and_removed_lines() -> crate::Result {
     let scenario = scenario("drop")?;
     assert_finished(&rebase(&scenario, interactive("main"))?);

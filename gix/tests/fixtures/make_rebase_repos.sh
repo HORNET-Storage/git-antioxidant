@@ -410,6 +410,19 @@ git -C break-git rebase -i main 2>/dev/null
 snapshot break
 git -C break-git rebase --continue
 
+# A todo list that a person edited while the rebase stopped, with an abbreviated id and the name of a branch.
+history edited-todo
+prepare edited-todo
+todo edited-todo break pick topic~1 pick topic
+{
+  echo "pick $(git -C edited-todo rev-parse --short=8 topic~1) one"
+  echo "pick topic two"
+} >edited-todo/.git/edited-todo
+twin edited-todo
+git -C edited-todo-git rebase -i main 2>/dev/null
+cp edited-todo-git/.git/edited-todo edited-todo-git/.git/rebase-merge/git-rebase-todo
+git -C edited-todo-git rebase --continue
+
 long_history drop
 prepare drop
 todo drop pick topic~4 drop topic~3 pick topic~2

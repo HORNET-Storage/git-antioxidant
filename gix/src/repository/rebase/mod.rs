@@ -245,10 +245,11 @@ impl<'a> Sequencer<'a> {
         self.pick_commits(&mut progress)
     }
 
-    /// Read the todo list of the rebase, as `read_populate_todo()` reads it.
+    /// Read the todo list of the rebase, as `read_populate_todo()` reads it: a person may have written any revision into
+    /// its lines while the rebase stopped.
     fn read_progress(&self) -> Result<gix_sequencer::rebase::Progress> {
-        let mut resolve = gix_sequencer::todo::ById::new(&self.repo.objects, self.repo.object_hash());
-        self.dir.progress(self.comment.as_bstr(), &mut resolve)
+        self.dir
+            .progress(self.comment.as_bstr(), &mut todo::resolver(self.repo))
     }
 
     /// Abort the rebase as `cmd_rebase()` does for `--abort`, with `reset_head()`, `remove_branch_state()` and

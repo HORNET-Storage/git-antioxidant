@@ -46,7 +46,8 @@ where
 /// A [`Resolve`] for names that are full hexadecimal object ids, the names that Git writes into the todo lists of a
 /// rebase and into its `done`, which looks them up in an object database and follows annotated tags.
 ///
-/// Other names, like abbreviated ids or names of references, name nothing.
+/// Other names, like abbreviated ids or names of references, name nothing, while Git finds them with `repo_get_oid()`: a
+/// list that a person edited needs a [`Resolve`] that parses revisions.
 pub struct ById<T> {
     objects: T,
     object_hash: gix_hash::Kind,
