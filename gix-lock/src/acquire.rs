@@ -55,7 +55,8 @@ impl File {
     /// after the process umask. Pass `0` to keep the umask permissions without reading or rewriting permission metadata.
     /// See [`gix_fs::adjust_shared_repository_permissions()`] for the encoding.
     ///
-    /// On Unix, lock files start with `0o666` before the umask and sharing policy are applied.
+    /// On Unix, lock files are created with `0o666` as the sharing policy adjusts it, and the umask applies, so that a
+    /// policy like `-0o600` keeps others out from the start.
     ///
     /// ### Warning of potential resource leak
     ///
@@ -77,7 +78,7 @@ impl File {
             shared_repository_permissions,
             resolve_resource,
             &|p, d, c| {
-                if let Some(permissions) = default_permissions() {
+                if let Some(permissions) = creation_permissions(shared_repository_permissions) {
                     gix_tempfile::writable_at_with_permissions(p, d, c, permissions)
                 } else {
                     gix_tempfile::writable_at(p, d, c)
@@ -109,7 +110,7 @@ impl Marker {
     /// If `boundary_directory` is given, missing directories will be created and removed up to that boundary on rollback.
     ///
     /// The sharing policy applies to both the marker and newly created directories; `0` keeps the umask permissions.
-    /// On Unix, marker files start with `0o666` before the umask and sharing policy are applied.
+    /// On Unix, marker files are created with `0o666` as the sharing policy adjusts it, and the umask applies.
     ///
     /// ### Warning of potential resource leak
     ///
@@ -129,7 +130,7 @@ impl Marker {
             shared_repository_permissions,
             &keep_resource,
             &|p, d, c| {
-                if let Some(permissions) = default_permissions() {
+                if let Some(permissions) = creation_permissions(shared_repository_permissions) {
                     gix_tempfile::mark_at_with_permissions(p, d, c, permissions)
                 } else {
                     gix_tempfile::mark_at(p, d, c)
@@ -244,14 +245,21 @@ fn add_lock_suffix(resource_path: &Path) -> PathBuf {
     lock_path.into()
 }
 
-fn default_permissions() -> Option<std::fs::Permissions> {
+/// The permissions to create a lock file with on Unix, to which the umask applies. A negative
+/// `shared_repository_permissions` applies from the start, so that nobody else can open a file that is about to get
+/// private content and read it later, which `git credential-store` prevents with its umask.
+fn creation_permissions(shared_repository_permissions: i32) -> Option<std::fs::Permissions> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        Some(std::fs::Permissions::from_mode(0o666))
+        Some(gix_fs::adjust_shared_repository_permissions(
+            std::fs::Permissions::from_mode(0o666),
+            shared_repository_permissions,
+        ))
     }
     #[cfg(not(unix))]
     {
+        let _ = shared_repository_permissions;
         None
     }
 }
@@ -301,6 +309,33 @@ mod tests {
             );
             assert_eq!(source.to_string(), "access denied", "the I/O diagnostic survives");
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_private_policy_applies_as_the_lock_file_is_created() -> gix_testtools::TestResult {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = gix_testtools::tempfile::tempdir()?;
+        let path = dir.path().join("resource.lock");
+        let permissions = creation_permissions(-0o600).expect("Unix files have permissions");
+        let _lock = gix_tempfile::writable_at_with_permissions(
+            &path,
+            ContainingDirectory::Exists,
+            AutoRemove::Tempfile,
+            permissions,
+        )?;
+        assert_eq!(std::fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn lock_files_are_created_with_what_the_umask_leaves_without_a_policy() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let permissions = creation_permissions(0).expect("Unix files have permissions");
+        assert_eq!(permissions.mode() & 0o777, 0o666);
     }
 
     #[test]
