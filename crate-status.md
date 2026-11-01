@@ -213,7 +213,7 @@ The top-level crate that acts as hub to all functionality provided by the `gix-*
         * [ ] sparse checkout support
         * [x] read per-worktree config if `extensions.worktreeConfig` is enabled.
         * **index**
-            * [ ] tree from index
+            * [x] tree from index
             * [x] index from tree
     * **worktrees**
         * [x] open a repository with worktrees
@@ -849,6 +849,12 @@ Record and reuse conflict resolutions across mergy workflows.
 Implement git large file support using the process protocol and make it flexible enough to handle a variety of cases.
 Make it the best-performing implementation and the most convenient one.
 
+Definitely optimize for performance and see how we fare compared to [oxen](https://github.com/Oxen-AI/oxen-release/blob/main/Performance.md).
+Right now, `git lfs` is 40x slower, due to sequential uploads and lack of fast compression. It seems this can be greatly improved to get
+close to 6min for 200k images (1.4GB). GitHub seems to cap upload speeds to 100kb/s, one major reason it's so slow, and it can only do
+it sequentially as `git-lfs` doesn't use the new `filter-process` protocol which would allow parallelization.
+Oxen uses the XXH3 (30gb/s) which greatly outperforms SHA1 - however, it doesn't look like the hash is necessarily the bottleneck in typical benchmarks.
+
 ### gix-glob
 * [x] parse pattern
 * [x] a type for pattern matching of paths and non-paths, optionally case-insensitively.
@@ -1196,14 +1202,6 @@ Provide a reftable backend for refs and reflogs as part of Git 3.0 compatibility
 ### gix-tix
 
 A re-implementation of a minimal `tig` like UI that aims to be fast and to the point.
-
-### gix-lfs
-
-Definitely optimize for performance and see how we fare compared to [oxen](https://github.com/Oxen-AI/oxen-release/blob/main/Performance.md).
-Right now, `git lfs` is 40x slower, due to sequential uploads and lack of fast compression. It seems this can be greatly improved to get
-close to 6min for 200k images (1.4GB). GitHub seems to cap upload speeds to 100kb/s, one major reason it's so slow, and it can only do
-it sequentially as `git-lfs` doesn't use the new `filter-process` protocol which would allow parallelization.
-Oxen uses the XXH3 (30gb/s) which greatly outperforms SHA1 - however, it doesn't look like the hash is necessarily the bottleneck in typical benchmarks.
 
 [tagname-validation]: https://github.com/git/git/blob/master/Documentation/technical/protocol-common.txt#L23:L23
 [this post]: http://blog.danieljanus.pl/2021/07/01/commit-groups/
