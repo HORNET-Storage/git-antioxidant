@@ -175,6 +175,8 @@ unit-tests:
     env GIX_TEST_FIXTURE_HASH=sha256 cargo nextest run -p gix --features blocking-network-client,sha256 --no-fail-fast
     env GIX_TEST_FIXTURE_HASH=sha256 cargo nextest run -p gix --features sha256 --no-fail-fast
     cargo nextest run -p gix --no-default-features --features sha256 --lib --no-fail-fast
+    # `gix` without a hash feature of its own, which another crate enables for `gix-hash`.
+    cargo nextest run -p gix -p gix-hash --no-default-features --features gix-hash/sha1 --lib --no-fail-fast default_object_hash
     cargo nextest run -p gitoxide-core --no-fail-fast
 
 # Run all doctests

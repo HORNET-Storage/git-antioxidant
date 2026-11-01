@@ -119,17 +119,13 @@ pub struct Options {
 }
 
 fn default_object_hash() -> Option<gix_hash::Kind> {
-    #[cfg(feature = "sha1")]
-    {
-        None
-    }
     #[cfg(all(not(feature = "sha1"), feature = "sha256"))]
     {
         Some(gix_hash::Kind::Sha256)
     }
-    #[cfg(all(not(feature = "sha1"), not(feature = "sha256")))]
+    #[cfg(any(feature = "sha1", not(feature = "sha256")))]
     {
-        unreachable!("hash support features are validated by gix-hash")
+        None
     }
 }
 
