@@ -137,25 +137,8 @@ mod signature {
             return Ok(());
         }
         let (_key_home, key) = signature::ssh_private_key()?;
-        // Git writes the signed commit.
         let fixture = gix_testtools::scripted_fixture_writable("make_basic_repo.sh")?;
-        let email = User::EMAIL.validated_assignment_fmt(&signature::IDENTITY)?;
-        // Git for Windows passes this native path to `ssh-keygen`, where forward slashes avoid backslash
-        // interpretation while retaining the drive prefix. An MSYS path like `/c/...` isn't accepted here.
-        let key_for_git = gix_path::to_unix_separators_on_windows(gix_path::into_bstr(&key)?);
-        let signing_key = User::SIGNING_KEY.validated_assignment(key_for_git.as_ref())?;
-        let output = gix_testtools::git_command(fixture.path())
-            .args(["-c", "user.name=Gitoxide Signing Fixture", "-c"])
-            .arg(gix_path::from_bstring(email)?.into_os_string())
-            .args(["-c", "gpg.format=ssh", "-c"])
-            .arg(gix_path::from_bstring(signing_key)?.into_os_string())
-            .args(["commit", "--allow-empty", "-S", "-m", "signed by Git"])
-            .output()?;
-        assert!(
-            output.status.success(),
-            "Git creates the reference signature: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        commit_signed_by_git(fixture.path(), &key)?;
 
         let allowed_signers = gpg::Ssh::ALLOWED_SIGNERS_FILE
             .validated_assignment_fmt(&signature::fixture("ssh-allowed-signers").display())?;
@@ -173,6 +156,76 @@ mod signature {
             outcome.signer.as_ref().map(|signer| signer.as_slice()),
             Some(signature::IDENTITY.as_bytes())
         );
+        Ok(())
+    }
+
+    /// Have Git commit in `repository`, signing with the SSH private key at `key`.
+    fn commit_signed_by_git(repository: &std::path::Path, key: &std::path::Path) -> TestResult {
+        let email = User::EMAIL.validated_assignment_fmt(&signature::IDENTITY)?;
+        // Git for Windows passes this native path to `ssh-keygen`, where forward slashes avoid backslash
+        // interpretation while retaining the drive prefix. An MSYS path like `/c/...` isn't accepted here.
+        let key_for_git = gix_path::to_unix_separators_on_windows(gix_path::into_bstr(key)?);
+        let signing_key = User::SIGNING_KEY.validated_assignment(key_for_git.as_ref())?;
+        let output = gix_testtools::git_command(repository)
+            .args(["-c", "user.name=Gitoxide Signing Fixture", "-c"])
+            .arg(gix_path::from_bstring(email)?.into_os_string())
+            .args(["-c", "gpg.format=ssh", "-c"])
+            .arg(gix_path::from_bstring(signing_key)?.into_os_string())
+            .args(["commit", "--allow-empty", "-S", "-m", "signed by Git"])
+            .output()?;
+        assert!(
+            output.status.success(),
+            "Git creates the reference signature: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+
+    #[test]
+    // Git inherits process-global date variables modified by fixture setup in other tests, as above.
+    #[serial]
+    #[cfg_attr(windows, ignore = "TODO: requires direct investigation on Windows")]
+    fn a_relative_revocation_file_is_found_where_git_finds_it() -> TestResult {
+        if !signature::program_available("ssh-keygen") {
+            return Ok(());
+        }
+        let (_key_home, key) = signature::ssh_private_key()?;
+        let fixture = gix_testtools::scripted_fixture_writable("make_basic_repo.sh")?;
+        commit_signed_by_git(fixture.path(), &key)?;
+        std::fs::copy(
+            signature::fixture("ssh-private.pub"),
+            fixture.path().join("revoked-keys"),
+        )?;
+        let allowed_signers = gpg::Ssh::ALLOWED_SIGNERS_FILE
+            .validated_assignment_fmt(&signature::fixture("ssh-allowed-signers").display())?;
+
+        for (file, expected_validity) in [("revoked-keys", false), ("missing-file", true)] {
+            let revocation_file = gpg::Ssh::REVOCATION_FILE.validated_assignment_fmt(&file)?;
+            let output = gix_testtools::git_command(fixture.path())
+                .arg("-c")
+                .arg(gix_path::from_bstring(allowed_signers.clone())?.into_os_string())
+                .arg("-c")
+                .arg(gix_path::from_bstring(revocation_file.clone())?.into_os_string())
+                .args(["verify-commit", "HEAD"])
+                .output()?;
+            assert_eq!(
+                output.status.success(),
+                expected_validity,
+                "Git decides with {file}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+
+            // The process runs elsewhere, while Git runs in the worktree.
+            let repo = gix::open_opts(
+                fixture.path(),
+                gix::open::Options::isolated().config_overrides([allowed_signers.clone(), revocation_file]),
+            )?;
+            let outcome = repo
+                .head_commit()?
+                .verify_signature()?
+                .expect("Git created a signed commit");
+            assert_eq!(outcome.is_valid(), expected_validity, "like Git with {file}");
+        }
         Ok(())
     }
 

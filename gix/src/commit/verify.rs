@@ -51,13 +51,20 @@ pub(crate) fn verify(commit: &crate::Commit<'_>) -> Result<Option<Outcome>> {
             let revocation_file = config
                 .trusted_path(gpg::Ssh::REVOCATION_FILE)
                 .or_raise(|| message("Could not interpolate a configured signature-verification path"))?
-                .filter(|path| path.exists());
+                .map(|path| resolve_relative_to_repository(commit.repo, path))
+                .filter(|path| {
+                    let exists = path.exists();
+                    if !exists {
+                        gix_trace::warn!("ssh signing revocation file configured but not found: {path:?}");
+                    }
+                    exists
+                });
             gix_object::signature::verify::Options::Ssh {
                 program,
                 program_arguments: Vec::new(),
                 environment: Vec::new(),
                 allowed_signers: resolve_relative_to_repository(commit.repo, allowed_signers),
-                revocation_file: revocation_file.map(|path| resolve_relative_to_repository(commit.repo, path)),
+                revocation_file,
                 verify_time: commit.time()?,
                 minimum_trust,
             }
