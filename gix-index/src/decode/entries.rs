@@ -131,8 +131,9 @@ pub fn chunk<'a>(
 
 /// Note that `prev_path` is only useful if the version is V4.
 ///
-/// Return `None` if the entry is malformed, and an error if the part of its path that a V4 entry takes from the previous
-/// one would make `path_backing` exceed `alloc_limit_bytes`.
+/// Return `None` if the entry is malformed, and an error if the path of a V4 entry, of which the entry can repeat much of
+/// the path before it, would make `path_backing` exceed `alloc_limit_bytes`. The other versions can't exceed the limit
+/// here, as their paths are part of what the caller checks before reading any entry.
 fn load_one<'a>(
     data: &'a [u8],
     path_backing: &mut Vec<u8>,
@@ -172,13 +173,16 @@ fn load_one<'a>(
             let end = prev_path.end.checked_sub(strip_len.try_into().ok()?)?;
             let copy_len = end.checked_sub(prev_path.start)?;
             if copy_len > 0 {
-                if let Err(err) = ensure_in_alloc_limit(start + copy_len + path.len(), alloc_limit_bytes) {
+                if let Err(err) = ensure_in_alloc_limit(start + copy_len, alloc_limit_bytes) {
                     return Some(Err(err));
                 }
                 buf.resize(copy_len, 0);
                 buf.copy_from_slice(&path_backing[prev_path.start..end]);
                 path_backing.extend_from_slice(buf);
             }
+        }
+        if let Err(err) = ensure_in_alloc_limit(path_backing.len() + path.len(), alloc_limit_bytes) {
+            return Some(Err(err));
         }
         path_backing.extend_from_slice(path);
 

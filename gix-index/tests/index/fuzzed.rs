@@ -207,6 +207,14 @@ fn v4_index(blocks: &[Vec<Vec<u8>>]) -> Result<Vec<u8>> {
     Ok(index)
 }
 
+/// Return an entry of a V4 index that removes the last `strip` bytes of the path of the entry before it, which has to be
+/// less than 128 to be a single byte in the file, and appends `path`.
+fn v4_entry_stripping(strip: u8, path: &[u8]) -> Vec<u8> {
+    let mut entry = v4_entry(path);
+    entry[40 + 20 + 2] = strip;
+    entry
+}
+
 /// A path repeated by an entry costs that entry two bytes in the file, and its whole length in memory, whether one thread
 /// decodes all entries or several decode a block each and the paths they collected are put together.
 #[test]
@@ -236,6 +244,39 @@ fn alloc_limit_applies_to_the_paths_of_v4_entries() -> Result {
                 classification.class() == Class::ResourceExhaustion(gix_error::ResourceExhaustionKind::AllocationLimit)
             }),
             "exceeding the limit isn't malformed input, with {thread_limit} threads: {err:#}"
+        );
+    }
+    Ok(())
+}
+
+/// The paths in the file count as well, of an entry that follows no other and of one that repeats nothing of the path
+/// before it, as the size of the file isn't what the limit allows.
+#[test]
+fn alloc_limit_applies_to_v4_paths_that_repeat_nothing() -> Result {
+    let blocks = [
+        vec![v4_entry(&[b'a'; 1000])],
+        vec![v4_entry(&[b'a'; 100]), v4_entry_stripping(100, &[b'b'; 1000])],
+    ];
+    for block in blocks {
+        let index = v4_index(&[block])?;
+        let decode = |alloc_limit_bytes| {
+            gix_index::State::from_bytes(
+                &index,
+                FileTime::from_unix_time(0, 0),
+                gix_hash::Kind::Sha1,
+                gix_index::decode::Options {
+                    alloc_limit_bytes,
+                    ..Default::default()
+                },
+            )
+        };
+        decode(None)?;
+        let err = decode(Some(900)).expect_err("the path needs 1000 bytes");
+        assert!(
+            err.classify().any(|classification| {
+                classification.class() == Class::ResourceExhaustion(gix_error::ResourceExhaustionKind::AllocationLimit)
+            }),
+            "exceeding the limit isn't malformed input: {err:#}"
         );
     }
     Ok(())
