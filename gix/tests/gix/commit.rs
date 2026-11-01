@@ -393,6 +393,36 @@ mod signature {
     }
 
     #[test]
+    fn only_trusted_configuration_selects_the_signature_format() -> TestResult {
+        use gix::{commit::sign::Format, sec::Trust};
+
+        let fixture = gix_testtools::scripted_fixture_writable("make_basic_repo.sh")?;
+        let config = fixture.path().join(".git").join("config");
+        let mut content = std::fs::read(&config)?;
+        content.extend_from_slice(b"[gpg]\n\tformat = x509\n");
+        std::fs::write(&config, content)?;
+
+        let format = |trust| -> gix_testtools::Result<Format> {
+            let identity = ["user.name=Gitoxide Signing Fixture", "user.email=signing@example.com"];
+            let options = gix::open::Options::isolated().with(trust).config_overrides(identity);
+            Ok(gix::open_opts(fixture.path(), options)?
+                .commit_signing_options()?
+                .format)
+        };
+        assert_eq!(
+            format(Trust::Full)?,
+            Format::X509,
+            "the repository of the user selects it"
+        );
+        assert_eq!(
+            format(Trust::Reduced)?,
+            Format::OpenPgp,
+            "the repository of another owner can't, which leaves the default"
+        );
+        Ok(())
+    }
+
+    #[test]
     #[cfg(unix)]
     fn only_trusted_configuration_lowers_the_minimum_trust_level() -> TestResult {
         use std::os::unix::fs::PermissionsExt;

@@ -22,7 +22,9 @@ pub(crate) fn sign<'repo>(commit: &crate::Commit<'repo>) -> Result<crate::Commit
 
 pub(crate) fn signing_options(repo: &crate::Repository) -> Result<Options> {
     let config = repo.config_snapshot();
-    let value = config.string(Gpg::FORMAT);
+    let value = config
+        .plumbing()
+        .string_filter(Gpg::FORMAT, &mut repo.filter_config_section());
     let format = Gpg::FORMAT.try_into_signature_format(value.as_ref().map(|value| value.as_bstr()))?;
     let program = super::signature_program(&config, format)
         .or_raise(|| message("Could not interpolate the configured signing program path"))?;
