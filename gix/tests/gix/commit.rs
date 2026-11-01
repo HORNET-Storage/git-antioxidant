@@ -339,6 +339,64 @@ mod signature {
         Ok(())
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn only_trusted_configuration_lowers_the_minimum_trust_level() -> TestResult {
+        use std::os::unix::fs::PermissionsExt;
+
+        use gix::sec::{Permission, Trust};
+
+        // The configuration of the user comes from the environment of the process.
+        if gix_testtools::run_in_isolated_process()? {
+            return Ok(());
+        }
+        let home = gix_testtools::tempfile::TempDir::new()?;
+        let global = home.path().join("global.config");
+        std::fs::write(&global, "[gpg]\n\tminTrustLevel = fully\n")?;
+        let _environment = gix_testtools::Env::new().set("GIT_CONFIG_GLOBAL", global.display().to_string());
+        // A verifier that reports a good signature of a key that nobody vouched for.
+        let program = home.path().join("gpg");
+        std::fs::write(
+            &program,
+            "#!/bin/sh\ncat >/dev/null\nprintf '[GNUPG:] NEWSIG\\n[GNUPG:] GOODSIG 0123456789ABCDEF Signer <s@example.com>\\n[GNUPG:] TRUST_UNDEFINED 0 pgp\\n'\n",
+        )?;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))?;
+
+        let fixture = gix_testtools::scripted_fixture_writable("make_basic_repo.sh")?;
+        let config = fixture.path().join(".git").join("config");
+        let mut content = std::fs::read(&config)?;
+        content.extend_from_slice(b"[gpg]\n\tminTrustLevel = undefined\n");
+        std::fs::write(&config, content)?;
+
+        let is_valid = |trust| -> gix_testtools::Result<bool> {
+            let mut permissions = gix::open::Permissions::isolated();
+            permissions.config.user = true;
+            permissions.env.git_prefix = Permission::Allow;
+            let options = gix::open::Options::isolated()
+                .with(trust)
+                .permissions(permissions)
+                .config_overrides([gpg::OpenPgp::PROGRAM.validated_assignment_fmt(&program.display())?]);
+            let repo = gix::open_opts(fixture.path(), options)?.with_object_memory();
+            let mut commit = repo.head_commit()?.decode()?.into_owned()?;
+            let signature_field = gix_object::commit::signature_field_name(commit.tree.kind());
+            commit
+                .extra_headers
+                .push((signature_field.into(), "-----BEGIN PGP SIGNATURE-----\n".into()));
+            let id = repo.write_object(&commit)?;
+            let outcome = repo.find_commit(id)?.verify_signature()?;
+            Ok(outcome.expect("the commit has a signature").is_valid())
+        };
+        assert!(
+            is_valid(Trust::Full)?,
+            "the repository of the user may lower it, as in Git"
+        );
+        assert!(
+            !is_valid(Trust::Reduced)?,
+            "the repository of another owner can't lower what the user asked for"
+        );
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn resolves_the_default_ssh_key_command() -> TestResult {
