@@ -178,6 +178,8 @@ unit-tests:
     # `gix` without a hash feature of its own, which another crate enables for `gix-hash`.
     cargo nextest run -p gix -p gix-hash --no-default-features --features gix-hash/sha1 --lib --no-fail-fast default_object_hash
     cargo nextest run -p gitoxide-core --no-fail-fast
+    # `gix-tix` with the features of its own dependencies, which the run of the workspace unifies with those of others.
+    cargo nextest run -p gix-tix --no-fail-fast
 
 # Run all doctests
 [group('Tests')]
