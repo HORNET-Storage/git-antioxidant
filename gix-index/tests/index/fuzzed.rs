@@ -249,6 +249,69 @@ fn alloc_limit_applies_to_the_paths_of_v4_entries() -> Result {
     Ok(())
 }
 
+/// A table of entry offsets that doesn't describe the entries, as only a damaged or crafted file has, is ignored, as Git
+/// ignores one that it can't read: one thread reads the entries, and none reads outside of the file.
+#[test]
+fn entry_offset_tables_that_dont_describe_the_entries_are_ignored() -> Result {
+    // The first entry of the second block repeats nothing of the path before it, as Git writes it.
+    let index = v4_index(&[
+        vec![v4_entry(b"a"), v4_entry(b"b")],
+        vec![v4_entry_stripping(2, b"c"), v4_entry(b"d")],
+    ])?;
+    let decode = |index: &[u8], thread_limit| {
+        gix_index::State::from_bytes(
+            index,
+            FileTime::from_unix_time(0, 0),
+            gix_hash::Kind::Sha1,
+            gix_index::decode::Options {
+                thread_limit: Some(thread_limit),
+                min_extension_block_in_bytes_for_threading: 0,
+                ..Default::default()
+            },
+        )
+    };
+    let paths = |state: &gix_index::State| -> Vec<String> {
+        state
+            .entries()
+            .iter()
+            .map(|entry| entry.path(state).to_string())
+            .collect()
+    };
+    for thread_limit in [1, 3] {
+        assert_eq!(paths(&decode(&index, thread_limit)?.0), ["a", "ab", "c", "cd"]);
+    }
+
+    // The offset and the number of entries of the first block, after the signature, the size and the version.
+    let table = index.windows(4).position(|window| window == b"IEOT").expect("written") + 12;
+    let changed = |changes: &[(usize, u32)]| {
+        let mut index = index.clone();
+        for (at, value) in changes {
+            index[table + at..table + at + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        index
+    };
+    for (case, index) in [
+        ("a block past the end of the file", changed(&[(8, u32::MAX)])),
+        (
+            "numbers of entries whose sum overflows",
+            changed(&[(4, u32::MAX), (12, u32::MAX)]),
+        ),
+        ("fewer entries than the header has", changed(&[(12, 1)])),
+        ("a block in the header", changed(&[(0, 4)])),
+        ("blocks out of order", changed(&[(8, 12)])),
+    ] {
+        for thread_limit in [1, 3] {
+            let (state, _checksum) = decode(&index, thread_limit)?;
+            assert_eq!(
+                paths(&state),
+                ["a", "ab", "c", "cd"],
+                "{case}, with {thread_limit} threads"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// The paths in the file count as well, of an entry that follows no other and of one that repeats nothing of the path
 /// before it, as the size of the file isn't what the limit allows.
 #[test]

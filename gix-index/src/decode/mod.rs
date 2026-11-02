@@ -79,22 +79,21 @@ impl State {
         let (entries, ext, data) = match start_of_extensions {
             Some(offset) if num_threads > 1 => {
                 let extensions_data = &data[offset..];
-                let index_offsets_table = extension::index_entry_offset_table::find(extensions_data, object_hash);
+                let index_offsets_table = extension::index_entry_offset_table::find(extensions_data, object_hash)
+                    .filter(|offsets| describes_entries(offsets, num_entries, offset));
                 let (entries_res, ext_res) = gix_parallel::threads(|scope| {
                     let extension_loading =
-                        (extensions_data.len() > min_extension_block_in_bytes_for_threading).then({
+                        (extensions_data.len() > min_extension_block_in_bytes_for_threading).then(|| {
                             num_threads -= 1;
-                            || {
-                                gix_parallel::build_thread()
-                                    .name("gix-index.from_bytes.load-extensions".into())
-                                    .spawn_scoped(
-                                        scope,
-                                        gix_trace::in_thread(|| {
-                                            extension::decode::all(extensions_data, object_hash, alloc_limit_bytes)
-                                        }),
-                                    )
-                                    .expect("valid name")
-                            }
+                            gix_parallel::build_thread()
+                                .name("gix-index.from_bytes.load-extensions".into())
+                                .spawn_scoped(
+                                    scope,
+                                    gix_trace::in_thread(|| {
+                                        extension::decode::all(extensions_data, object_hash, alloc_limit_bytes)
+                                    }),
+                                )
+                                .expect("valid name")
                         });
                     let entries_res = match index_offsets_table {
                         Some(entry_offsets) => {
@@ -275,6 +274,29 @@ impl State {
             checksum,
         ))
     }
+}
+
+/// Return `true` if `offsets`, the blocks of the IEOT extension, describe the entries as Git writes them: the first block
+/// starts after the header, each further one after the block before it and before `start_of_extensions`, and together
+/// they hold `num_entries`. Threads then read each block on its own. Git uses the table without checking it; a table that
+/// doesn't describe the entries, which only a damaged or crafted file has, is ignored, as Git ignores one that it can't
+/// read, so that one thread reads the entries.
+fn describes_entries(
+    offsets: &[extension::index_entry_offset_table::Offset],
+    num_entries: u32,
+    start_of_extensions: usize,
+) -> bool {
+    let starts_after_the_header = offsets
+        .first()
+        .is_some_and(|first| first.from_beginning_of_file as usize == header::SIZE);
+    let ascends = offsets
+        .windows(2)
+        .all(|pair| pair[0].from_beginning_of_file < pair[1].from_beginning_of_file);
+    let ends_before_the_extensions = offsets
+        .last()
+        .is_some_and(|last| (last.from_beginning_of_file as usize) < start_of_extensions);
+    let entries: u64 = offsets.iter().map(|offset| u64::from(offset.num_entries)).sum();
+    starts_after_the_header && ascends && ends_before_the_extensions && entries == u64::from(num_entries)
 }
 
 struct EntriesOutcome {
