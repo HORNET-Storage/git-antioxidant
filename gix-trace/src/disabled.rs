@@ -1,7 +1,12 @@
-/// A workaround for a clippy warning
+/// The span of builds without `tracing`, which records nothing. Like the span of builds with `tracing`, it ends when
+/// it is dropped, so that ending a span early with `drop()` means the same in both builds.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct Span;
+
+impl Drop for Span {
+    fn drop(&mut self) {}
+}
 
 impl Span {
     /// A no-op

@@ -2,7 +2,9 @@ use std::borrow::Cow;
 
 use crate::error::{ResultExt, bail, message};
 #[cfg(feature = "async-network-client")]
-use gix_transport::client::async_io::{Transport, connect};
+use gix_transport::client::async_io::Transport;
+#[cfg(feature = "async-network-client-async-std")]
+use gix_transport::client::async_io::connect;
 #[cfg(feature = "blocking-network-client")]
 use gix_transport::client::blocking_io::{Transport, connect};
 

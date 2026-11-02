@@ -159,7 +159,7 @@ where
 {
     /// Return the `ref_map` (that includes the server handshake) which was part of listing refs prior to fetching a pack.
     pub fn ref_map(&self) -> &RefMap {
-        &self.inner.ref_map
+        self.inner.ref_map()
     }
 }
 
@@ -219,14 +219,13 @@ where
     /// This improves performance and allows case-sensitive filesystems to deal with ref names that would otherwise
     /// collide.
     pub fn with_write_packed_refs_only(mut self, enabled: bool) -> Self {
-        let changed = self.inner.with_write_packed_refs_only(enabled);
-        self.inner = changed;
+        self.inner = self.inner.with_write_packed_refs_only(enabled);
         self
     }
 
     /// Set the reflog message to use when updating refs after fetching a pack.
     pub fn with_reflog_message(mut self, reflog_message: RefLogMessage) -> Self {
-        self.inner.reflog_message = reflog_message.into();
+        self.inner = self.inner.with_reflog_message(reflog_message);
         self
     }
 
@@ -234,7 +233,7 @@ where
     ///
     /// *Has no effect if the current repository is not as shallow clone.*
     pub fn with_shallow(mut self, shallow: remote::fetch::Shallow) -> Self {
-        self.inner.shallow = shallow;
+        self.inner = self.inner.with_shallow(shallow);
         self
     }
 }

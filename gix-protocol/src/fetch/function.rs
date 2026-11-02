@@ -146,7 +146,7 @@ where
                     break 'negotiation reader;
                 }
             };
-            // This needs drop if tracing is compiled in. We just don't know it.
+            // The negotiation ends here, while the pack is still to be received.
             drop(negotiate_span);
 
             let mut previous_response = previous_response.expect("knowledge of a pack means a response was received");
