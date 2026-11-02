@@ -21,7 +21,7 @@ test = true
 [[example]]
 name = "clone"
 path = "examples/clone.rs"
-required-features = ["blocking-network-client"]
+required-features = ["blocking-network-client", "worktree-mutation", "interrupt"]
 
 [[example]]
 name = "gix-notes-bench"

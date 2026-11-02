@@ -169,6 +169,8 @@ unit-tests:
     env GIX_TEST_FIXTURE_HASH=sha256 cargo nextest run -p gix-worktree-stream --features sha256 --no-fail-fast
     cargo nextest run -p gix --no-default-features --features basic,comfort,max-performance,sha1,sha256 --no-fail-fast
     cargo nextest run -p gix --no-default-features --features basic,extras,comfort,sha1,sha256 --no-fail-fast
+    # Commits, merges, rebases and pushes without the `hooks` feature, which `extras` enables along with them.
+    cargo nextest run -p gix --no-default-features --features basic,comfort,rebase,blocking-network-client,sha1,sha256 --no-fail-fast
     cargo nextest run -p gix --features async-network-client,sha256 --no-fail-fast
     env GIX_TEST_FIXTURE_HASH=sha256 cargo nextest run -p gix --features async-network-client,sha256 --no-fail-fast
     cargo nextest run -p gix --features blocking-network-client,sha256 --no-fail-fast
