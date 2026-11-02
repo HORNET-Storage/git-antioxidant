@@ -331,7 +331,8 @@ impl Repository {
     /// * The index and the worktree switch from `head_tree` to that tree, as [`gix_worktree_state::switch()`] does with
     ///   the two-way merge of Git's `unpack_trees()`, which `checkout()` in `merge-ort.c` runs. It refuses local
     ///   changes and untracked files in the way, as it refuses an index with conflicts, and if it does, nothing changes
-    ///   and [`Refused`](crate::merge::apply::Error::Refused) lists the paths.
+    ///   and [`Refused`](crate::merge::apply::Error::Refused) lists the paths. If a file can't be checked out, it fails
+    ///   before the index is written, while the files that were checked out stay, as in Git.
     /// * Then each conflict that Git leaves unresolved, as [`TreatAsUnresolved::git()`](crate::merge::tree::TreatAsUnresolved::git())
     ///   decides, replaces the entry of its path in the index with its stages, as `record_conflicted_index_entries()`
     ///   does, and the cache tree is invalidated along these paths.
@@ -394,7 +395,7 @@ impl Repository {
             },
             options,
         )? {
-            gix_worktree_state::switch::Outcome::Switched(changes) => changes,
+            gix_worktree_state::switch::Outcome::Switched(changes) => changes.into_result()?,
             gix_worktree_state::switch::Outcome::Refused(refusals) => bail!(Refused::Refused { refusals }),
         };
 

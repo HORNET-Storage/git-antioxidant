@@ -81,6 +81,14 @@ echo "untracked c" >hard/c
 twin hard
 git -C hard-git reset -q --hard HEAD~2
 
+# The blob of `c`, which `HEAD~2` brings back, is missing, so Git can't check it out and fails before it writes the
+# index and moves `HEAD`, keeping the other files that it checked out.
+history hard-missing-blob
+c=$(git -C hard-missing-blob rev-parse HEAD~2:c)
+rm "hard-missing-blob/.git/objects/${c:0:2}/${c:2}"
+twin hard-missing-blob
+fails git -C hard-missing-blob-git reset -q --hard HEAD~2 2>hard-missing-blob-git.err
+
 history merge
 echo unstaged >merge/a
 echo untracked >merge/untracked

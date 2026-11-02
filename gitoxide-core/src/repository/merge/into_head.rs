@@ -47,7 +47,7 @@ pub(crate) mod function {
 
     use gix::{
         Result,
-        bstr::{BStr, BString, ByteSlice},
+        bstr::{BString, ByteSlice},
         error::{ResultExt, bail, message},
         merge::into_head::{Changes, Error, Outcome},
         prelude::ObjectIdExt,
@@ -115,7 +115,7 @@ pub(crate) mod function {
         }
         if abort {
             let outcome = repo.merge_abort(&gix::interrupt::IS_INTERRUPTED)?;
-            return report_changes(outcome.changes, "HEAD".into(), &mut err);
+            return report_changes(outcome.changes, &mut err);
         }
         if quit {
             return repo.merge_quit();
@@ -173,7 +173,7 @@ pub(crate) mod function {
                 previous: None,
                 changes,
                 ..
-            } => report_changes(changes, name.as_bstr(), &mut err),
+            } => report_changes(changes, &mut err),
             Outcome::FastForward {
                 previous: Some(previous),
                 commit_id,
@@ -186,7 +186,7 @@ pub(crate) mod function {
                     commit_id.attach(&repo).shorten_or_id()
                 )
                 .or_error()?;
-                report_changes(changes, name.as_bstr(), &mut err)?;
+                report_changes(changes, &mut err)?;
                 writeln!(out, "{fast_forward_line}").or_error()?;
                 if squash {
                     writeln!(out, "Squash commit -- not updating HEAD").or_error()?;
@@ -200,7 +200,7 @@ pub(crate) mod function {
                 applied,
                 commit: Some(commit),
             } => {
-                report_changes(applied.changes, name.as_bstr(), &mut err)?;
+                report_changes(applied.changes, &mut err)?;
                 writeln!(out, "Merge made by the 'ort' strategy.").or_error()?;
                 match (stat, commit.previous) {
                     (Some(format), Some(previous)) => {
@@ -211,7 +211,7 @@ pub(crate) mod function {
             }
             Outcome::Merged { applied, commit: None } => {
                 let conflicts = applied.conflicts;
-                report_changes(applied.changes, name.as_bstr(), &mut err)?;
+                report_changes(applied.changes, &mut err)?;
                 if squash {
                     writeln!(out, "Squash commit -- not updating HEAD").or_error()?;
                 }
@@ -327,9 +327,9 @@ pub(crate) mod function {
         Ok(Some(joined))
     }
 
-    /// Warn on `err` about the files that the switch of the index and the worktree to the merge of `name` couldn't remove,
-    /// as `unlink_entry()` in Git's `unpack-trees.c` warns, and fail if the checkout stopped before it wrote all files.
-    fn report_changes(changes: Changes, name: &BStr, err: &mut dyn Write) -> Result<()> {
+    /// Warn on `err` about the files that the switch of the index and the worktree to the merge couldn't remove, as
+    /// `unlink_entry()` in Git's `unpack-trees.c` warns. Files that couldn't be checked out fail the merge before.
+    fn report_changes(changes: Changes, err: &mut dyn Write) -> Result<()> {
         for unremoved in &changes.unremoved {
             writeln!(
                 err,
@@ -338,9 +338,6 @@ pub(crate) mod function {
             )
             .or_error()?;
         }
-        match changes.checkout_error {
-            Some(error) => Err(error).or_raise(|| message!("Could not check out all files of '{name}'")),
-            None => Ok(()),
-        }
+        Ok(())
     }
 }

@@ -226,6 +226,18 @@ fn onto_another_commit() -> crate::Result {
 
 #[test]
 #[parallel]
+fn a_file_that_cant_be_checked_out_ends_the_rebase_before_writing_the_index() -> crate::Result {
+    let scenario = scenario("missing-onto")?;
+    let options = Options {
+        reapply_cherry_picks: Some(true),
+        ..onto("main")
+    };
+    rebase(&scenario, options).expect_err("Git can't check out the file whose blob is missing either");
+    assert_same_as_git(&scenario)
+}
+
+#[test]
+#[parallel]
 fn given_branch_is_checked_out() -> crate::Result {
     let scenario = scenario("branch-argument")?;
     let options = Options {

@@ -60,7 +60,8 @@ impl Sequencer<'_> {
 
     /// Switch the index and the worktree from the tree of the commit `from`, or from nothing, to the tree of the commit
     /// `to`, as the two-way merge of `unpack_trees()` does for `reset_head()` and `checkout_fast_forward()`, or return
-    /// Git's message if that would lose the changes and untracked files in the way, which leaves everything as it is.
+    /// Git's message if that would lose the changes and untracked files in the way, which leaves everything as it is. If
+    /// a file can't be checked out, fail without writing the index, as Git does.
     pub(super) fn switch_worktree(&self, from: Option<ObjectId>, to: ObjectId) -> Result<Option<String>> {
         let from = from.map(|commit| self.tree_of(commit)).transpose()?;
         let to = self.tree_of(to)?;
@@ -91,7 +92,9 @@ impl Sequencer<'_> {
             },
             options,
         )? {
-            gix_worktree_state::switch::Outcome::Switched(_) => {}
+            gix_worktree_state::switch::Outcome::Switched(changes) => {
+                changes.into_result()?;
+            }
             gix_worktree_state::switch::Outcome::Refused(refusals) => {
                 return Ok(Some(refused(&refusals, "checkout")));
             }
@@ -111,7 +114,7 @@ impl Sequencer<'_> {
 
     /// Reset the index and the worktree to the tree of `commit` in `mode`, as `unpack_trees()` does for the sequencer,
     /// without changing references, or return Git's message if that would lose changes, which leaves everything as it
-    /// is.
+    /// is. If a file can't be checked out, fail without writing the index, as Git does.
     pub(super) fn reset_worktree(
         &self,
         commit: ObjectId,
@@ -145,7 +148,9 @@ impl Sequencer<'_> {
             },
             options,
         )? {
-            gix_worktree_state::reset::Outcome::Reset(_) => {}
+            gix_worktree_state::reset::Outcome::Reset(changes) => {
+                changes.into_result()?;
+            }
             gix_worktree_state::reset::Outcome::Refused(refusals) => {
                 return Ok(Some(refused(&refusals, "reset")));
             }

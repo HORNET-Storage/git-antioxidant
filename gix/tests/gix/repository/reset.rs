@@ -116,6 +116,19 @@ fn hard() -> crate::Result {
 }
 
 #[test]
+fn hard_fails_before_writing_the_index_if_a_file_cant_be_checked_out() -> crate::Result {
+    let (scenario, outcome) = reset("hard-missing-blob", Mode::Hard, Some(2), None)?;
+    let err = outcome.expect_err("Git can't check out the file whose blob is missing either");
+    scenario.assert_same_as_git(STATE)?;
+    assert_eq!(
+        Some(err.to_string()),
+        scenario.git_messages()?.last().cloned(),
+        "the message of Git"
+    );
+    Ok(())
+}
+
+#[test]
 fn merge() -> crate::Result {
     resets_as_git("merge", Mode::Merge, Some(1))?;
     Ok(())

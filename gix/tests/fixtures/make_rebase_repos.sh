@@ -204,6 +204,21 @@ prepare onto
 twin onto
 git -C onto-git rebase --onto main topic~1
 
+# The blob of `e`, which `main` adds, is missing, so Git can't check out `main` to replay `topic` onto it: it fails
+# before it writes the index and moves `HEAD`, and removes the state of the rebase. The cherry-picks are reapplied, as
+# finding them reads the changes of `main`, which `gix` reads in full and Git only as far as their paths.
+history missing-onto
+git -C missing-onto checkout -q main
+echo e >missing-onto/e
+git -C missing-onto add e
+git -C missing-onto commit -q -m e
+git -C missing-onto checkout -q topic
+e=$(git -C missing-onto rev-parse main:e)
+rm "missing-onto/.git/objects/${e:0:2}/${e:2}"
+prepare missing-onto
+twin missing-onto
+fails git -C missing-onto-git rebase --reapply-cherry-picks main 2>missing-onto-git.err
+
 history branch-argument
 git -C branch-argument checkout -q main
 prepare branch-argument

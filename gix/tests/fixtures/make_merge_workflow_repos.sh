@@ -124,6 +124,13 @@ echo untracked >ff-refused/topic-file
 prepared ff-refused
 fails git -C ff-refused-git merge -q topic 2>ff-refused-git.err
 
+# The blob of `topic-file` is missing, so Git can't check it out and fails before it writes the index and moves `main`.
+ahead ff-missing
+file=$(git -C ff-missing rev-parse topic:topic-file)
+rm "ff-missing/.git/objects/${file:0:2}/${file:2}"
+prepared ff-missing
+fails git -C ff-missing-git merge -q topic 2>ff-missing-git.err
+
 ahead no-ff
 prepared no-ff
 git -C no-ff-git merge -q --no-ff topic

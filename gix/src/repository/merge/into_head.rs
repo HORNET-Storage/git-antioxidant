@@ -475,7 +475,8 @@ impl Repository {
 
     /// Switch the index and the worktree from the tree `from` to the tree `to` with the two-way merge of
     /// `unpack_trees()`, as `checkout_fast_forward()` in `merge.c` does, and write the index. Return what changed, or the
-    /// paths that refused the switch, which then changed nothing.
+    /// paths that refused the switch, which then changed nothing. If a file can't be checked out, fail without writing
+    /// the index, as Git does.
     fn switch_to_tree(
         &self,
         from: ObjectId,
@@ -509,6 +510,7 @@ impl Repository {
             options,
         )? {
             gix_worktree_state::switch::Outcome::Switched(changes) => {
+                let changes = changes.into_result()?;
                 self.write_locked_index(lock, &index)?;
                 Ok(Ok(changes))
             }

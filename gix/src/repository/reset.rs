@@ -30,7 +30,9 @@ impl Repository {
     /// * `commit` is peeled to a commit, as Git resolves the commit to reset to. On an unborn branch without `commit`,
     ///   the index and the worktree are reset to the empty tree, and `HEAD` stays unborn.
     /// * The index and the worktree change as [`gix_worktree_state::reset()`] and [`gix_worktree_state::reset::mixed()`]
-    ///   change them for `mode`, while the index is locked, and the index is written afterwards.
+    ///   change them for `mode`, while the index is locked, and the index is written afterwards. If a file can't be
+    ///   checked out, the reset fails with Git's message before the index is written, and nothing below happens, while
+    ///   the files that were checked out stay, as in Git.
     /// * Then `ORIG_HEAD` points to the previous commit of `HEAD`, or is deleted if `HEAD` was unborn, and `HEAD`, or its
     ///   branch, moves to the commit with the reflog message `reset: moving to <revision>`, which names
     ///   [`Options::revision`].
@@ -131,6 +133,9 @@ impl Repository {
                 };
                 match self.reset_worktree(&mut index, &tree, worktree_mode, should_interrupt)? {
                     gix_worktree_state::reset::Outcome::Reset(changes) => {
+                        let changes = changes
+                            .into_result()
+                            .or_raise(|| message!("Could not reset index file to revision '{revision}'."))?;
                         self.write_locked_index(lock, &index)?;
                         changes
                     }

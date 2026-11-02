@@ -98,9 +98,6 @@ pub(crate) mod function {
             )
             .or_error()?;
         }
-        if let Some(error) = outcome.changes.checkout_error {
-            return Err(error).or_raise(|| message!("Could not check out all files of revision '{revision}'"));
-        }
         match (mode, outcome.commit_id) {
             (Mode::Mixed, _) => print_unstaged_changes(&repo, &mut out),
             (Mode::Hard, Some(commit_id)) => print_new_head(&repo, commit_id, &mut out),

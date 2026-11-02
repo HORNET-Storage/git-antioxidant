@@ -50,6 +50,7 @@
 use std::{path::Path, sync::atomic::AtomicBool};
 
 use bstr::BString;
+use gix_error::{ErrorExt, message};
 
 /// What [`switch()`](crate::switch()) needs to compare the worktree with the index, and so does a reset of the index and
 /// the worktree.
@@ -113,8 +114,45 @@ pub struct Changes {
     /// What the checkout of the added and changed entries did, including the files that couldn't be written.
     pub checkout: crate::checkout::Outcome,
     /// The error that stopped the checkout before all files were written, if one did. The index holds the new entries
-    /// regardless, and those whose files weren't written show up as changed in the worktree.
+    /// regardless, and those whose files weren't written show up as changed in the worktree, which is why
+    /// [`into_result()`](Self::into_result()) fails then.
     pub checkout_error: Option<gix_error::Error>,
+}
+
+impl Changes {
+    /// Return these changes if the checkout wrote the files of all added and changed entries, or why it didn't, as
+    /// `check_updates()` makes `unpack_trees()` fail in Git: the error that stopped the checkout, the first file that it
+    /// couldn't write, or the first path that a delayed filter didn't process or returned without having delayed it.
+    ///
+    /// Git then writes neither the index, whose new entries name files that weren't written, nor references, and the
+    /// files that it wrote stay, so callers check this before they write the index. Collisions of paths that differ only
+    /// in case and files of removed entries that couldn't be removed are warnings in Git, and don't fail here either.
+    pub fn into_result(mut self) -> gix_error::Result<Self> {
+        if let Some(err) = self.checkout_error.take() {
+            return Err(err);
+        }
+        let checkout = &mut self.checkout;
+        if !checkout.errors.is_empty() {
+            let others = checkout.errors.len() - 1;
+            let first = checkout.errors.remove(0);
+            let context = match others {
+                0 => message!("Could not check out '{}'", first.path),
+                1 => message!("Could not check out '{}' and 1 other file", first.path),
+                _ => message!("Could not check out '{}' and {others} other files", first.path),
+            };
+            return Err(first.error.and_raise(context));
+        }
+        if let Some(path) = checkout.delayed_paths_unprocessed.first() {
+            return Err(message!("'{path}' was not filtered properly").raise());
+        }
+        if let Some(path) = checkout.delayed_paths_unknown.first() {
+            return Err(message!(
+                "A filter signaled that '{path}' is now available although it has not been delayed earlier"
+            )
+            .raise());
+        }
+        Ok(self)
+    }
 }
 
 /// A file or directory of a removed entry that couldn't be removed.

@@ -335,6 +335,17 @@ mod into_head {
     }
 
     #[test]
+    fn a_fast_forward_that_cant_check_out_a_file_fails_before_writing_the_index() -> crate::Result {
+        let scenario = scenario("ff-missing")?;
+        scenario
+            .repo
+            .merge_into_head("topic", Options::default(), &AtomicBool::new(false))
+            .expect_err("Git can't check out the file whose blob is missing either");
+        scenario.assert_same_as_git(&state())?;
+        Ok(())
+    }
+
+    #[test]
     fn no_ff_makes_a_merge_commit() -> crate::Result {
         let outcome = merges_as_git(
             "no-ff",
