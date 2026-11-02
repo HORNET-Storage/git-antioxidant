@@ -8,14 +8,16 @@ use gix_object::FindExt;
 use crate::extension::Tree;
 
 impl Tree {
-    /// Validate the correctness of this instance. If `use_objects` is true, then `objects` will be used to access all objects.
+    /// Validate the correctness of this instance. If `use_objects` is true, then `objects` will be used to access the trees
+    /// of all nodes that aren't invalidated, as Git's `verify_one()` does: an invalidated node keeps no tree to compare
+    /// with, but its children are verified.
     pub fn verify(&self, use_objects: bool, objects: impl gix_object::Find) -> Result {
         fn verify_recursive(
-            parent_id: gix_hash::ObjectId,
-            children: &[Tree],
+            tree: &Tree,
             mut object_buf: Option<&mut Vec<u8>>,
             objects: &impl gix_object::Find,
         ) -> Result<Option<u32>> {
+            let (parent_id, children) = (tree.id, &tree.children);
             if children.is_empty() {
                 return Ok(None);
             }
@@ -36,7 +38,9 @@ impl Tree {
                 }
                 prev = Some(child);
             }
-            if let Some(buf) = object_buf.as_mut() {
+            if tree.num_entries.is_some()
+                && let Some(buf) = object_buf.as_mut()
+            {
                 let tree_entries = objects
                     .find_tree_iter(&parent_id, buf)
                     .or_raise(|| corruption("Tree node could not be found"))?;
@@ -68,8 +72,7 @@ impl Tree {
             }
             for child in children {
                 // This is actually needed here as it's a mut ref, which isn't copy. We do a re-borrow here.
-                let actual_num_entries =
-                    verify_recursive(child.id, &child.children, object_buf.as_deref_mut(), objects)?;
+                let actual_num_entries = verify_recursive(child, object_buf.as_deref_mut(), objects)?;
                 if let Some((actual, num_entries)) = actual_num_entries.zip(child.num_entries)
                     && actual > num_entries
                 {
@@ -91,7 +94,7 @@ impl Tree {
         }
 
         let mut buf = Vec::new();
-        let declared_entries = verify_recursive(self.id, &self.children, use_objects.then_some(&mut buf), &objects)?;
+        let declared_entries = verify_recursive(self, use_objects.then_some(&mut buf), &objects)?;
         if let Some((actual, num_entries)) = declared_entries.zip(self.num_entries)
             && actual > num_entries
         {

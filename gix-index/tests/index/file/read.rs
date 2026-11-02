@@ -581,6 +581,42 @@ fn v3_added_files() {
     assert_eq!(file.entries()[0].flags, Flags::EXTENDED | Flags::INTENT_TO_ADD);
 }
 
+/// After `git add a/f`, Git has invalidated the cache tree nodes of `a` and of the root, which keep no tree id, and
+/// `git fsck` accepts the index. As Git's `verify_one()` and `fsck_cache_tree()` do, verifying with objects looks up
+/// the trees of the valid nodes only, and still descends into the invalidated ones.
+#[test]
+fn cache_trees_with_invalidated_nodes_verify_with_objects() -> crate::Result {
+    let path = crate::fixture_index_path("v2_invalidated_cache_tree");
+    let index = file("v2_invalidated_cache_tree");
+    let objects = crate::odb_at(path.parent().expect("in the git directory").join("objects"))?;
+    let tree = index.tree().expect("Git keeps the cache tree");
+    let child = |tree: &gix_index::extension::Tree, name: &str| {
+        tree.children
+            .iter()
+            .find(|child| child.name.as_slice() == name.as_bytes())
+            .cloned()
+            .expect("each directory has a node")
+    };
+    assert_eq!(tree.num_entries, None, "the root was invalidated");
+    assert_eq!(child(tree, "a").num_entries, None, "`a` was invalidated");
+    let b = child(tree, "b");
+    assert_eq!(b.num_entries, Some(1), "`b` is still valid");
+    assert_eq!(child(&b, "x").num_entries, Some(1), "`b/x` is still valid");
+    index.verify_extensions(true, &objects)?;
+
+    let mut missing_tree = tree.clone();
+    for node in &mut missing_tree.children {
+        if node.name.as_slice() == b"b" {
+            node.id = gix_testtools::object_hash().null();
+        }
+    }
+    let err = missing_tree
+        .verify(true, &objects)
+        .expect_err("the tree of a valid node below an invalidated one is looked up");
+    assert!(format!("{err:?}").contains("Tree node could not be found"), "{err:?}");
+    Ok(())
+}
+
 #[test]
 fn file_with_conflicts() {
     let file = loose_file("conflicting-file");

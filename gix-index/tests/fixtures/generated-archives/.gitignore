@@ -6,3 +6,7 @@
 # through a committed tar — the fixture must be regenerated per host.
 file_metadata.tar
 file_metadata_sha256.tar
+
+# The fixture checks its index with the host's `git fsck`, so it is regenerated on each host.
+v2_invalidated_cache_tree.tar
+v2_invalidated_cache_tree_sha256.tar
