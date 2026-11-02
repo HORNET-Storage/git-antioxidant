@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use gix_error::Result;
-use gix_hash::ObjectId;
+use gix_hash::{ObjectId, oid};
 
 use crate::{commits::Commits, merge_bases, patch_id};
 
@@ -48,8 +48,10 @@ pub struct Walk {
 ///
 /// The commits that the merge bases of `upstream` and `head` or `restrict` have are left out. Of the others, those of
 /// `head` are returned, and those of `upstream` find the commits of `head` that have their patch, as
-/// `cherry_pick_list()` compares them by [patch ID](patch_id). The order is that of `sort_in_topological_order()` in
-/// graph order, with children before their parents and the parents of a commit after it in reverse, reversed.
+/// `cherry_pick_list()` compares them by [patch ID](patch_id): only commits whose [headers](patch_id::Part::Headers) have
+/// equal patch IDs are compared by the patch IDs of their changes, so the blobs of the other commits aren't read. The
+/// order is that of `sort_in_topological_order()` in graph order, with children before their parents and the parents of
+/// a commit after it in reverse, reversed.
 pub fn walk(
     commits: &mut Commits<'_>,
     upstream: ObjectId,
@@ -63,12 +65,10 @@ pub fn walk(
     let uninteresting = reachable(commits, &bottoms, &HashSet::new())?;
     let right = reachable(commits, &[head], &uninteresting)?;
 
-    let mut patch_ids = HashSet::new();
+    let mut upstream_patches = Patches::default();
     if !options.reapply_cherry_picks && !right.is_empty() {
         for id in reachable(commits, &[upstream], &uninteresting)? {
-            if let Some(patch_id) = patch_id::of_commit(commits, &id)? {
-                patch_ids.insert(patch_id);
-            }
+            upstream_patches.add(commits, id)?;
         }
     }
 
@@ -112,9 +112,7 @@ pub fn walk(
             Some(parent) => commits.get(parent)?.tree,
             None => commits.object_hash().empty_tree(),
         };
-        let patch_same = !patch_ids.is_empty()
-            && !is_merge
-            && patch_id::of_commit(commits, &id)?.is_some_and(|patch_id| patch_ids.contains(&patch_id));
+        let patch_same = !is_merge && upstream_patches.have(commits, &id)?;
         out.push(Commit {
             id,
             patch_same,
@@ -126,6 +124,58 @@ pub fn walk(
         commits: out,
         merge_base: bases.first().copied(),
     })
+}
+
+/// Commits by the patch IDs of the headers of their changes, as `cherry_pick_list()` keeps the commits of one side of its
+/// walk in a hash map, with the patch IDs of their changes once they were needed.
+#[derive(Default)]
+struct Patches {
+    by_headers: HashMap<ObjectId, Vec<Patch>>,
+}
+
+/// A commit of [`Patches`].
+struct Patch {
+    /// The id of the commit.
+    commit: ObjectId,
+    /// The patch ID of its changes, once it was needed.
+    id: Option<ObjectId>,
+}
+
+impl Patches {
+    /// Add `commit`, unless it is a merge, which has no patch ID.
+    fn add(&mut self, commits: &mut Commits<'_>, commit: ObjectId) -> Result<()> {
+        if let Some(headers) = patch_id::of_commit(commits, &commit, patch_id::Part::Headers)? {
+            self.by_headers
+                .entry(headers)
+                .or_default()
+                .push(Patch { commit, id: None });
+        }
+        Ok(())
+    }
+
+    /// Return `true` if one of the commits has the patch of `commit`. As `cherry_pick_list()` does, only the commits whose
+    /// headers have the patch ID of those of `commit` are compared with it by the patch IDs of their changes, which reads
+    /// their blobs, and Git reads those of all of them.
+    fn have(&mut self, commits: &mut Commits<'_>, commit: &oid) -> Result<bool> {
+        if self.by_headers.is_empty() {
+            return Ok(false);
+        }
+        let Some(headers) = patch_id::of_commit(commits, commit, patch_id::Part::Headers)? else {
+            return Ok(false);
+        };
+        let Some(candidates) = self.by_headers.get_mut(&headers) else {
+            return Ok(false);
+        };
+        let id = patch_id::of_commit(commits, commit, patch_id::Part::Full)?;
+        let mut found = false;
+        for candidate in candidates {
+            if candidate.id.is_none() {
+                candidate.id = patch_id::of_commit(commits, &candidate.commit, patch_id::Part::Full)?;
+            }
+            found |= candidate.id == id;
+        }
+        Ok(found)
+    }
 }
 
 /// Return the commits that `tips` have, without those of `stop` and their parents.

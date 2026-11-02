@@ -132,7 +132,17 @@ git switch -q upstream
 git reset -q --hard HEAD~1
 commit m2
 
+# `missing-blob` adds a file whose blob the repository doesn't have. A rebase of `topic` onto it never reads that blob, as
+# no commit of `topic` changes the file, and the patch IDs of the changes of two commits are only compared if those of
+# their headers are equal.
+git switch -q -c missing-blob main~2
+echo gone > gone
+git add gone
+git commit -q -m 'add gone'
+
 git switch -q topic
+blob=$(git rev-parse missing-blob:gone)
+rm ".git/objects/${blob:0:2}/${blob:2}"
 record linear upstream=main head=topic
 todo linear -- main
 record reapply upstream=main head=topic
@@ -151,6 +161,8 @@ record keep-base upstream=main head=topic
 todo keep-base -- --keep-base main
 record onto upstream=main onto=side head=topic
 todo onto -- --onto side main
+record missing-blob upstream=missing-blob head=topic
+todo missing-blob -- missing-blob
 
 git switch -q side
 record root head=side

@@ -275,6 +275,14 @@ fn onto() -> TestResult {
     assert_todo_as_git_wrote_it("onto", Options::default())
 }
 
+/// The upstream commit adds a file whose blob the repository doesn't have, which no commit of the rebase changes. As Git
+/// compares the patch IDs of the changes of two commits only if those of their headers are equal, the rebase doesn't read
+/// that blob.
+#[test]
+fn upstream_blobs_are_read_only_for_commits_with_equal_headers() -> TestResult {
+    assert_todo_as_git_wrote_it("missing-blob", Options::default())
+}
+
 #[test]
 fn root_onto_an_empty_commit() -> TestResult {
     assert_todo_as_git_wrote_it(

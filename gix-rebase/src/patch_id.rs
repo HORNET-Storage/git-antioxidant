@@ -11,6 +11,10 @@
 //! isn't binary. After a binary file, `git patch-id` also adds the hash of nothing at the end of the diff and skips the
 //! header of the next file. The patch IDs of a rebase and of `git format-patch --base` are those of
 //! `diff_get_patch_id()`.
+//!
+//! The patch ID of the [headers](Part::Headers) of a diff covers the paths and modes of its files alone, so it is computed
+//! without reading blobs. As `cherry_pick_list()` does, the [walk](crate::walk) compares the patch IDs of the changes of
+//! two commits only if those of their headers are equal, and so reads the blobs of these commits alone.
 
 use gix_error::{Result, ResultExt, bail, message};
 use gix_hash::{ObjectId, oid};
@@ -25,9 +29,19 @@ const FIRST_FEW_BYTES: usize = 8000;
 /// The lines of context around each change.
 const CONTEXT: u32 = 3;
 
-/// Return the patch ID of `commit` against its first parent, or against the empty tree for a root commit, as
-/// `commit_patch_id()` computes it, or `None` for a merge commit, which has none.
-pub fn of_commit(commits: &mut Commits<'_>, commit: &oid) -> Result<Option<ObjectId>> {
+/// The part of the diff of each changed file that a patch ID covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    /// The header of each file alone, with its path and its modes, as `diff_get_patch_id()` hashes it with
+    /// `diff_header_only`. It is computed without reading blobs.
+    Headers,
+    /// The header of each file and the lines of its diff, or the ids of its blobs if one of them is binary.
+    Full,
+}
+
+/// Return the patch ID of the `part` of the changes of `commit` against its first parent, or against the empty tree for a
+/// root commit, as `commit_patch_id()` computes it, or `None` for a merge commit, which has none.
+pub fn of_commit(commits: &mut Commits<'_>, commit: &oid, part: Part) -> Result<Option<ObjectId>> {
     let (tree, parents) = {
         let commit = commits.get(commit)?;
         (commit.tree, commit.parents.clone())
@@ -43,12 +57,13 @@ pub fn of_commit(commits: &mut Commits<'_>, commit: &oid) -> Result<Option<Objec
         parent_tree.as_deref(),
         &tree,
         commits.max_tree_depth(),
+        part,
     )
     .map(Some)
 }
 
-/// Return the patch ID of the changes from `old_tree`, or from the empty tree if it is `None`, to `new_tree` in
-/// `objects`, as `diff_get_patch_id()` computes it for a recursive diff without renames. It is the null id if nothing
+/// Return the patch ID of the `part` of the changes from `old_tree`, or from the empty tree if it is `None`, to `new_tree`
+/// in `objects`, as `diff_get_patch_id()` computes it for a recursive diff without renames. It is the null id if nothing
 /// changed. Trees below `max_tree_depth`, with the root trees at depth 0, are an error.
 pub fn of_trees(
     objects: &dyn gix_object::Find,
@@ -56,6 +71,7 @@ pub fn of_trees(
     old_tree: Option<&oid>,
     new_tree: &oid,
     max_tree_depth: usize,
+    part: Part,
 ) -> Result<ObjectId> {
     let (mut old_buf, mut new_buf) = (Vec::new(), Vec::new());
     let old = match old_tree {
@@ -98,7 +114,7 @@ pub fn of_trees(
         if canonical(old) == canonical(new) {
             continue;
         }
-        let file = file_id(objects, object_hash, &path, old, new)?;
+        let file = file_id(objects, object_hash, &path, old, new, part)?;
         let mut carry = 0u16;
         for (total, byte) in sum.iter_mut().zip(file.as_bytes()) {
             carry += u16::from(*total) + u16::from(*byte);
@@ -131,14 +147,15 @@ fn tree_data<'a>(
 /// A side of a changed file, with its mode and the id of its blob or commit.
 type Side = Option<(EntryMode, ObjectId)>;
 
-/// Return the hash of the file at `path` that changed from `old` to `new`, where `None` stands for a file that didn't
-/// exist, as each round of the loop of `diff_get_patch_id()` computes it.
+/// Return the hash of the `part` of the diff of the file at `path` that changed from `old` to `new`, where `None` stands
+/// for a file that didn't exist, as each round of the loop of `diff_get_patch_id()` computes it.
 fn file_id(
     objects: &dyn gix_object::Find,
     object_hash: gix_hash::Kind,
     path: &[u8],
     old: Side,
     new: Side,
+    part: Part,
 ) -> Result<ObjectId> {
     let path: Vec<u8> = path.iter().copied().filter(|byte| !is_space(*byte)).collect();
     let mut hasher = gix_hash::hasher(object_hash);
@@ -163,6 +180,9 @@ fn file_id(
             hasher.update(octal_mode(new_mode).as_bytes());
         }
         _ => {}
+    }
+    if part == Part::Headers {
+        return hasher.try_finalize();
     }
     let mut buf = Vec::new();
     let old_data = content(objects, old, &mut buf)?;
