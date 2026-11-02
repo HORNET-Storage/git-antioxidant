@@ -521,9 +521,14 @@ impl ThreadSafeRepository {
             // Repository configuration within a trusted repository is trusted. Configuration files elsewhere, or within
             // an untrusted repository, are only trusted if `safe.directory` allows them.
             let is_trusted = *git_dir_trust == gix_sec::Trust::Full;
-            // A path can start with a directory and still lead out of it with `..`, so normalized paths are compared.
-            let normalized =
-                |path: &Path| gix_path::normalize(current_dir.join(path).into(), current_dir).map(Cow::into_owned);
+            // A path can start with a directory and still lead out of it with `..` or through a link, so the paths that
+            // `strbuf_realpath()` resolves are compared, and a path that doesn't resolve isn't in the repository.
+            let real_path = |path: &Path| {
+                gix_path::into_bstr(path)
+                    .ok()
+                    .and_then(|path| safe_directory::git_realpath(path.as_ref(), current_dir))
+                    .and_then(|path| gix_path::from_bstring(path).ok())
+            };
             let repository_dirs: Vec<_> = [
                 Some(safe_directory_path.as_path()),
                 Some(git_dir.as_path()),
@@ -531,7 +536,7 @@ impl ThreadSafeRepository {
             ]
             .into_iter()
             .flatten()
-            .filter_map(normalized)
+            .filter_map(real_path)
             .collect();
             let Ok(mut resolved) = gix_parallel::OwnShared::try_unwrap(config.resolved) else {
                 unreachable!("Shared ownership was just established, with one reference")
@@ -551,7 +556,7 @@ impl ThreadSafeRepository {
                 let config_file_is_safe = *is_safe_by_path.entry(meta_path.to_owned()).or_insert_with(|| {
                     let meta_path = current_dir.join(meta_path);
                     let is_in_repository = || {
-                        normalized(&meta_path)
+                        real_path(&meta_path)
                             .is_some_and(|path| repository_dirs.iter().any(|dir| path.starts_with(dir)))
                     };
                     (is_trusted && is_in_repository())

@@ -321,3 +321,68 @@ fn includes_leaving_an_allowed_repository_are_not_trusted_with_it() -> Result {
     );
     Ok(())
 }
+
+/// An include that leads out of an allowed repository through a symbolic link isn't trusted with it either, while one
+/// whose link stays in the repository is.
+#[test]
+fn includes_through_links_have_the_trust_of_their_targets() -> Result {
+    if gix_testtools::run_in_isolated_process()? {
+        return Ok(());
+    }
+    let dir = gix_testtools::tempfile::tempdir()?;
+    let repo_dir = dir.path().join("repo");
+    gix::init(&repo_dir)?;
+    std::fs::write(dir.path().join("outside"), "[outside]\n\tkey = value\n")?;
+    std::fs::write(repo_dir.join(".git/inside"), "[inside]\n\tkey = value\n")?;
+    let outside = Path::new("..").join("..").join("outside");
+    #[cfg(unix)]
+    let links = std::os::unix::fs::symlink(&outside, repo_dir.join(".git/outside-link"))
+        .and_then(|()| std::os::unix::fs::symlink("inside", repo_dir.join(".git/inside-link")));
+    #[cfg(windows)]
+    let links = std::os::windows::fs::symlink_file(&outside, repo_dir.join(".git/outside-link"))
+        .and_then(|()| std::os::windows::fs::symlink_file("inside", repo_dir.join(".git/inside-link")));
+    if links.is_err() {
+        // Windows only lets processes with a privilege create symbolic links.
+        return Ok(());
+    }
+    let mut config = std::fs::read(repo_dir.join(".git/config"))?;
+    config.extend_from_slice(b"[include]\n\tpath = outside-link\n\tpath = inside-link\n");
+    std::fs::write(repo_dir.join(".git/config"), config)?;
+
+    let _env = gix_testtools::Env::new().set("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1");
+    let err = gix::open_opts(&repo_dir, gix::open::Options::default().bail_if_untrusted(true))
+        .expect_err("nothing allows the repository");
+    let dubious_ownership = err
+        .downcast_any_ref::<DubiousOwnership>()
+        .expect("the dubious ownership is the reason");
+    let allowed = format!("safe.directory={}", dubious_ownership.directory);
+    let repo = gix::open_opts(
+        &repo_dir,
+        gix::open::Options::default()
+            .bail_if_untrusted(true)
+            .config_overrides([allowed.as_str()]),
+    )?;
+    assert_eq!(repo.git_dir_trust(), Trust::Full, "the repository is allowed");
+
+    let config = repo.config_snapshot();
+    let trust_of = |name: &str| -> Vec<Trust> {
+        config
+            .plumbing()
+            .sections_by_name(name)
+            .into_iter()
+            .flatten()
+            .map(|section| section.meta().trust)
+            .collect()
+    };
+    assert_eq!(
+        trust_of("inside"),
+        [Trust::Full],
+        "the link leads to a file in the repository"
+    );
+    assert_eq!(
+        trust_of("outside"),
+        [Trust::Reduced],
+        "the link leads out of the repository, which `safe.directory` doesn't allow"
+    );
+    Ok(())
+}
