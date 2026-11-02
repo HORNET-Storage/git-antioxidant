@@ -101,25 +101,63 @@ fn reading_trees_stops_where_git_stops() -> TestResult {
     Ok(())
 }
 
+/// Blame compares the trees along the path of the file where Git's blame compares them: a commit with each of its parents
+/// up to the first with the same version of the file, entering the directories whose trees differ, and the first commit
+/// below contents that aren't committed, entering every directory of the path. A commit without parents isn't compared.
 #[test]
 #[cfg(feature = "blame")]
 fn blame_stops_where_git_stops() -> TestResult {
     let fixture = gix_testtools::scripted_fixture_writable("make_deep_trees.sh")?;
     let dir = fixture.path();
-    let file = "a/a/a/a/a/file";
-    for (max_depth, expected_success) in LIMITS {
-        assert_eq!(
-            git_succeeds(dir, max_depth, &format!("blame main -- {file}"))?,
-            expected_success,
-            "git blame with a limit of {max_depth}"
-        );
-        let repo = open(dir, max_depth)?;
-        let suspect = repo.rev_parse_single("main")?;
-        assert_outcome(
-            repo.blame_file(file.into(), suspect, Default::default()),
-            expected_success,
-            "blame",
-        );
+    let contents = "new\n";
+    std::fs::write(dir.join("contents"), contents)?;
+    let deep = "a/a/a/a/a/file";
+    for (revision, file, with_contents, limits) in [
+        ("main", deep, false, LIMITS),
+        // `side` has the file of its parent, and another file in the same directory.
+        ("side", deep, false, LIMITS),
+        ("main", deep, true, LIMITS),
+        ("main~1", deep, false, [(DEPTH, true), (DEPTH - 1, true)]),
+        // `side` and its parent have the same tree at `b`.
+        ("side", "b/file", false, [(1, true), (0, true)]),
+        ("main", "b/file", false, [(1, true), (0, false)]),
+        ("main", "b/file", true, [(1, true), (0, false)]),
+    ] {
+        let args = if with_contents {
+            format!("blame --contents contents {revision} -- {file}")
+        } else {
+            format!("blame {revision} -- {file}")
+        };
+        for (max_depth, expected_success) in limits {
+            assert_eq!(
+                git_succeeds(dir, max_depth, &args)?,
+                expected_success,
+                "git {args} with a limit of {max_depth}"
+            );
+            let repo = open(dir, max_depth)?;
+            let suspect = repo.rev_parse_single(revision)?.detach();
+            let outcome = if with_contents {
+                gix::blame::file(
+                    &repo.objects,
+                    gix::blame::Start::Contents {
+                        first_suspect: suspect,
+                        contents: contents.as_bytes().into(),
+                    },
+                    None,
+                    &mut repo.diff_resource_cache_for_tree_diff()?,
+                    &mut gix::diff::tree::State::new(repo.max_tree_depth()?),
+                    file.into(),
+                    Default::default(),
+                )
+            } else {
+                repo.blame_file(file.into(), suspect, Default::default())
+            };
+            assert_outcome(
+                outcome,
+                expected_success,
+                &format!("{args} with a limit of {max_depth}"),
+            );
+        }
     }
     Ok(())
 }

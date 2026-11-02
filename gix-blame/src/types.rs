@@ -262,7 +262,7 @@ pub struct Outcome {
 pub struct Statistics {
     /// The amount of commits it traversed until the blame was complete.
     pub commits_traversed: usize,
-    /// The amount of trees that were decoded to find the entry of the file to blame.
+    /// The amount of trees that were decoded along the path of the file to blame.
     pub trees_decoded: usize,
     /// The amount of tree-diffs to see if the filepath was added, deleted or modified. These diffs
     /// are likely partial as they are cancelled as soon as a change to the blamed file is

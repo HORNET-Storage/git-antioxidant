@@ -2,7 +2,7 @@ use gix_error::Result;
 use std::num::NonZeroU32;
 
 use gix_diff::{blob::TokenSource, rewrites::rename::MAX_SCORE, tree::Visit};
-use gix_error::{ErrorExt, OptionExt, ResultExt, message};
+use gix_error::{ErrorExt, OptionExt, ResultExt, bail, message};
 use gix_hash::ObjectId;
 use gix_object::{
     FindExt,
@@ -35,7 +35,7 @@ use crate::{
 /// * `resource_cache`
 ///    - Used for diffing trees.
 /// * `tree_diff_state`
-///    - Reusable memory for diffing trees, which also decides how deep the diffs may go.
+///    - Reusable memory for diffing trees, which also decides how deep the trees that blame compares may be.
 /// * `file_path`
 ///    - A *slash-separated* worktree-relative path to the file to blame.
 /// * `options`
@@ -95,6 +95,7 @@ pub fn file(
         cache.as_ref(),
         file_path,
         &options,
+        tree_diff_state.max_depth,
         &mut buf,
         &mut buf2,
         &mut stats,
@@ -244,6 +245,16 @@ pub fn file(
         }
 
         for (pid, (parent_id, parent_commit_time)) in parent_ids.iter().enumerate() {
+            check_tree_depth_along_path(
+                &odb,
+                Some(parent_id),
+                &suspect,
+                current_file_path.as_ref(),
+                tree_diff_state.max_depth,
+                cache.as_ref(),
+                &mut buf,
+                &mut stats,
+            )?;
             if let Some(parent_entry) = find_path_entry_in_commit(
                 &odb,
                 parent_id,
@@ -599,20 +610,14 @@ fn tree_diff_at_file_path(
 ) -> Result<Option<TreeDiffChange>> {
     use gix_diff::tree::recorder::Change;
 
-    let parent_tree_id = find_commit(cache, &odb, &parent_id, commit_buf)
-        .or_raise(|| message("Could not find existing iterator over a tree"))?
-        .tree_id()
-        .or_raise(|| message("Failure to decode commit during traversal"))?;
+    let parent_tree_id = commit_tree_id(&odb, &parent_id, cache, commit_buf)?;
 
     let parent_tree_iter = odb
         .find_tree_iter(&parent_tree_id, lhs_tree_buf)
         .or_raise(|| message("Could not find existing iterator over a tree"))?;
     stats.trees_decoded += 1;
 
-    let tree_id = find_commit(cache, &odb, &id, commit_buf)
-        .or_raise(|| message("Could not find existing iterator over a tree"))?
-        .tree_id()
-        .or_raise(|| message("Failure to decode commit during traversal"))?;
+    let tree_id = commit_tree_id(&odb, &id, cache, commit_buf)?;
 
     let tree_iter = odb
         .find_tree_iter(&tree_id, rhs_tree_buf)
@@ -1071,10 +1076,7 @@ fn find_path_entry_in_commit(
     buf2: &mut Vec<u8>,
     stats: &mut Statistics,
 ) -> Result<Option<PathEntry>> {
-    let tree_id = find_commit(cache, odb, commit, buf)
-        .or_raise(|| message("Could not find existing iterator over a tree"))?
-        .tree_id()
-        .or_raise(|| message("Failure to decode commit during traversal"))?;
+    let tree_id = commit_tree_id(odb, commit, cache, buf)?;
     let tree_iter = odb
         .find_tree_iter(&tree_id, buf)
         .or_raise(|| message("Could not find existing iterator over a tree"))?;
@@ -1092,6 +1094,87 @@ fn find_path_entry_in_commit(
         id: e.oid,
         mode: e.mode,
     }))
+}
+
+/// The id of the tree of `commit`.
+fn commit_tree_id(
+    odb: &impl gix_object::Find,
+    commit: &gix_hash::oid,
+    cache: Option<&gix_commitgraph::Graph>,
+    buf: &mut Vec<u8>,
+) -> Result<ObjectId> {
+    find_commit(cache, odb, commit, buf)
+        .or_raise(|| message!("Could not find commit {commit}"))?
+        .tree_id()
+        .or_raise(|| message("Failure to decode commit during traversal"))
+}
+
+/// Fail as Git's blame fails where it compares trees along `file_path` that are deeper than `max_depth`, with the
+/// root trees at depth 0.
+///
+/// Git's blame compares a suspect with each of its parents, up to the first with the same version of the file, in a
+/// diff limited to the path, which enters each directory of the path whose trees differ between `parent` and
+/// `suspect`. Without `parent`, `suspect` is the commit that contents which aren't committed are compared with: Git
+/// compares its tree with the index, whose cached trees along the path it invalidated when it replaced the file there,
+/// and so enters every directory of the path that the tree has.
+#[expect(clippy::too_many_arguments)]
+fn check_tree_depth_along_path(
+    odb: &impl gix_object::Find,
+    parent: Option<&ObjectId>,
+    suspect: &ObjectId,
+    file_path: &BStr,
+    max_depth: usize,
+    cache: Option<&gix_commitgraph::Graph>,
+    buf: &mut Vec<u8>,
+    stats: &mut Statistics,
+) -> Result<()> {
+    let directories = file_path.iter().filter(|&&byte| byte == b'/').count();
+    if directories <= max_depth {
+        return Ok(());
+    }
+    let mut parent_tree = parent
+        .map(|parent| commit_tree_id(odb, parent, cache, buf))
+        .transpose()?;
+    let mut suspect_tree = Some(commit_tree_id(odb, suspect, cache, buf)?);
+    for (depth, name) in (1..).zip(file_path.split(|byte| *byte == b'/').take(directories)) {
+        let name = name.as_bstr();
+        parent_tree = parent_tree
+            .map(|tree| subtree_id(odb, &tree, name, buf, stats))
+            .transpose()?
+            .flatten();
+        suspect_tree = suspect_tree
+            .map(|tree| subtree_id(odb, &tree, name, buf, stats))
+            .transpose()?
+            .flatten();
+        if parent_tree == suspect_tree {
+            break;
+        }
+        if depth > max_depth {
+            bail!(gix_error::validation("exceeded maximum allowed tree depth"));
+        }
+    }
+    Ok(())
+}
+
+/// The id of the tree that the tree `id` has under `name`, if it has one.
+fn subtree_id(
+    odb: &impl gix_object::Find,
+    id: &gix_hash::oid,
+    name: &BStr,
+    buf: &mut Vec<u8>,
+    stats: &mut Statistics,
+) -> Result<Option<ObjectId>> {
+    let tree = odb
+        .find_tree_iter(id, buf)
+        .or_raise(|| message("Could not find existing iterator over a tree"))?;
+    stats.trees_decoded += 1;
+    for entry in tree {
+        let entry = entry.or_raise(|| message("Could not decode a tree along the path"))?;
+        if entry.filename == name && entry.mode.is_tree() {
+            return Ok(Some(entry.oid.to_owned()));
+        }
+    }
+    Ok(None)
 }
 
 type ParentIds = SmallVec<[(gix_hash::ObjectId, i64); 2]>;
@@ -1153,6 +1236,7 @@ fn initial_state(
     cache: Option<&gix_commitgraph::Graph>,
     file_path: &BStr,
     options: &Options,
+    max_depth: usize,
     buf: &mut Vec<u8>,
     buf2: &mut Vec<u8>,
     stats: &mut Statistics,
@@ -1220,6 +1304,7 @@ fn initial_state(
 
             let mut out = Vec::new();
 
+            check_tree_depth_along_path(odb, None, &first_suspect, file_path, max_depth, cache, buf, stats)?;
             let Some(first_suspect_entry) =
                 find_path_entry_in_commit(odb, &first_suspect, file_path, cache, buf, buf2, stats)?
             else {
