@@ -124,6 +124,28 @@ fn include_and_includeif_correct_inclusion_order_and_delayed_resolve_include() -
     Ok(())
 }
 
+/// Section names ignore case, as in Git, while the condition of `includeIf` doesn't.
+#[test]
+fn include_sections_ignore_the_case_of_their_names() -> TestResult {
+    let root = crate::scripted_fixture_read_only("mixed_case_includes.sh")?;
+    let git_dir = root.join("repo").join(".git");
+    let meta = gix_config::file::Metadata::try_from_path(git_dir.join("config"), gix_config::Source::Local)?;
+    let config = File::from_paths_metadata(Some(meta), options_with_git_dir(&git_dir))?.expect("non-empty");
+    let values: Vec<String> = config
+        .strings("answer.value")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|value| value.to_string())
+        .collect();
+    let git: Vec<String> = fs::read_to_string(root.join("expected"))?
+        .lines()
+        .map(ToOwned::to_owned)
+        .collect();
+    assert_eq!(values, git, "the values that Git reads");
+    assert_eq!(values, ["one", "two", "three"]);
+    Ok(())
+}
+
 fn options_with_git_dir(git_dir: &Path) -> init::Options<'_> {
     init::Options {
         includes: includes::Options::follow(

@@ -67,9 +67,10 @@ fn resolve_includes_recursive(
         let backing = &target_config.backing;
         let header_name = header.name.as_bstr_in(backing);
         let mut paths = None;
-        if header_name == "include" && header.subsection_name.is_none() {
+        // Section names ignore case, as in Git, while the condition of `includeIf` doesn't.
+        if header_name.eq_ignore_ascii_case(b"include") && header.subsection_name.is_none() {
             paths = Some(gather_paths(section, id, backing));
-        } else if header_name == "includeIf"
+        } else if header_name.eq_ignore_ascii_case(b"includeIf")
             && let Some(condition) = &header.subsection_name
         {
             let target_config_path = section.meta.path.as_deref();

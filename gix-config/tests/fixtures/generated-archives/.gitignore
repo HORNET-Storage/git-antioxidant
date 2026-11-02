@@ -9,3 +9,7 @@
 # The fixture records config values produced by the host's Git, so regenerate it instead of freezing that baseline, this time.
 /make_value_whitespace_baseline.tar
 /make_value_whitespace_baseline_sha256.tar
+
+# The fixture records the values that the host's Git reads, so it is regenerated on each host as well.
+/mixed_case_includes.tar
+/mixed_case_includes_sha256.tar
