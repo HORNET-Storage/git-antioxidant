@@ -20,6 +20,14 @@ fn span() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "tracing"),
+    expect(
+        unused_variables,
+        dead_code,
+        reason = "the macros discard their fields without `tracing`"
+    )
+)]
 fn coarse() {
     let _x = coarse!("hello");
     coarse!("hello", x = "value", y = 42);
