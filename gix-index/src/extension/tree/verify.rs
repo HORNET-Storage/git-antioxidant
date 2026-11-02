@@ -8,9 +8,10 @@ use gix_object::FindExt;
 use crate::extension::Tree;
 
 impl Tree {
-    /// Validate the correctness of this instance. If `use_objects` is true, then `objects` will be used to access the trees
-    /// of all nodes that aren't invalidated, as Git's `verify_one()` does: an invalidated node keeps no tree to compare
-    /// with, but its children are verified.
+    /// Validate the correctness of this instance. If `use_objects` is true, then `objects` is used to read the tree of each
+    /// node that isn't invalidated, as `git fsck` reads them with `fsck_cache_tree()`, including nodes without children,
+    /// and the trees in it must be those of the children of the node. An invalidated node keeps no tree to read, but its
+    /// children are verified.
     pub fn verify(&self, use_objects: bool, objects: impl gix_object::Find) -> Result {
         fn verify_recursive(
             tree: &Tree,
@@ -18,9 +19,6 @@ impl Tree {
             objects: &impl gix_object::Find,
         ) -> Result<Option<u32>> {
             let (parent_id, children) = (tree.id, &tree.children);
-            if children.is_empty() {
-                return Ok(None);
-            }
             let mut entries = 0u32;
             let mut prev = None::<&Tree>;
             for child in children {
@@ -82,7 +80,8 @@ impl Tree {
                     );
                 }
             }
-            Ok(entries.into())
+            // The count is that of the entries of the children, so a node without children has none to compare.
+            Ok((!children.is_empty()).then_some(entries))
         }
         let _span = gix_trace::coarse!("gix_index::extension::Tree::verify()");
 

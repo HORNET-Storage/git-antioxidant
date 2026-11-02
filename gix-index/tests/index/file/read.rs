@@ -583,7 +583,7 @@ fn v3_added_files() {
 
 /// After `git add a/f`, Git has invalidated the cache tree nodes of `a` and of the root, which keep no tree id, and
 /// `git fsck` accepts the index. As Git's `verify_one()` and `fsck_cache_tree()` do, verifying with objects looks up
-/// the trees of the valid nodes only, and still descends into the invalidated ones.
+/// the trees of the valid nodes only, those without children included, and still descends into the invalidated ones.
 #[test]
 fn cache_trees_with_invalidated_nodes_verify_with_objects() -> crate::Result {
     let path = crate::fixture_index_path("v2_invalidated_cache_tree");
@@ -613,6 +613,19 @@ fn cache_trees_with_invalidated_nodes_verify_with_objects() -> crate::Result {
     let err = missing_tree
         .verify(true, &objects)
         .expect_err("the tree of a valid node below an invalidated one is looked up");
+    assert!(format!("{err:?}").contains("Tree node could not be found"), "{err:?}");
+
+    let mut missing_leaf_tree = tree.clone();
+    for node in &mut missing_leaf_tree.children {
+        if node.name.as_slice() == b"b" {
+            for leaf in &mut node.children {
+                leaf.id = gix_testtools::object_hash().null();
+            }
+        }
+    }
+    let err = missing_leaf_tree
+        .verify(true, &objects)
+        .expect_err("the tree of `b/x`, a valid node without children, is looked up as `git fsck` looks it up");
     assert!(format!("{err:?}").contains("Tree node could not be found"), "{err:?}");
     Ok(())
 }
