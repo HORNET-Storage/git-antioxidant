@@ -485,13 +485,64 @@ mod component {
                 );
             }
 
-            let mut components = name.split(|byte| *byte == b'/').peekable();
-            let mut gix_accepts = true;
-            while let Some(name) = components.next() {
-                let leaf_mode = (components.peek().is_none() && mode == SYMLINK).then_some(component::Mode::Symlink);
-                gix_accepts &= component(name.as_bstr(), leaf_mode, options).is_ok();
-            }
+            let symlink = (mode == SYMLINK).then_some(component::Mode::Symlink);
+            let gix_accepts = gix_validate::path::entry(name.as_bstr(), symlink, options).is_ok();
             assert_eq!(gix_accepts, git_accepts, "{:?} as {mode}", name.as_bstr());
+        }
+        Ok(())
+    }
+}
+
+mod entry {
+    use gix_validate::path::{component, entry};
+
+    /// Git's `verify_path()` refuses a symbolic link whose path leads through a directory that it takes for `.gitmodules`:
+    /// named so in any case, or so as HFS+ reads names, or so as NTFS reads them if a `:` ends the name, as Git's
+    /// `is_ntfs_dotgitmodules()` ends a name only at the end of the path or at a `:`. A file there is fine. Each path goes
+    /// to an index of its own, and Windows refuses some of them for their `:` or `\` alone.
+    #[test]
+    fn links_in_directories_named_like_gitmodules_are_refused_as_git_refuses_them() -> gix_testtools::TestResult {
+        const FILE: &str = "100644";
+        const SYMLINK: &str = "120000";
+        let cases = [
+            (".gitmodules/link", SYMLINK),
+            (".gitmodules/file", FILE),
+            ("a/.gitmodules/link", SYMLINK),
+            (".GitModules/link", SYMLINK),
+            ("gitmod~1/link", SYMLINK),
+            ("gitmod~1/file", FILE),
+            ("gitmod~1:x/link", SYMLINK),
+            ("gitmod~1:x/file", FILE),
+            ("gi7eba~9 . :x/link", SYMLINK),
+            ("a\\gitmod~1:x/link", SYMLINK),
+            (".gitmodules./link", SYMLINK),
+            (".gi\u{200c}tmodules/link", SYMLINK),
+            (".gitmodulesx/link", SYMLINK),
+            ("a/.gitmodules", SYMLINK),
+        ];
+
+        let dir = gix_testtools::tempfile::tempdir()?;
+        gix_testtools::git(dir.path(), "init -q --object-format=sha1")?;
+        let options = component::Options {
+            protect_windows: cfg!(windows),
+            protect_hfs: true,
+            protect_ntfs: true,
+        };
+        for (number, (path, mode)) in cases.into_iter().enumerate() {
+            let git_accepts = gix_testtools::git_command(dir.path())
+                .env("GIT_INDEX_FILE", dir.path().join(format!("index-{number}")))
+                .args(["-c", "core.protectHFS=true", "-c", "core.protectNTFS=true"])
+                .args(["update-index", "--add", "--cacheinfo", mode])
+                .args(["e69de29bb2d1d6434b8b29ae775ad8c2e48c5391", path])
+                .output()?
+                .status
+                .success();
+            let symlink = (mode == SYMLINK).then_some(component::Mode::Symlink);
+            assert_eq!(
+                entry(path.into(), symlink, options).is_ok(),
+                git_accepts,
+                "{path:?} as {mode}"
+            );
         }
         Ok(())
     }

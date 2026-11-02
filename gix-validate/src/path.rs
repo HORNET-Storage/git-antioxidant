@@ -74,7 +74,8 @@ pub mod component {
         }
     }
 
-    /// The mode of the component, if it's the leaf of a path.
+    /// The kind of the entry that a component names as the last component of its path, if its name needs checks of
+    /// its own.
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     pub enum Mode {
         /// The item is a symbolic link.
@@ -83,8 +84,8 @@ pub mod component {
 }
 
 /// Assure the given `input` resembles a valid name for a tree or blob, and in that sense, a path component.
-/// `mode` indicates the kind of `input` and it should be `Some` if `input` is the last component in the underlying
-/// path.
+/// `mode` is the kind of the entry that `input` names as the last component of its path, or `None` for any other
+/// component and for entries that need no checks of their own. [`entry()`] checks all components of a path.
 ///
 /// `input` must not make it possible to exit the repository, or to specify absolute paths.
 pub fn component(
@@ -145,6 +146,47 @@ pub fn component(
         }
     }
     Ok(input)
+}
+
+/// Assure that `path`, the slash-separated path of an index entry of the kind `mode`, consists of valid
+/// [components](component()) as Git's `verify_path()` decides, with `mode` applying to the last component.
+///
+/// As in Git, a symbolic link can't lead through a directory named `.gitmodules` either, in any case and, with
+/// `protect_hfs`, as HFS+ reads names. With `protect_ntfs`, a name that NTFS takes for `.gitmodules` refuses a
+/// directory only if a `:` ends it, as Git's `is_ntfs_dotgitmodules()` ends a name at the end of the path or at a `:`,
+/// but not at a directory separator.
+///
+/// The error of the first invalid component is returned. A path with an empty component, as at its start or its end,
+/// is invalid.
+pub fn entry(
+    path: &BStr,
+    mode: Option<component::Mode>,
+    options: component::Options,
+) -> Result<&BStr, component::Error> {
+    let mut start = 0;
+    let mut names = path.split_str("/").peekable();
+    while let Some(name) = names.next() {
+        let name = name.as_bstr();
+        let end = start + name.len();
+        if names.peek().is_none() {
+            component(name, mode, options)?;
+            break;
+        }
+        component(name, None, options)?;
+        if is_symlink(mode) && is_dot_gitmodules_directory(name, path[start..=end].as_bstr(), options) {
+            return Err(component::Error::SymlinkedGitModules);
+        }
+        start = end + 1;
+    }
+    Ok(path)
+}
+
+/// Return `true` if Git's `verify_path()` refuses to let a symbolic link lead through the directory `name`, as it takes
+/// `name` for `.gitmodules`. `with_separator` is `name` with the `/` that follows it.
+fn is_dot_gitmodules_directory(name: &BStr, with_separator: &BStr, options: component::Options) -> bool {
+    name.eq_ignore_ascii_case(b".gitmodules")
+        || (options.protect_hfs && component_is_hfs_dot(name, "gitmodules"))
+        || (options.protect_ntfs && ntfs_names(with_separator).any(|name| is_dot_ntfs(name, "gitmodules", "gi7eba")))
 }
 
 /// Return `true` if the path component at `input` looks like a Windows device, like `CON`

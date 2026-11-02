@@ -124,6 +124,48 @@ fn a_tree_with_a_path_that_cant_be_checked_out_is_refused() -> TestResult {
     snapshot.assert_unchanged(&case, &index)
 }
 
+/// As Git's `verify_path()` does, the checks of a symbolic link apply to each component of its path, so a link in a
+/// directory named `.gitmodules` can't be checked out either.
+#[test]
+fn a_tree_with_a_symlink_in_a_directory_named_like_gitmodules_is_refused() -> TestResult {
+    let (case, _tmp) = Case::writable("clean")?;
+    let mut index = case.index()?;
+    let snapshot = Snapshot::take(&case, &index)?;
+
+    let (old_tree, _) = case.trees()?;
+    let objects = gix_odb::memory::Proxy::new(case.objects()?, gix_testtools::object_hash());
+    let target = objects.write_buf(gix_object::Kind::Blob, b"target")?;
+    let directory = objects.write(&gix_object::Tree {
+        entries: vec![gix_object::tree::Entry {
+            mode: EntryKind::Link.into(),
+            filename: "link".into(),
+            oid: target,
+        }],
+    })?;
+    let new_tree = objects.write(&gix_object::Tree {
+        entries: vec![gix_object::tree::Entry {
+            mode: EntryKind::Tree.into(),
+            filename: ".gitmodules".into(),
+            oid: directory,
+        }],
+    })?;
+    let err = case
+        .switch_trees(
+            &mut index,
+            old_tree.as_deref(),
+            &new_tree,
+            objects,
+            &AtomicBool::new(false),
+        )?
+        .expect_err("a link below a directory named .gitmodules can't be checked out");
+    assert!(err.is_validation(), "{err:?}");
+    assert_eq!(
+        err.error().to_string(),
+        "The path '.gitmodules/link' can't be checked out"
+    );
+    snapshot.assert_unchanged(&case, &index)
+}
+
 #[test]
 fn an_interrupted_switch_changes_nothing() -> TestResult {
     let (case, _tmp) = Case::writable("clean")?;

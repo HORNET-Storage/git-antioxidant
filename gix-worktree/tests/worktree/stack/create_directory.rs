@@ -325,6 +325,38 @@ fn cached_terminal_is_revalidated_when_mode_changes() -> TestResult {
     Ok(())
 }
 
+/// As Git's `verify_path()` refuses them, symbolic links can't lead through a directory named `.gitmodules`, including
+/// directories that were created for earlier entries.
+#[test]
+fn symlinks_in_directories_named_like_gitmodules_are_refused() -> TestResult {
+    let mut error_snapshots = Vec::new();
+    let (mut cache, _tmp) = new_cache();
+    for directory in [".gitmodules", "parent/.gitmodules"] {
+        let _ = cache.at_path(format!("{directory}/file").as_str(), IS_FILE, &gix_object::find::Never)?;
+        let err = cache
+            .at_path(
+                format!("{directory}/link").as_str(),
+                IS_SYMLINK,
+                &gix_object::find::Never,
+            )
+            .expect_err("the directory created for the file is checked for the link as well");
+        error_snapshots.push(gix_testtools::redact_debug_snapshot(&err, &[]));
+    }
+    insta::assert_debug_snapshot!(error_snapshots, "symlinks in directories named like gitmodules are refused", @"
+    [
+        Custom {
+            kind: Other,
+            error: SymlinkedGitModules,
+        },
+        Custom {
+            kind: Other,
+            error: SymlinkedGitModules,
+        },
+    ]
+    ");
+    Ok(())
+}
+
 fn new_cache() -> (Stack, TempDir) {
     let dir = tempdir().unwrap();
     let cache = Stack::new(

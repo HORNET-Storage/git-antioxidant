@@ -373,12 +373,9 @@ fn side(mode: EntryMode, id: ObjectId, path: &BStr) -> Result<Option<Side>> {
 
 /// Fail if `path` can't be checked out, as `options` decide. `is_symlink` is `true` if its entry is a symbolic link.
 fn validate_path(path: &BStr, is_symlink: bool, options: component::Options) -> Result<()> {
-    let mut names = path.split_str("/").peekable();
-    while let Some(name) = names.next() {
-        let mode = (is_symlink && names.peek().is_none()).then_some(component::Mode::Symlink);
-        component(name.as_bstr(), mode, options)
-            .or_raise(|| message!("The path '{path}' can't be checked out").validation())?;
-    }
+    let mode = is_symlink.then_some(component::Mode::Symlink);
+    gix_worktree::validate::path::entry(path, mode, options)
+        .or_raise(|| message!("The path '{path}' can't be checked out").validation())?;
     Ok(())
 }
 

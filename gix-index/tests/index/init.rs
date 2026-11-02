@@ -86,6 +86,42 @@ fn from_tree_validation() -> TestResult {
     Ok(())
 }
 
+/// As Git's `verify_path()` does, the checks of a symbolic link apply to each component of its path, so a link in a
+/// directory named `.gitmodules` is refused, and a file there isn't.
+#[test]
+fn from_tree_refuses_symlinks_in_directories_named_like_gitmodules() -> TestResult {
+    use gix_index::validate::path::component::Error;
+    use gix_object::{Write, tree::EntryKind};
+
+    let worktree_dir = scripted_fixture_read_only("make_index/v2.sh")?;
+    let odb = odb_at(worktree_dir.join(".git").join("objects"))?;
+    let objects = gix_odb::memory::Proxy::new(odb, gix_testtools::object_hash());
+    let blob = objects.write_buf(gix_object::Kind::Blob, b"target")?;
+    let tree_with = |kind: EntryKind| -> gix_testtools::Result<gix_hash::ObjectId> {
+        let entry = |kind: EntryKind, filename: &str, oid| gix_object::tree::Entry {
+            mode: kind.into(),
+            filename: filename.into(),
+            oid,
+        };
+        let directory = objects.write(&gix_object::Tree {
+            entries: vec![entry(kind, "name", blob)],
+        })?;
+        Ok(objects.write(&gix_object::Tree {
+            entries: vec![entry(EntryKind::Tree, ".gitmodules", directory)],
+        })?)
+    };
+
+    let err = State::from_tree(&tree_with(EntryKind::Link)?, &objects, Default::default())
+        .expect_err("a link below a directory named .gitmodules is refused");
+    assert_eq!(err.to_string(), r#"The path ".gitmodules/name" is invalid"#);
+    assert!(
+        matches!(err.downcast_any_ref::<Error>(), Some(Error::SymlinkedGitModules)),
+        "the directory of the link is checked as the link would be"
+    );
+    State::from_tree(&tree_with(EntryKind::Blob)?, &objects, Default::default())?;
+    Ok(())
+}
+
 #[test]
 fn from_tree_returns_file_directory_conflicts_until_fixed() -> gix_testtools::TestResult {
     let worktree_dir = scripted_fixture_read_only("make_symlink_prefix_reuse_advisory.sh")?;

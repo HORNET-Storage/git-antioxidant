@@ -133,7 +133,8 @@ pub struct AccelerateLookup<'a> {
 /// path is presented in the index and its consumer must validate each path component before usage.
 ///
 /// It's recommended to do that using `gix_worktree::Stack` which has it built-in if it's created `for_checkout()`. Alternatively
-/// one can validate component names with `gix_validate::path::component()`.
+/// one can validate the path of each entry with `gix_validate::path::entry()`, which checks all of its components for the
+/// kind of the entry as Git's `verify_path()` does.
 #[derive(Clone)]
 pub struct State {
     /// The kind of object hash used when storing the underlying file.

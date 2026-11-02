@@ -153,17 +153,18 @@ pub mod from_tree {
                 EntryKind::Link => Mode::SYMLINK,
                 EntryKind::Commit => Mode::COMMIT,
             };
-            // There are leaf-names that require special validation, specific to their mode.
-            // Double-validate just for this case, as the previous validation didn't know the mode yet.
-            if self.invalid_path.is_none() {
-                let start = self.path.rfind_byte(b'/').map(|pos| pos + 1).unwrap_or_default();
-                if let Err(err) = gix_validate::path::component(
-                    self.path[start..].as_ref(),
-                    (entry.mode.kind() == EntryKind::Link).then_some(gix_validate::path::component::Mode::Symlink),
+            // The components were checked as the traversal reached them, without the kind of the entry. As Git's
+            // `verify_path()` does, the path of a symbolic link is checked again as a whole, which also refuses links
+            // that lead through a directory named like `.gitmodules`.
+            if self.invalid_path.is_none()
+                && entry.mode.kind() == EntryKind::Link
+                && let Err(err) = gix_validate::path::entry(
+                    self.path.as_ref(),
+                    Some(gix_validate::path::component::Mode::Symlink),
                     self.validate,
-                ) {
-                    self.invalid_path = Some((self.path.clone(), err));
-                }
+                )
+            {
+                self.invalid_path = Some((self.path.clone(), err));
             }
 
             let path_start = self.path_backing.len();

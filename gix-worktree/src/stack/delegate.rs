@@ -92,7 +92,7 @@ impl gix_fs::stack::Delegate for StackDelegate<'_, '_> {
                 validate,
                 attributes: _,
             } => {
-                validate_last_component(stack, self.mode, *validate)?;
+                validate_pushed_component(stack, is_last_component, self.mode, *validate)?;
                 create_leading_directory(
                     is_last_component,
                     stack,
@@ -128,34 +128,41 @@ impl gix_fs::stack::Delegate for StackDelegate<'_, '_> {
     }
 }
 
+/// Validate the component that was just pushed onto `stack` for an entry with `mode`. As Git's `verify_path()` does, the
+/// checks of a symbolic link apply to its whole path, so once its last component is pushed, the components that `stack`
+/// kept from earlier entries are checked again for the link.
 #[cfg(feature = "attributes")]
-fn validate_last_component(
+fn validate_pushed_component(
     stack: &gix_fs::Stack,
+    is_last_component: bool,
     mode: Option<gix_index::entry::Mode>,
     opts: gix_validate::path::component::Options,
 ) -> std::io::Result<()> {
     use gix_error::ResultExt;
 
-    let Some(last_component) = stack.current_relative().components().next_back() else {
-        return Ok(());
-    };
-    let last_component = gix_path::into_bstr(std::borrow::Cow::Borrowed(last_component.as_os_str().as_ref()))
-        .or_raise(|| {
-            gix_error::message!(
-                "Path component {last_component:?} of path \"{}\" contained invalid UTF-8 and could not be validated",
-                stack.current_relative().display()
-            )
-        })
-        .map_err(std::io::Error::other)?;
-
-    if let Err(err) = gix_validate::path::component(
-        last_component.as_ref(),
-        mode.and_then(|m| {
-            (m == gix_index::entry::Mode::SYMLINK).then_some(gix_validate::path::component::Mode::Symlink)
-        }),
-        opts,
-    ) {
-        return Err(std::io::Error::other(err));
+    let relative = stack.current_relative();
+    if is_last_component && mode == Some(gix_index::entry::Mode::SYMLINK) {
+        let path = gix_path::into_bstr(std::borrow::Cow::Borrowed(relative))
+            .or_raise(|| {
+                gix_error::message!(
+                    "Path \"{}\" contained invalid UTF-8 and could not be validated",
+                    relative.display()
+                )
+            })
+            .map_err(std::io::Error::other)?;
+        let path = gix_path::to_unix_separators_on_windows(path);
+        gix_validate::path::entry(path.as_ref(), Some(gix_validate::path::component::Mode::Symlink), opts)
+            .map_err(std::io::Error::other)?;
+    } else if let Some(component) = relative.components().next_back() {
+        let component = gix_path::into_bstr(std::borrow::Cow::Borrowed(component.as_os_str().as_ref()))
+            .or_raise(|| {
+                gix_error::message!(
+                    "Path component {component:?} of path \"{}\" contained invalid UTF-8 and could not be validated",
+                    relative.display()
+                )
+            })
+            .map_err(std::io::Error::other)?;
+        gix_validate::path::component(component.as_ref(), None, opts).map_err(std::io::Error::other)?;
     }
     Ok(())
 }

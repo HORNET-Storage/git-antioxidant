@@ -176,10 +176,8 @@ where
 fn validate_removed_paths(plan: &Plan, validate: component::Options) -> Result<()> {
     for change in plan.changes.iter().filter(|change| change.new.is_none()) {
         let path = change.path.as_bstr();
-        for name in path.split_str("/") {
-            component(name.as_bstr(), None, validate)
-                .or_raise(|| message!("The index has the path '{path}', which can't be in a worktree").corrupted())?;
-        }
+        gix_worktree::validate::path::entry(path, None, validate)
+            .or_raise(|| message!("The index has the path '{path}', which can't be in a worktree").corrupted())?;
     }
     Ok(())
 }
