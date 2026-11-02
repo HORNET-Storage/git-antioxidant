@@ -411,4 +411,88 @@ mod component {
         }
         Ok(())
     }
+
+    /// Under `core.protectHFS`, Git's `verify_path()` reads each component of the names that `git update-index` adds
+    /// as `next_hfs_char()` does, where invalid UTF-8, U+FFFE and U+FFFF end a name. Some names aren't valid UTF-8, so
+    /// they reach Git on its standard input, where it skips the names it refuses, and each goes to an index of its own
+    /// to see whether Git added it.
+    #[test]
+    fn names_that_hfs_takes_for_dot_git_are_refused_as_git_refuses_them() -> gix_testtools::TestResult {
+        use std::io::Write;
+
+        use bstr::ByteSlice;
+
+        const FILE: &str = "100644";
+        const SYMLINK: &str = "120000";
+        let cases: &[(&[u8], &str)] = &[
+            (b".git\x80/config", FILE),
+            (".git\u{fffe}/config".as_bytes(), FILE),
+            (".git\u{ffff}/config".as_bytes(), FILE),
+            (b".git\xc0\xae/config", FILE),
+            (b".git\xed\xa0\x80/config", FILE),
+            (b".git\xf4\x90\x80\x80/config", FILE),
+            (b".git\xe2\x80/config", FILE),
+            (b".GIT\x80/config", FILE),
+            (".g\u{200c}it/config".as_bytes(), FILE),
+            ("\u{feff}.git\u{200d}/config".as_bytes(), FILE),
+            (".git\u{fffd}/config".as_bytes(), FILE),
+            (b".gitx/config", FILE),
+            (b".g\x80it/config", FILE),
+            (b".gi\x80t/config", FILE),
+            (b"\x80.git/config", FILE),
+            (b".gitmodules\x80", FILE),
+            (b".gitmodules\x80", SYMLINK),
+            (".gitmodules\u{ffff}".as_bytes(), SYMLINK),
+            (b".gitmodules\xc0\x80", SYMLINK),
+            ("a/.gitmodules\u{fffe}".as_bytes(), SYMLINK),
+            (".gitmodules\u{fffd}".as_bytes(), SYMLINK),
+            (b".gitmodulesx", SYMLINK),
+        ];
+
+        let dir = gix_testtools::tempfile::tempdir()?;
+        gix_testtools::git(dir.path(), "init -q --object-format=sha1")?;
+        let options = component::Options {
+            protect_windows: cfg!(windows),
+            protect_hfs: true,
+            protect_ntfs: false,
+        };
+        for (number, &(name, mode)) in cases.iter().enumerate() {
+            let index = dir.path().join(format!("index-{number}"));
+            let mut git = gix_testtools::git_command(dir.path())
+                .env("GIT_INDEX_FILE", &index)
+                .args(["-c", "core.protectHFS=true", "-c", "core.protectNTFS=false"])
+                .args(["update-index", "--index-info"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()?;
+            let mut line = format!("{mode} e69de29bb2d1d6434b8b29ae775ad8c2e48c5391\t").into_bytes();
+            line.extend_from_slice(name);
+            line.push(b'\n');
+            git.stdin.take().expect("piped").write_all(&line)?;
+            assert!(git.wait()?.success(), "Git skips the names it refuses");
+            let listed = gix_testtools::git_command(dir.path())
+                .env("GIT_INDEX_FILE", &index)
+                .args(["ls-files", "-z"])
+                .output()?;
+            assert!(listed.status.success(), "the index can be read");
+            let git_accepts = !listed.stdout.is_empty();
+            if git_accepts {
+                assert_eq!(
+                    listed.stdout.as_bstr(),
+                    [name, b"\0"].concat().as_bstr(),
+                    "Git added the name as it is"
+                );
+            }
+
+            let mut components = name.split(|byte| *byte == b'/').peekable();
+            let mut gix_accepts = true;
+            while let Some(name) = components.next() {
+                let leaf_mode = (components.peek().is_none() && mode == SYMLINK).then_some(component::Mode::Symlink);
+                gix_accepts &= component(name.as_bstr(), leaf_mode, options).is_ok();
+            }
+            assert_eq!(gix_accepts, git_accepts, "{:?} as {mode}", name.as_bstr());
+        }
+        Ok(())
+    }
 }

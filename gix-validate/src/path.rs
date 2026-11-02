@@ -113,10 +113,10 @@ pub fn component(
         return Err(component::Error::PathSeparator);
     }
     if protect_hfs {
-        if is_dot_hfs(input, "git") {
+        if component_is_hfs_dot(input, "git") {
             return Err(component::Error::DotGitDir);
         }
-        if is_symlink(mode) && is_dot_hfs(input, "gitmodules") {
+        if is_symlink(mode) && component_is_hfs_dot(input, "gitmodules") {
             return Err(component::Error::SymlinkedGitModules);
         }
     }
@@ -212,46 +212,95 @@ fn is_symlink(mode: Option<component::Mode>) -> bool {
     mode == Some(component::Mode::Symlink)
 }
 
-fn is_dot_hfs(input: &BStr, search_case_insensitive: &str) -> bool {
-    let mut input = input.chars().filter(|c| match *c as u32 {
-        // Case-insensitive HFS+ skips these code points as "ignorable" when comparing filenames. See:
-        // https://github.com/git/git/commit/6162a1d323d24fd8cbbb1a6145a91fb849b2568f
-        // https://developer.apple.com/library/archive/technotes/tn/tn1150.html#StringComparisonAlgorithm
-        // https://github.com/apple-oss-distributions/hfs/blob/main/core/UCStringCompareData.h
-            0x200c | // ZERO WIDTH NON-JOINER
-            0x200d | // ZERO WIDTH JOINER
-            0x200e | // LEFT-TO-RIGHT MARK
-            0x200f | // RIGHT-TO-LEFT MARK
-            0x202a | // LEFT-TO-RIGHT EMBEDDING
-            0x202b | // RIGHT-TO-LEFT EMBEDDING
-            0x202c | // POP DIRECTIONAL FORMATTING
-            0x202d | // LEFT-TO-RIGHT OVERRIDE
-            0x202e | // RIGHT-TO-LEFT OVERRIDE
-            0x206a | // INHIBIT SYMMETRIC SWAPPING
-            0x206b | // ACTIVATE SYMMETRIC SWAPPING
-            0x206c | // INHIBIT ARABIC FORM SHAPING
-            0x206d | // ACTIVATE ARABIC FORM SHAPING
-            0x206e | // NATIONAL DIGIT SHAPES
-            0x206f | // NOMINAL DIGIT SHAPES
-            0xfeff => false, // ZERO WIDTH NO-BREAK SPACE
-            _ => true
-        });
-    if input.next() != Some('.') {
+/// Return `true` if HFS+ takes the path component at `input` for a dot followed by `name`, like `.git` for `git`, as
+/// Git's `is_hfs_dot_generic()` decides. `name` is lowercase ASCII.
+///
+/// HFS+ ignores case and some code points when it compares names. Like Git, this reads `input` as UTF-8 that ends at a
+/// NUL byte, a directory separator of this platform or an invalid sequence, so a name that continues with invalid
+/// UTF-8, U+FFFE or U+FFFF is taken for `name` as well.
+pub fn component_is_hfs_dot(input: &BStr, name: &str) -> bool {
+    let mut pos = Some(0);
+    let mut next = || next_hfs_char(input, &mut pos);
+    if next() != u32::from(b'.') {
         return false;
     }
-
-    let mut comp = search_case_insensitive.chars();
-    loop {
-        match (comp.next(), input.next()) {
-            (Some(a), Some(b)) => {
-                if !a.eq_ignore_ascii_case(&b) {
-                    return false;
-                }
-            }
-            (None, None) => return true,
-            _ => return false,
+    for expected in name.bytes() {
+        let c = next();
+        if c > 127 || (c as u8).to_ascii_lowercase() != expected {
+            return false;
         }
     }
+    let c = next();
+    c == 0 || is_dir_sep(c)
+}
+
+/// The next code point of `path` at `pos` that HFS+ doesn't ignore, as Git's `next_hfs_char()` reads it: `0` at the
+/// end, and `0` with `pos` becoming `None` at an invalid UTF-8 sequence.
+fn next_hfs_char(path: &[u8], pos: &mut Option<usize>) -> u32 {
+    loop {
+        let Some(at) = *pos else { return 0 };
+        let Some((c, len)) = utf8_char(path, at) else {
+            *pos = None;
+            return 0;
+        };
+        *pos = Some(at + len);
+        match c {
+            // Case-insensitive HFS+ skips these code points as "ignorable" when comparing filenames: zero-width
+            // (non-)joiners and marks, directional formatting, shaping controls and the byte order mark. See:
+            // https://github.com/git/git/commit/6162a1d323d24fd8cbbb1a6145a91fb849b2568f
+            // https://developer.apple.com/library/archive/technotes/tn/tn1150.html#StringComparisonAlgorithm
+            // https://github.com/apple-oss-distributions/hfs/blob/main/core/UCStringCompareData.h
+            0x200c..=0x200f | 0x202a..=0x202e | 0x206a..=0x206f | 0xfeff => continue,
+            _ => return c,
+        }
+    }
+}
+
+/// The code point that starts at `pos` in `path` and its length in bytes, as Git's `pick_one_utf8_char()` reads it
+/// from NUL-terminated text, or `None` if the sequence is invalid, overlong, a surrogate, U+FFFE, U+FFFF or above
+/// U+10FFFF.
+fn utf8_char(path: &[u8], pos: usize) -> Option<(u32, usize)> {
+    let s = |i: usize| u32::from(path.get(pos + i).copied().unwrap_or(0));
+    let s0 = s(0);
+    if s0 < 0x80 {
+        Some((s0, 1))
+    } else if s0 & 0xe0 == 0xc0 {
+        if s(1) & 0xc0 != 0x80 || s0 & 0xfe == 0xc0 {
+            return None;
+        }
+        Some((((s0 & 0x1f) << 6) | (s(1) & 0x3f), 2))
+    } else if s0 & 0xf0 == 0xe0 {
+        if s(1) & 0xc0 != 0x80
+            || s(2) & 0xc0 != 0x80
+            || (s0 == 0xe0 && s(1) & 0xe0 == 0x80)
+            || (s0 == 0xed && s(1) & 0xe0 == 0xa0)
+            || (s0 == 0xef && s(1) == 0xbf && s(2) & 0xfe == 0xbe)
+        {
+            return None;
+        }
+        Some((((s0 & 0x0f) << 12) | ((s(1) & 0x3f) << 6) | (s(2) & 0x3f), 3))
+    } else if s0 & 0xf8 == 0xf0 {
+        if s(1) & 0xc0 != 0x80
+            || s(2) & 0xc0 != 0x80
+            || s(3) & 0xc0 != 0x80
+            || (s0 == 0xf0 && s(1) & 0xf0 == 0x80)
+            || (s0 == 0xf4 && s(1) > 0x8f)
+            || s0 > 0xf4
+        {
+            return None;
+        }
+        Some((
+            ((s0 & 0x07) << 18) | ((s(1) & 0x3f) << 12) | ((s(2) & 0x3f) << 6) | (s(3) & 0x3f),
+            4,
+        ))
+    } else {
+        None
+    }
+}
+
+/// Whether `c` separates directories on this platform, as Git's `is_dir_sep()` decides.
+fn is_dir_sep(c: u32) -> bool {
+    c == u32::from(b'/') || (cfg!(windows) && c == u32::from(b'\\'))
 }
 
 /// Return `input` and what follows each of its backslashes, as a backslash starts a new name on NTFS, as Git's
