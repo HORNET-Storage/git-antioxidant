@@ -7,12 +7,14 @@ use gix_error::{ExnResult, OptionExt, ResultExt, bail, message, validation};
 use super::Algorithm;
 use crate::blob::{Pipeline, Platform, ResourceKind, pipeline};
 
-/// A key to uniquely identify either a location in the worktree, or in the object database.
+/// A key to uniquely identify a resource: its location, and if it comes from the object database, its id, as the
+/// conversion into its diffable form depends on the attributes of its location.
 #[derive(Clone)]
 pub(crate) struct CacheKey {
     id: gix_hash::ObjectId,
     location: BString,
-    /// If `true`, this is an `id` based key, otherwise it's location based.
+    /// If `true`, the resource comes from the object database and `id` and `is_link` are part of the key, otherwise
+    /// it is read from `location` in the worktree.
     use_id: bool,
     /// Only relevant when `id` is not null, to further differentiate content and allow us to
     /// keep track of both links and blobs with the same content (rare, but possible).
@@ -32,22 +34,20 @@ pub(crate) struct CacheValue {
 
 impl std::hash::Hash for CacheKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.location.hash(state);
+        self.use_id.hash(state);
         if self.use_id {
             self.id.hash(state);
             self.is_link.hash(state);
-        } else {
-            self.location.hash(state);
         }
     }
 }
 
 impl PartialEq for CacheKey {
     fn eq(&self, other: &Self) -> bool {
-        match (self.use_id, other.use_id) {
-            (false, false) => self.location.eq(&other.location),
-            (true, true) => self.id.eq(&other.id) && self.is_link.eq(&other.is_link),
-            _ => false,
-        }
+        self.location == other.location
+            && self.use_id == other.use_id
+            && (!self.use_id || (self.id == other.id && self.is_link == other.is_link))
     }
 }
 

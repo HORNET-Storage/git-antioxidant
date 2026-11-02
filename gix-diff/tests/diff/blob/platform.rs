@@ -391,6 +391,44 @@ fn diff_skipped_due_to_external_command_and_enabled_option() -> TestResult {
     Ok(())
 }
 
+/// Git chooses the diff driver of a path by its attributes. A resource from the object database is converted for its
+/// path, so the same id at another path, like the missing old side of each added file, is converted again rather than
+/// taken from the cache with the driver of the first path.
+#[test]
+fn resources_with_the_same_id_are_converted_for_each_path() -> TestResult {
+    let mut platform = new_platform(
+        Some(gix_diff::blob::Driver {
+            name: "a".into(),
+            command: Some("external-diff".into()),
+            ..Default::default()
+        }),
+        gix_diff::blob::pipeline::Mode::default(),
+    );
+    platform.options.skip_internal_diff_if_external_is_configured = true;
+    // Both sides come from the object database, as they do for `git diff` of two commits.
+    platform.filter.roots.old_root = None;
+    let db = object_db();
+    let added = insert(&db, "added\n")?;
+    let missing = added.kind().null();
+
+    let mut operations = Vec::new();
+    for path in ["a", "e-no-attr"] {
+        platform.set_resource(missing, EntryKind::Blob, path.into(), ResourceKind::OldOrSource, &db)?;
+        platform.set_resource(added, EntryKind::Blob, path.into(), ResourceKind::NewOrDestination, &db)?;
+        operations.push(match platform.prepare_diff()?.operation {
+            Operation::ExternalCommand { command } => command.to_string(),
+            Operation::InternalDiff { .. } => "internal".into(),
+            Operation::SourceOrDestinationIsBinary => "binary".into(),
+        });
+    }
+    assert_eq!(
+        operations,
+        ["external-diff", "internal"],
+        "`a` has a driver with a command, and `e-no-attr` has no driver"
+    );
+    Ok(())
+}
+
 #[test]
 fn source_and_destination_do_not_exist() -> TestResult {
     let mut platform = new_platform(None, pipeline::Mode::default());
