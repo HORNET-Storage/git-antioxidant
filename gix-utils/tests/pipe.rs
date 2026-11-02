@@ -81,6 +81,49 @@ mod io {
     }
 
     #[test]
+    fn bytes_before_an_error_are_read_before_it() -> gix_testtools::TestResult {
+        let (mut writer, mut reader) = io::pipe::unidirectional(4);
+        writer.write_all(b"data")?;
+        writer.channel.send(Err(std::io::Error::other("the error")))?;
+        writer.write_all(b"more")?;
+        drop(writer);
+
+        let mut buf = [0; 16];
+        assert_eq!(reader.read(&mut buf)?, 4, "the bytes that arrived before the error");
+        assert_eq!(&buf[..4], b"data");
+        let err = reader
+            .read(&mut buf)
+            .expect_err("the error is returned by the next read");
+        assert_eq!(err.to_string(), "the error");
+        assert_eq!(reader.read(&mut buf)?, 4, "what arrived after the error");
+        assert_eq!(&buf[..4], b"more");
+
+        let (mut writer, mut reader) = io::pipe::unidirectional(4);
+        writer.write_all(b"data")?;
+        writer.channel.send(Err(std::io::Error::other("the error")))?;
+        let mut out = Vec::new();
+        let err = reader.read_to_end(&mut out).expect_err("the error ends reading");
+        assert_eq!(err.to_string(), "the error");
+        assert_eq!(out, b"data", "the bytes before the error are kept");
+        Ok(())
+    }
+
+    #[test]
+    fn buffered_reads_return_an_error_that_followed_a_read() -> gix_testtools::TestResult {
+        let (mut writer, mut reader) = io::pipe::unidirectional(4);
+        writer.write_all(b"data")?;
+        writer.channel.send(Err(std::io::Error::other("the error")))?;
+        drop(writer);
+
+        let mut buf = [0; 16];
+        assert_eq!(reader.read(&mut buf)?, 4);
+        let err = reader.fill_buf().expect_err("the error that followed the bytes");
+        assert_eq!(err.to_string(), "the error");
+        assert!(reader.fill_buf()?.is_empty(), "the end of the pipe");
+        Ok(())
+    }
+
+    #[test]
     fn continue_on_empty_writes() -> gix_testtools::TestResult {
         let (mut writer, mut reader) = io::pipe::unidirectional(2);
         writer.write_all(&[])?;

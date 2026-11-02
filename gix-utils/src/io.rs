@@ -20,11 +20,16 @@ pub mod pipe {
     pub struct Reader {
         channel: std::sync::mpsc::Receiver<io::Result<BytesMut>>,
         buf: BytesMut,
+        /// An error that arrived after the bytes of a read, to be returned by the next read.
+        error: Option<io::Error>,
     }
 
     impl io::BufRead for Reader {
         fn fill_buf(&mut self) -> io::Result<&[u8]> {
             if self.buf.is_empty() {
+                if let Some(err) = self.error.take() {
+                    return Err(err);
+                }
                 match self.channel.recv() {
                     Ok(Ok(buf)) => self.buf = buf,
                     Ok(Err(err)) => return Err(err),
@@ -44,8 +49,16 @@ pub mod pipe {
             let mut written = 0;
             while !out.is_empty() {
                 if self.buf.is_empty() {
+                    if let Some(err) = self.error.take() {
+                        return Err(err);
+                    }
                     match self.channel.recv() {
                         Ok(Ok(buf)) => self.buf = buf,
+                        // A read that returns an error must not have read anything, so the bytes come first.
+                        Ok(Err(err)) if written > 0 => {
+                            self.error = Some(err);
+                            break;
+                        }
                         Ok(Err(err)) => return Err(err),
                         Err(_) => break,
                     }
@@ -88,6 +101,7 @@ pub mod pipe {
             Reader {
                 channel: rx,
                 buf: BytesMut::new(),
+                error: None,
             },
         )
     }
