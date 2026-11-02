@@ -151,6 +151,41 @@ pub struct Options {
     pub trailers: Vec<BString>,
 }
 
+impl Options {
+    /// Return the option `-S<key>` of the signatures of the rebase in single quotes, as `gpg_sign_opt_quoted()`
+    /// writes it for advice, or nothing if the rebase doesn't sign its commits.
+    pub fn gpg_sign_opt_quoted(&self) -> BString {
+        let Some(key) = &self.gpg_sign else {
+            return BString::default();
+        };
+        let mut out = BString::from("'-S");
+        for byte in key.iter() {
+            if matches!(byte, b'\'' | b'!') {
+                out.extend_from_slice(b"'\\");
+                out.push(*byte);
+                out.push(b'\'');
+            } else {
+                out.push(*byte);
+            }
+        }
+        out.push(b'\'');
+        out
+    }
+
+    /// Return the advice for staged changes that the rebase can't commit, as `staged_changes_advice` gives it where
+    /// `git rebase --continue` finds no message for them, or the sequencer no author for its commit.
+    pub fn staged_changes_advice(&self) -> String {
+        let gpg_sign = self.gpg_sign_opt_quoted();
+        format!(
+            "you have staged changes in your working tree\n\
+If these changes are meant to be squashed into the previous commit, run:\n\
+\n  git commit --amend {gpg_sign}\n\n\
+If they are meant to go into a new commit, run:\n\n  git commit {gpg_sign}\n\n\
+In both cases, once you're done, continue with:\n\n  git rebase --continue\n"
+        )
+    }
+}
+
 /// What a rebase does, as its state directory keeps it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State {
@@ -993,8 +1028,7 @@ impl Dir {
         }
         let is_clean = !changes.uncommitted;
         if !is_clean && !self.has_file(name::MESSAGE) {
-            let gpg_sign = gpg_sign_opt_quoted(&state.options);
-            bail!(message!("{}", staged_changes_advice(gpg_sign.as_bstr())).validation());
+            bail!(message!("{}", state.options.staged_changes_advice()).validation());
         }
         let mut current_fixups = self.read_line(name::CURRENT_FIXUPS)?.unwrap_or_default();
         let mut fixup_count = if current_fixups.is_empty() {
@@ -1283,34 +1317,4 @@ fn split_cmdline(cmdline: &[u8]) -> Option<Vec<BString>> {
         }
     }
     quoted.is_none().then_some(args)
-}
-
-/// Return the option `-S<key>` of `options` in single quotes as `gpg_sign_opt_quoted()` writes it for advice, or nothing.
-fn gpg_sign_opt_quoted(options: &Options) -> BString {
-    let Some(key) = &options.gpg_sign else {
-        return BString::default();
-    };
-    let mut out = BString::from("'-S");
-    for byte in key.iter() {
-        if matches!(byte, b'\'' | b'!') {
-            out.extend_from_slice(b"'\\");
-            out.push(*byte);
-            out.push(b'\'');
-        } else {
-            out.push(*byte);
-        }
-    }
-    out.push(b'\'');
-    out
-}
-
-/// Return the advice of `git rebase --continue` for staged changes without a message, as `staged_changes_advice` says.
-fn staged_changes_advice(gpg_sign: &BStr) -> String {
-    format!(
-        "you have staged changes in your working tree\n\
-If these changes are meant to be squashed into the previous commit, run:\n\
-\n  git commit --amend {gpg_sign}\n\n\
-If they are meant to go into a new commit, run:\n\n  git commit {gpg_sign}\n\n\
-In both cases, once you're done, continue with:\n\n  git rebase --continue\n"
-    )
 }

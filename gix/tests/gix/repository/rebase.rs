@@ -3,7 +3,12 @@
 //! The hooks, editors and commands of `exec` lines that the rebases start inherit the environment of the process, which
 //! `#[serial]` tests change while they run, so these tests are `#[parallel]` and don't run at the same time as those.
 
-use std::{collections::BTreeMap, path::Path, sync::atomic::AtomicBool};
+use std::{
+    collections::BTreeMap,
+    ffi::{OsStr, OsString},
+    path::Path,
+    sync::atomic::AtomicBool,
+};
 
 use gix::{
     bstr::{BStr, BString, ByteSlice},
@@ -519,6 +524,141 @@ fn a_rebase_in_progress_asks_for_no_signatures_without_trust_in_the_git_director
     assert_finished(&repo.rebase_continue(step(), &AtomicBool::new(false))?);
     assert_ne!(repo.head_id()?, before, "commits were made, without a signature");
     Ok(())
+}
+
+/// Have Git start the interactive rebase of `scenario` onto `main` with `option` and the todo list `break`, `command` for
+/// `one` and `pick` for `two`, so that it stops before it makes a commit.
+fn start_with_git(scenario: &Scenario, option: &OsStr, command: &str) -> crate::Result {
+    let todo = format!(
+        "break\n{command} {}\npick {}\n",
+        scenario.repo.rev_parse_single("topic~1")?,
+        scenario.repo.rev_parse_single("topic")?
+    );
+    std::fs::write(scenario.path().join(".git").join("todo"), todo)?;
+    let output = gix_testtools::git_command(scenario.path())
+        .args(["rebase", "-i"])
+        .arg(option)
+        .arg("main")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "Git stops at `break`: {}",
+        output.stderr.as_bstr()
+    );
+    Ok(())
+}
+
+/// Assert that the commits of `topic~1` and `topic` in `repo` have signatures that the fixture key verifies.
+fn assert_signed(repo: &gix::Repository) -> crate::Result {
+    for revision in ["topic~1", "topic"] {
+        let commit = repo.find_commit(repo.rev_parse_single(revision)?.detach())?;
+        let outcome = commit.verify_signature()?.expect("the rebase signs its commits");
+        assert!(outcome.is_valid(), "the fixture key signed {revision}");
+    }
+    Ok(())
+}
+
+/// The configuration of SSH signatures that the fixture key can be verified with, and `more`.
+fn ssh_signatures(more: impl IntoIterator<Item = String>) -> Vec<String> {
+    let allowed_signers = gix_testtools::signature::fixture("ssh-allowed-signers");
+    [
+        "gpg.format=ssh".to_owned(),
+        format!("gpg.ssh.allowedSignersFile={}", allowed_signers.display()),
+    ]
+    .into_iter()
+    .chain(more)
+    .collect()
+}
+
+/// A rebase that Git started with `-S<key>` signs its commits with that key when it continues, as Git signs them, while
+/// the configuration names no key, and its advice for amending names the key as well.
+#[test]
+#[parallel]
+fn a_rebase_in_progress_signs_with_the_key_that_git_started_it_with() -> crate::Result {
+    if !gix_testtools::signature::program_available("ssh-keygen") {
+        return Ok(());
+    }
+    let (_key_home, key) = gix_testtools::signature::ssh_private_key()?;
+    let scenario = scenario("break")?;
+    let mut option = OsString::from("-S");
+    option.push(&key);
+    start_with_git(&scenario, &option, "edit")?;
+
+    let repo = super::commit::baseline::open_with(scenario.path(), ssh_signatures(None))?;
+    let stop = stopped(repo.rebase_continue(step(), &AtomicBool::new(false))?);
+    assert!(
+        matches!(stop.reason, StopReason::Edit { .. }),
+        "the rebase stops for `edit`, not for {:?}",
+        stop.reason
+    );
+    let amend = format!("git commit --amend '-S{}'", key.display());
+    assert!(
+        stop.message.find(amend.as_bytes()).is_some(),
+        "the advice names the key: {}",
+        stop.message
+    );
+    assert_finished(&repo.rebase_continue(step(), &AtomicBool::new(false))?);
+    assert_signed(&repo)
+}
+
+/// Where a rebase can't commit the changes staged where it stopped, its advice names the key of the `-S<key>` that Git
+/// started it with, quoted for the shell as Git quotes it.
+#[test]
+#[parallel]
+fn the_advice_of_a_rebase_in_progress_names_its_key_as_git_does() -> crate::Result {
+    let scenario = scenario("break")?;
+    start_with_git(&scenario, OsStr::new("-Sit's!key"), "pick")?;
+    std::fs::write(scenario.path().join("a"), "staged\n")?;
+    gix_testtools::git(scenario.path(), "add a")?;
+    let git = gix_testtools::git_command(scenario.path())
+        .args(["rebase", "--continue"])
+        .output()?;
+    assert!(!git.status.success(), "Git can't commit the staged changes");
+
+    let err = super::commit::baseline::open(scenario.path())?
+        .rebase_continue(step(), &AtomicBool::new(false))
+        .expect_err("the staged changes can't be committed either");
+    let message = err.to_string();
+    assert!(
+        message.contains(r"git commit --amend '-Sit'\''s'\!'key'"),
+        "the key is quoted: {message}"
+    );
+    for line in message.lines() {
+        assert!(
+            git.stderr.find(line).is_some(),
+            "Git printed {line:?} as well, but printed {:?}",
+            git.stderr.as_bstr()
+        );
+    }
+    Ok(())
+}
+
+/// Where another owner could have written the state of a rebase in progress, its commits are signed with the key of the
+/// trusted configuration rather than with the key of `-S<key>` in its state, which doesn't exist here.
+#[cfg(not(feature = "hooks"))]
+#[test]
+#[parallel]
+fn a_rebase_in_progress_signs_with_the_trusted_key_without_trust_in_the_git_directory() -> crate::Result {
+    if !gix_testtools::signature::program_available("ssh-keygen") {
+        return Ok(());
+    }
+    let (_key_home, key) = gix_testtools::signature::ssh_private_key()?;
+    let scenario = scenario("break")?;
+    let mut option = OsString::from("-S");
+    option.push(key.with_file_name("missing-key"));
+    start_with_git(&scenario, &option, "pick")?;
+
+    let config = ssh_signatures([
+        "commit.gpgSign=true".to_owned(),
+        format!("user.signingKey={}", key.display()),
+    ]);
+    let repo = super::commit::baseline::open_with(scenario.path(), config)?;
+    let repo = gix::open_opts(
+        scenario.path(),
+        repo.open_options().clone().with(gix_sec::Trust::Reduced),
+    )?;
+    assert_finished(&repo.rebase_continue(step(), &AtomicBool::new(false))?);
+    assert_signed(&repo)
 }
 
 #[test]

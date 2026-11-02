@@ -141,8 +141,10 @@ struct Sequencer<'a> {
 
 impl<'a> Sequencer<'a> {
     /// Prepare to act on the rebase in progress of `repo` with `options`, as `read_basic_state()` reads its state, or
-    /// fail if there is none. Where another owner could have written that state, it asks for no signatures that the
-    /// trusted configuration doesn't ask for, as `commit.gpgSign` of the repository doesn't there either.
+    /// fail if there is none. The `-S<key>` of the state decides whether the commits are signed, and with which key, as
+    /// for Git, where an empty key is that of the configuration. Where another owner could have written that state, the
+    /// commits are signed only if the trusted configuration asks for signatures as well, and with its key, as
+    /// `commit.gpgSign` of the repository can't ask for them there either.
     fn resume(repo: &'a Repository, options: &StepOptions, should_interrupt: &'a AtomicBool) -> Result<Self> {
         if repo.workdir().is_none() {
             bail!(Error::BareRepository);
@@ -152,8 +154,9 @@ impl<'a> Sequencer<'a> {
             bail!(Error::NotInProgress);
         }
         let mut state = dir.state()?;
-        if repo.git_dir_trust() != gix_sec::Trust::Full && !repo.config.may_sign_commits()? {
-            state.options.gpg_sign = None;
+        if repo.git_dir_trust() != gix_sec::Trust::Full {
+            let sign = state.options.gpg_sign.is_some() && repo.config.may_sign_commits()?;
+            state.options.gpg_sign = sign.then(BString::default);
         }
         Sequencer::new(
             repo,

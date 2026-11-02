@@ -663,7 +663,7 @@ impl Repository {
     /// Sign `commit` with the signing options of the configuration, as `commit_tree_extended()` signs it.
     #[cfg(feature = "command")]
     fn sign_commit(&self, commit: gix_object::Commit) -> Result<gix_object::Commit> {
-        let options = crate::commit::sign::signing_options(self)?;
+        let options = crate::commit::sign::signing_options(self, "".into())?;
         commit.sign(options).or_raise(|| message("Could not sign the commit"))
     }
 

@@ -211,7 +211,7 @@ impl Sequencer<'_> {
         let script = if message_file.is_some() || !flags.amend {
             match self.dir.author_script()? {
                 Some(script) => Some(script),
-                None => return Ok(Committed::Refused(self.staged_changes_advice())),
+                None => return Ok(Committed::Refused(self.state.options.staged_changes_advice())),
             }
         } else {
             None
@@ -507,7 +507,8 @@ impl Sequencer<'_> {
     }
 
     /// Write the commit of `tree` with `parents`, `author`, the committer of the configuration, `message` and
-    /// `extra_headers`, signed if the rebase signs its commits, as `commit_tree_extended()` does.
+    /// `extra_headers`, signed if the rebase signs its commits with the key it names for them, as
+    /// `commit_tree_extended()` does.
     fn write_commit(
         &self,
         tree: ObjectId,
@@ -529,8 +530,8 @@ impl Sequencer<'_> {
             message,
             extra_headers,
         };
-        if self.state.options.gpg_sign.is_some() {
-            let options = crate::commit::sign::signing_options(self.repo)?;
+        if let Some(key) = &self.state.options.gpg_sign {
+            let options = crate::commit::sign::signing_options(self.repo, key.as_ref())?;
             commit = commit
                 .sign(options)
                 .or_raise(|| crate::error::message("Could not sign the commit"))?;
@@ -561,21 +562,6 @@ impl Sequencer<'_> {
             .filter(|line| !line.is_empty())
             .map(|line| ObjectId::from_hex(line).or_raise(|| message!("Corrupt MERGE_HEAD file ({})", line.as_bstr())))
             .collect()
-    }
-
-    /// Return the advice of the sequencer for staged changes that it can't commit, `staged_changes_advice`.
-    pub(super) fn staged_changes_advice(&self) -> String {
-        let gpg_sign = if self.state.options.gpg_sign.is_some() {
-            "'-S'"
-        } else {
-            ""
-        };
-        format!(
-            "you have staged changes in your working tree\n\
-If these changes are meant to be squashed into the previous commit, run:\n\n  git commit --amend {gpg_sign}\n\n\
-If they are meant to go into a new commit, run:\n\n  git commit {gpg_sign}\n\n\
-In both cases, once you're done, continue with:\n\n  git rebase --continue\n"
-        )
     }
 }
 

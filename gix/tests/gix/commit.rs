@@ -297,6 +297,36 @@ mod signature {
         Ok(())
     }
 
+    /// The path of an SSH signing key is interpolated as Git's `sign_buffer_ssh()` interpolates it with
+    /// `interpolate_path()`: a leading `~` is the home directory, and a leading `:(optional)` stays part of the path,
+    /// even where the rest of it exists.
+    #[test]
+    fn interpolates_ssh_key_paths_as_git_does() -> TestResult {
+        let home = gix::path::env::home_dir().expect("the test environment has a home directory");
+        let (_key_home, key) = signature::ssh_private_key()?;
+        let optional = format!(":(optional){}", key.display());
+        for (value, expected) in [
+            ("~/.ssh/signing-key".to_owned(), home.join(".ssh/signing-key")),
+            (optional.clone(), optional.clone().into()),
+        ] {
+            let mut permissions = gix::open::Permissions::isolated();
+            permissions.env.home = gix::sec::Permission::Allow;
+            let options = gix::open::Options::isolated()
+                .permissions(permissions)
+                .config_overrides([
+                    Gpg::FORMAT.validated_assignment_fmt(&"ssh")?,
+                    User::SIGNING_KEY.validated_assignment_fmt(&value)?,
+                ]);
+            let repo = crate::util::repo_opts("make_basic_repo.sh", options)?.to_thread_local();
+            assert_eq!(
+                repo.commit_signing_options()?.signing_key,
+                expected.into_os_string(),
+                "{value}"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn expands_verification_program_paths() -> TestResult {
         let home = gix::path::env::home_dir().expect("the test environment has a home directory");

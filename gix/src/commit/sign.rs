@@ -3,7 +3,7 @@ use std::{ffi::OsString, process::Stdio};
 use crate::error::{ResultExt, bail, message};
 use crate::{
     Error, Result,
-    bstr::ByteSlice,
+    bstr::{BStr, BString, ByteSlice},
     config::tree::{Gpg, User, gpg},
 };
 
@@ -20,7 +20,9 @@ pub(crate) fn sign<'repo>(commit: &crate::Commit<'repo>) -> Result<crate::Commit
     commit.repo.find_commit(id)
 }
 
-pub(crate) fn signing_options(repo: &crate::Repository) -> Result<Options> {
+/// The options to sign a commit with `key`, as `sign_commit_to_strbuf()` in Git's `commit.c` signs with it. An empty
+/// `key` stands for that of `user.signingKey`, or else for the one that `get_signing_key()` provides for the format.
+pub(crate) fn signing_options(repo: &crate::Repository, key: &BStr) -> Result<Options> {
     let config = repo.config_snapshot();
     let value = config
         .plumbing()
@@ -28,22 +30,23 @@ pub(crate) fn signing_options(repo: &crate::Repository) -> Result<Options> {
     let format = Gpg::FORMAT.try_into_signature_format(value.as_ref().map(|value| value.as_bstr()))?;
     let program = super::signature_program(&config, format)
         .or_raise(|| message("Could not interpolate the configured signing program path"))?;
-    let signing_key = match config
-        .plumbing()
-        .string_filter(User::SIGNING_KEY, &mut repo.filter_config_section())
-    {
-        Some(key) if !key.is_empty() && format == Format::Ssh && is_literal_ssh_key(&key).is_none() => config
-            .trusted_path(User::SIGNING_KEY)
-            .or_raise(|| message("Could not interpolate the configured commit-signing key path"))?
-            .map_or_else(|| gix_path::from_bstring(key), Ok)?
-            .into_os_string(),
-        Some(key) if !key.is_empty() => gix_path::from_bstring(key)?.into_os_string(),
-        _ if format == Format::Ssh => default_ssh_key(&config)?.ok_or_else(|| {
+    let key = if key.is_empty() {
+        config
+            .plumbing()
+            .string_filter(User::SIGNING_KEY, &mut repo.filter_config_section())
+            .filter(|key| !key.is_empty())
+    } else {
+        Some(key.to_owned())
+    };
+    let signing_key = match key {
+        Some(key) if format == Format::Ssh && is_literal_ssh_key(&key).is_none() => ssh_key_path(repo, key)?,
+        Some(key) => gix_path::from_bstring(key)?.into_os_string(),
+        None if format == Format::Ssh => default_ssh_key(&config)?.ok_or_else(|| {
             Error::from_error(message(
                 "user.signingKey or gpg.ssh.defaultKeyCommand must provide an SSH signing key",
             ))
         })?,
-        _ => {
+        None => {
             let committer = repo
                 .committer()
                 .ok_or_else(|| {
@@ -69,8 +72,27 @@ pub(crate) fn signing_options(repo: &crate::Repository) -> Result<Options> {
 }
 
 pub(crate) fn signing_options_if_enabled(repo: &crate::Repository) -> Result<Option<Options>> {
-    let enabled = repo.config.may_sign_commits()?.then(|| signing_options(repo));
+    let enabled = repo
+        .config
+        .may_sign_commits()?
+        .then(|| signing_options(repo, "".into()));
     enabled.transpose()
+}
+
+/// The path of the SSH key file `key`, interpolated as `sign_buffer_ssh()` interpolates it with `interpolate_path()`:
+/// a leading `~` or `%(prefix)/` is expanded, and a leading `:(optional)` stays part of the path, as only configured
+/// paths can be optional.
+fn ssh_key_path(repo: &crate::Repository, key: BString) -> Result<OsString> {
+    let install_dir = repo.install_dir().ok();
+    let home = repo.config.home_dir();
+    let context = crate::config::cache::interpolate_context(install_dir.as_deref(), home.as_deref());
+    let path = gix_config::Path {
+        value: key,
+        is_optional: false,
+    }
+    .interpolate(context)
+    .or_raise(|| message("Could not interpolate the path of the commit-signing key"))?;
+    Ok(path.into_os_string())
 }
 
 fn default_ssh_key(config: &crate::config::Snapshot<'_>) -> Result<Option<OsString>> {

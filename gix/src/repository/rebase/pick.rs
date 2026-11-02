@@ -557,11 +557,7 @@ impl Sequencer<'_> {
             message.push_str(line);
         };
         if to_amend {
-            let gpg_sign = if self.state.options.gpg_sign.is_some() {
-                "'-S'"
-            } else {
-                ""
-            };
+            let gpg_sign = self.state.options.gpg_sign_opt_quoted();
             add(&format!(
                 "You can amend the commit now, with\n\n  git commit --amend {gpg_sign}\n\nOnce you are satisfied with your changes, run\n\n  git rebase --continue"
             ));

@@ -583,7 +583,8 @@ impl Cache {
     /// if it actually wants to use the home directory - we don't want to fail prematurely.
     #[cfg(any(
         feature = "blocking-http-transport-reqwest",
-        feature = "blocking-http-transport-curl"
+        feature = "blocking-http-transport-curl",
+        feature = "command"
     ))]
     pub(crate) fn home_dir(&self) -> Option<PathBuf> {
         home_dir(self.environment)

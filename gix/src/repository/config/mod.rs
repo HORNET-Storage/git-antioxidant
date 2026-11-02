@@ -161,13 +161,14 @@ impl crate::Repository {
             .stderr(Stdio::inherit()))
     }
 
-    /// Resolve all Git configuration needed to sign a commit with [`gix_object::Commit::sign()`].
+    /// Resolve all Git configuration needed to sign a commit with [`gix_object::Commit::sign()`]: the key is that of
+    /// `user.signingKey`, or else the one that Git signs with by default for the signature format.
     ///
     /// The returned plumbing options may be adjusted before use, for example to disable GPG pinentry by adding
     /// `--pinentry-mode=error` to `program_arguments`.
     #[cfg(feature = "command")]
     pub fn commit_signing_options(&self) -> Result<gix_object::signature::sign::Options> {
-        crate::commit::sign::signing_options(self)
+        crate::commit::sign::signing_options(self, "".into())
     }
 
     /// Resolve all Git configuration needed to sign a commit if `commit.gpgSign` of trusted configuration enables signing.
