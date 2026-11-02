@@ -5,11 +5,12 @@ use gix_error::bail;
 use crate::{Commit, Object, Result, Tree, object::Kind};
 
 impl<'repo> Object<'repo> {
-    // TODO: tests
     /// Follow tags to their target and commits to trees until the given `kind` of object is encountered.
     ///
     /// Note that this object doesn't necessarily have to be the end of the chain.
     /// Typical values are [`Kind::Commit`] or [`Kind::Tree`].
+    ///
+    /// The tree of a commit has to be a tree, as Git looks it up as one, and any other kind of object there is corruption.
     pub fn peel_to_kind(mut self, kind: Kind) -> Result<Self> {
         let mut tags = gix_object::tag::Chain::default();
         loop {
@@ -18,10 +19,17 @@ impl<'repo> Object<'repo> {
                     return Ok(self);
                 }
                 Kind::Commit => {
+                    let commit_id = self.id;
                     let tree_id = self.try_to_commit_ref_iter().expect("commit").tree_id()?;
                     let repo = self.repo;
                     drop(self);
                     self = repo.find_object(tree_id)?;
+                    if self.kind != Kind::Tree {
+                        bail!(gix_error::corruption(format!(
+                            "The tree {tree_id} of the commit {commit_id} is a {}",
+                            self.kind
+                        )));
+                    }
                 }
                 Kind::Tag => {
                     tags.add(&self.id)?;

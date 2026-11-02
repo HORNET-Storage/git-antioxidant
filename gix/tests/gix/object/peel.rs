@@ -1,5 +1,7 @@
-//! A tag that leads back to itself, which `make_self_referencing_tag.sh` makes and Git refuses to follow. All that follows
-//! tags stops at it with an error, as it would follow the tag forever otherwise.
+//! Objects that only a corrupt repository has, which Git refuses to peel: a tag that leads back to itself, which
+//! `make_self_referencing_tag.sh` makes, and at which all that follows tags stops with an error, as it would follow the
+//! tag forever otherwise, and commits whose tree is another kind of object, which
+//! `make_commits_with_trees_of_other_kinds.sh` makes.
 
 use gix::ObjectId;
 
@@ -22,6 +24,21 @@ fn peeling_objects() -> crate::Result {
     let (repo, tag) = repo_with_tag()?;
     assert_stops_at_the_tag(repo.find_object(tag)?.peel_tags_to_end());
     assert_stops_at_the_tag(repo.find_object(tag)?.peel_to_kind(gix::object::Kind::Commit));
+    Ok(())
+}
+
+#[test]
+fn commits_whose_tree_is_another_kind_of_object_are_corrupt() -> crate::Result {
+    let repo = crate::named_repo("make_commits_with_trees_of_other_kinds.sh")?;
+    for kind in ["commit", "tag", "blob"] {
+        let hex = std::fs::read_to_string(repo.workdir().expect("a worktree").join(kind))?;
+        let commit = ObjectId::from_hex(hex.trim().as_bytes())?;
+        let err = repo
+            .find_object(commit)?
+            .peel_to_tree()
+            .expect_err("Git refuses to peel it as well");
+        assert!(err.is_corrupted(), "the tree of the commit is a {kind}: {err:?}");
+    }
     Ok(())
 }
 
