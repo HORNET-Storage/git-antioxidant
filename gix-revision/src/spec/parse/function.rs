@@ -634,7 +634,7 @@ where
                                 .expect("non-negative"),
                         );
                         delegate.traverse(traversal).or_raise(|| {
-                            validation("delegate.traverse({traversal:?}) failed")
+                            validation(format!("delegate.traverse({traversal:?}) failed"))
                                 .with_input(past_sep.unwrap_or_default())
                         })?;
                         let kind = spec::Kind::RangeBetween;

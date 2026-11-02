@@ -84,6 +84,16 @@ fn parent() {
     "#);
 }
 
+/// The error of a range from a parent names the traversal that failed.
+#[test]
+fn parent_ranges_name_the_traversal_that_failed() -> TestResult {
+    let repo = repo("complex_graph")?;
+    let err = parse_spec_no_baseline("a^-42", &repo).expect_err("a has 2 parents");
+    let message = format!("{err:?}");
+    assert!(message.contains("delegate.traverse(NthParent(42)) failed"), "{message}");
+    Ok(())
+}
+
 #[test]
 fn tags_navigate_from_their_commit() -> TestResult {
     let repo = repo("complex_graph")?;
