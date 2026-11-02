@@ -294,6 +294,26 @@ title "gix (with repository)"
     )
   )
 
+  title "gix blame"
+  (with "the 'blame' sub-command"
+    snapshot="$snapshot/blame"
+    (sandbox
+      git init -q
+      echo '*.bin -diff' >.gitattributes
+      printf 'a\nb\n' >file.bin
+      git add .gitattributes file.bin
+      git commit -q -m first
+      printf 'z\na\nb\n' >file.bin
+      git commit -q -am second
+      printf 'c\n' >>file.bin
+
+      it "blames each line of a file that diffs take for binary data, its uncommitted lines too, as Git does" && {
+        WITH_SNAPSHOT="$snapshot/binary-to-diffs" \
+        expect_run $SUCCESSFULLY "$exe_plumbing" --no-verbose blame file.bin
+      }
+    )
+  )
+
   title "gix remote"
   (when "running 'remote'"
     snapshot="$snapshot/remote"

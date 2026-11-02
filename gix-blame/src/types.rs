@@ -212,18 +212,15 @@ pub enum Start<'a> {
     /// Lines that only exist in `contents` are attributed to the null id,
     /// i.e. "not committed yet".
     ///
-    /// It is assumed that the data in `contents` is ready to be used for diffing, in particular
-    /// that it has been run through the configured worktree filters.
-    ///
-    /// See [Pipeline::convert_to_diffable()](gix_diff::blob::Pipeline::convert_to_diffable) for
-    /// how to obtain the contents of a worktree file by running them through the configured
-    /// worktree filters.
+    /// `contents` is compared line by line with the version of the file in `first_suspect` as it is stored, so it
+    /// should be the worktree file as Git would store it: its data, or the target of a symlink, run through the
+    /// filters and line-ending conversions that its attributes configure, as `gix_filter::Pipeline::convert_to_git()`
+    /// converts it. Git's blame converts the worktree file the same way.
     Contents {
         /// The commit to start from after it has been compared to `contents`.
         first_suspect: ObjectId,
         /// The contents to start the blame from, typically read from the worktree.
         // TODO(blame): add a type so rename tracking can avoid comparing blobs with symlinks.
-        //              Blob is hard-coded in at least once place.
         contents: std::borrow::Cow<'a, [u8]>,
     },
 }

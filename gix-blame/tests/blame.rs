@@ -741,33 +741,55 @@ mod attributes {
 
     use crate::{Baseline, Fixture};
 
-    /// Git's blame converts each version of a file with the attributes of its path in that commit. `-diff` makes the
-    /// versions of `renamed.bin` binary, which would lose their lines, but not those of `first.txt` and `second.txt`
-    /// before the renames.
-    #[test]
-    fn each_version_is_converted_with_the_attributes_of_its_path() -> gix_testtools::TestResult {
-        let worktree_path = gix_testtools::scripted_fixture_read_only("make_blame_attributes_repo.sh")?;
-        let mut fixture = Fixture::for_worktree_path(worktree_path.to_path_buf())?;
-        let source_file_name = "renamed.bin";
-        let lines_blamed = fixture
-            .blame_file(
-                source_file_name.into(),
-                gix_blame::Options {
-                    diff_algorithm: gix_diff::blob::Algorithm::Histogram,
-                    ranges: BlameRanges::default(),
-                    since: None,
-                    rewrites: Some(gix_diff::Rewrites::default()),
-                    debug_track_path: false,
-                },
-            )?
-            .entries;
-        assert_eq!(lines_blamed.len(), 3, "the lines of each commit before the last rename");
+    fn options() -> gix_blame::Options {
+        gix_blame::Options {
+            diff_algorithm: gix_diff::blob::Algorithm::Histogram,
+            ranges: BlameRanges::default(),
+            since: None,
+            rewrites: Some(gix_diff::Rewrites::default()),
+            debug_track_path: false,
+        }
+    }
 
-        let baseline = Baseline::collect(
-            worktree_path.join(".git").join("renamed.baseline"),
-            source_file_name.into(),
-        )?;
-        pretty_assertions::assert_eq!(lines_blamed, baseline);
+    /// Git's blame compares the versions of a file line by line as they are stored. `-diff` makes the versions of
+    /// `renamed.bin` binary to `git diff`, but not those of `first.txt` and `second.txt` before the renames, and the
+    /// NUL byte of `with-nul.dat` makes `git diff` take it for binary data.
+    #[test]
+    fn versions_are_compared_line_by_line_whatever_their_attributes_and_data() -> gix_testtools::TestResult {
+        let worktree_path = gix_testtools::scripted_fixture_read_only("make_blame_attributes_repo.sh")?;
+        for (source_file_name, baseline_name, number_of_entries) in [
+            ("renamed.bin", "renamed.baseline", 5),
+            ("with-nul.dat", "with-nul.baseline", 4),
+        ] {
+            let mut fixture = Fixture::for_worktree_path(worktree_path.to_path_buf())?;
+            let lines_blamed = fixture.blame_file(source_file_name.into(), options())?.entries;
+            assert_eq!(lines_blamed.len(), number_of_entries, "{source_file_name}");
+
+            let baseline = Baseline::collect(worktree_path.join(".git").join(baseline_name), source_file_name.into())?;
+            pretty_assertions::assert_eq!(lines_blamed, baseline, "{source_file_name}");
+        }
+        Ok(())
+    }
+
+    /// The uncommitted lines of these files are found the same way, by comparing the worktree files with the
+    /// versions of `HEAD` line by line.
+    #[test]
+    fn uncommitted_lines_are_found_line_by_line_whatever_their_attributes_and_data() -> gix_testtools::TestResult {
+        let worktree_path = gix_testtools::scripted_fixture_read_only("make_blame_attributes_repo.sh")?;
+        for (source_file_name, baseline_name, number_of_entries) in [
+            ("renamed.bin", "renamed-uncommitted.baseline", 6),
+            ("with-nul.dat", "with-nul-uncommitted.baseline", 5),
+        ] {
+            let mut fixture = Fixture::for_worktree_path(worktree_path.to_path_buf())?;
+            let contents = std::fs::read(worktree_path.join(source_file_name))?;
+            let lines_blamed = fixture
+                .blame_untracked_changes(source_file_name.into(), contents, options())?
+                .entries;
+            assert_eq!(lines_blamed.len(), number_of_entries, "{source_file_name}");
+
+            let baseline = Baseline::collect(worktree_path.join(".git").join(baseline_name), source_file_name.into())?;
+            pretty_assertions::assert_eq!(lines_blamed, baseline, "{source_file_name}");
+        }
         Ok(())
     }
 }

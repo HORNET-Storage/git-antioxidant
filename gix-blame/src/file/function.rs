@@ -33,7 +33,10 @@ use crate::{
 /// * `cache`
 ///    - Optionally, the commitgraph cache.
 /// * `resource_cache`
-///    - Used for diffing trees.
+///    - Its attributes and diff drivers decide which files rename tracking takes for binary data, as `git diff`
+///      decides. The versions of the file are compared line by line as they are stored, whatever their attributes and
+///      data, as `git blame --no-textconv` compares them: textconv drivers, which Git's blame applies by default,
+///      aren't applied.
 /// * `tree_diff_state`
 ///    - Reusable memory for diffing trees, which also decides how deep the trees that blame compares may be.
 /// * `file_path`
@@ -379,12 +382,11 @@ pub fn file(
                 TreeDiffChange::Modification { previous_id, id } => {
                     let changes = blob_changes(
                         &odb,
-                        resource_cache,
                         id,
                         previous_id,
-                        current_file_path.as_ref(),
-                        current_file_path.as_ref(),
                         options.diff_algorithm,
+                        &mut buf,
+                        &mut buf2,
                         &mut stats,
                     )?;
                     hunks_to_blame = process_changes(hunks_to_blame, changes.clone(), suspect, *parent_id);
@@ -411,12 +413,11 @@ pub fn file(
                 } => {
                     let changes = blob_changes(
                         &odb,
-                        resource_cache,
                         id,
                         source_id,
-                        current_file_path.as_ref(),
-                        source_location.as_ref(),
                         options.diff_algorithm,
+                        &mut buf,
+                        &mut buf2,
                         &mut stats,
                     )?;
                     hunks_to_blame = process_changes(hunks_to_blame, changes, suspect, *parent_id);
@@ -940,44 +941,27 @@ impl<O: gix_object::FindObjectOrHeader> gix_diff::rewrites::rename::Blobs for Re
     }
 }
 
-/// Find the changes from the blob `previous_oid` at `previous_file_path` in the parent to the blob `oid` at `file_path`
-/// in the suspect. Each blob is converted with the attributes of its own path, as Git's blame converts each version of
-/// the file.
-#[expect(clippy::too_many_arguments)]
+/// Find the changes from the blob `previous_oid` in the parent to the blob `oid` in the suspect. Both are compared line
+/// by line as they are stored, whatever their attributes and data, as Git's blame compares versions of a file that no
+/// textconv driver converts. `previous_buf` and `buf` hold the data of the blobs.
 fn blob_changes(
-    odb: impl gix_object::Find + gix_object::FindHeader,
-    resource_cache: &mut gix_diff::blob::Platform,
+    odb: &impl gix_object::Find,
     oid: ObjectId,
     previous_oid: ObjectId,
-    file_path: &BStr,
-    previous_file_path: &BStr,
     diff_algorithm: gix_diff::blob::Algorithm,
+    previous_buf: &mut Vec<u8>,
+    buf: &mut Vec<u8>,
     stats: &mut Statistics,
 ) -> Result<Vec<Change>> {
-    resource_cache.set_resource(
-        previous_oid,
-        // TODO(blame): add a test to show of symlink blaming works.
-        gix_object::tree::EntryKind::Blob,
-        previous_file_path,
-        gix_diff::blob::ResourceKind::OldOrSource,
-        &odb,
-    )?;
-    resource_cache.set_resource(
-        oid,
-        gix_object::tree::EntryKind::Blob,
-        file_path,
-        gix_diff::blob::ResourceKind::NewOrDestination,
-        &odb,
-    )?;
-
-    let outcome = resource_cache.prepare_diff()?;
-
-    Ok(blob_changes_from_data(
-        outcome.old.data.as_slice().unwrap_or_default(),
-        outcome.new.data.as_slice().unwrap_or_default(),
-        diff_algorithm,
-        stats,
-    ))
+    let previous_data = odb
+        .find_blob(&previous_oid, previous_buf)
+        .or_raise(|| message!("Could not find the blob {previous_oid} of the file in the parent"))?
+        .data;
+    let data = odb
+        .find_blob(&oid, buf)
+        .or_raise(|| message!("Could not find the blob {oid} of the file in the suspect"))?
+        .data;
+    Ok(blob_changes_from_data(previous_data, data, diff_algorithm, stats))
 }
 
 fn blob_changes_from_data(
@@ -1259,7 +1243,7 @@ fn initial_state(
                 .to_vec();
             let num_lines_in_blamed = tokens_for_diffing(&blamed_file_blob).tokenize().count() as u32;
 
-            // Binary or otherwise empty?
+            // An empty file has no lines to blame.
             if num_lines_in_blamed == 0 {
                 return Ok(InitialState {
                     blamed_file_blob,

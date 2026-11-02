@@ -1,4 +1,4 @@
-use std::ffi::OsStr;
+use std::{ffi::OsStr, io::Read};
 
 use gix::{
     Result,
@@ -29,21 +29,8 @@ pub fn blame_file(
     let file = repo.normalize_path(file)?;
 
     let cache: Option<gix::commitgraph::Graph> = repo.commit_graph_if_enabled()?;
-    let mut resource_cache = repo.diff_resource_cache(
-        // TODO(blame): Git uses something akin to `ToGitUnlessBinaryToTextIsPresent` here, but with a specialty: textconv output is converted
-        //              to Git, which isn't happening for normal diffing. In theory, this shouldn't be a problem as it's always apples to apples,
-        //              at least in theory.
-        gix::diff::blob::pipeline::Mode::ToGit,
-        gix::diff::blob::pipeline::WorktreeRoots {
-            old_root: repo.workdir().map(ToOwned::to_owned),
-            new_root: None,
-        },
-    )?;
-    let start = start_for_blame(&repo, file.as_bstr(), &mut resource_cache)?;
-    // The worktree root is only for constructing `start`; historical `OldOrSource` resources must be loaded by
-    // object ID, and we make sure that worktree contents can't possibly be used.
-    resource_cache.filter.roots = Default::default();
-    resource_cache.clear_resource_cache_keep_allocation();
+    let mut resource_cache = repo.diff_resource_cache_for_tree_diff()?;
+    let start = start_for_blame(&repo, file.as_bstr())?;
     let outcome = gix::blame::file(
         &repo.objects,
         start,
@@ -62,18 +49,16 @@ pub fn blame_file(
     Ok(())
 }
 
-/// Start at `HEAD`, overlaying diffable worktree contents so uncommitted changes are included.
-/// Missing or binary worktree files fall back to blaming `HEAD` directly.
-fn start_for_blame<'a>(
-    repo: &'a gix::Repository,
-    file: &'a gix::bstr::BStr,
-    resources: &mut gix::diff::blob::Platform,
-) -> Result<gix::blame::Start<'a>> {
+/// Start at `HEAD`, overlaying the worktree file so that its uncommitted changes are blamed too. As Git's blame does, read
+/// the data of the file or the target of a symlink, and convert it to the form Git would store. A missing worktree file
+/// starts the blame at `HEAD`.
+fn start_for_blame(repo: &gix::Repository, file: &BStr) -> Result<Start<'static>> {
     let first_suspect: gix::ObjectId = repo.head()?.into_peeled_id()?.into();
     let Some(workdir) = repo.workdir() else {
         return Ok(Start::Commit(first_suspect));
     };
-    let path = workdir.join(gix::path::from_bstr(file)?);
+    let rela_path = gix::path::from_bstr(file)?;
+    let path = workdir.join(&rela_path);
     let metadata = match std::fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
         Err(err) if gix::fs::io_err::is_not_found(err.kind(), err.raw_os_error()) => {
@@ -81,36 +66,25 @@ fn start_for_blame<'a>(
         }
         Err(err) => return Err(err).or_raise(|| message!("Could not read metadata of \"{}\"", path.display())),
     };
-    // State the correct type here so that the resource cache and its possibly converted bytes match the actual type, i.e.
-    // - read the file for blobs
-    // - read the symlink bytes themselves, the target path for symlinks.
-    let entry_kind = if metadata.file_type().is_symlink() {
-        gix::objs::tree::EntryKind::Link
+    let data: Vec<u8> = if metadata.file_type().is_symlink() {
+        let target =
+            std::fs::read_link(&path).or_raise(|| message!("Could not read the symlink \"{}\"", path.display()))?;
+        gix::path::to_unix_separators_on_windows(gix::path::into_bstr(target)?)
+            .into_owned()
+            .into()
     } else {
-        // executable bits don't matter.
-        gix::objs::tree::EntryKind::Blob
+        std::fs::read(&path).or_raise(|| message!("Could not read \"{}\"", path.display()))?
     };
-    resources.set_resource(
-        repo.object_hash().null(),
-        entry_kind,
-        file,
-        gix::diff::blob::ResourceKind::OldOrSource,
-        &repo.objects,
-    )?;
-    let contents = resources
-        .resource(gix::diff::blob::ResourceKind::OldOrSource)
-        .and_then(|resource| match resource.data {
-            gix::diff::blob::platform::resource::Data::Buffer { buf, .. } => Some(buf.to_owned()),
-            gix::diff::blob::platform::resource::Data::Binary { .. }
-            | gix::diff::blob::platform::resource::Data::Missing => None,
-        });
-
-    Ok(contents
-        .map(|contents| Start::Contents {
-            first_suspect,
-            contents: contents.into(),
-        })
-        .unwrap_or(Start::Commit(first_suspect)))
+    let (mut pipeline, index) = repo.filter_pipeline(None)?;
+    let mut contents = Vec::new();
+    pipeline
+        .convert_to_git(data.as_slice(), &rela_path, &index)?
+        .read_to_end(&mut contents)
+        .or_raise(|| message!("Could not convert \"{}\" to the form Git stores", path.display()))?;
+    Ok(Start::Contents {
+        first_suspect,
+        contents: contents.into(),
+    })
 }
 
 fn show_blame_entries(
