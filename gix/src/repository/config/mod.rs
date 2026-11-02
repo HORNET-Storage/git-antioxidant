@@ -225,8 +225,8 @@ impl crate::Repository {
     }
 
     /// Return the depth of the deepest tree that walks through trees read, with the root tree at depth 0, as configured by
-    /// `core.maxTreeDepth`, or the default value. A deeper tree fails them, as it does in Git. The configuration of a
-    /// repository without full trust doesn't count.
+    /// `core.maxTreeDepth`, or the default value. A deeper tree fails them, as it does in Git. A negative value, which
+    /// fails them all in Git, is an error. The configuration of a repository without full trust doesn't count.
     pub fn max_tree_depth(&self) -> Result<usize> {
         self.config.max_tree_depth()
     }

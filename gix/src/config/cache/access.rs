@@ -155,12 +155,23 @@ impl Cache {
 
     /// `core.maxTreeDepth`, or Git's default, which a repository without full trust can't raise to keep a walk through a
     /// corrupt tree going.
+    ///
+    /// Git reads the value as a signed integer, and a negative one fails every walk at the root tree already, which no
+    /// depth expresses here. It is therefore an error, also when the configuration is lenient, as Git accepts the value.
     pub(crate) fn max_tree_depth(&self) -> Result<usize> {
+        let value = self
+            .resolved
+            .integer_filter(Core::MAX_TREE_DEPTH, &mut self.filter_config_section.clone());
+        if let Ok(Some(depth)) = value
+            && depth < 0
+        {
+            gix_error::bail!(gix_error::validation(format!(
+                "exceeded maximum allowed tree depth, as {}={depth} allows no tree",
+                Core::MAX_TREE_DEPTH.logical_name()
+            )));
+        }
         Ok(Core::MAX_TREE_DEPTH
-            .try_into_usize(
-                self.resolved
-                    .integer_filter(Core::MAX_TREE_DEPTH, &mut self.filter_config_section.clone()),
-            )
+            .try_into_usize(value)
             .with_leniency(self.lenient_config)?
             .unwrap_or(gix_object::tree::DEFAULT_MAX_DEPTH))
     }

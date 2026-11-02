@@ -317,6 +317,8 @@ fn only_trusted_configuration_sets_the_limit() -> TestResult {
     Ok(())
 }
 
+/// Git reads `core.maxTreeDepth` as a signed integer, and a negative one fails every walk at the root tree already, so
+/// the limit is an error, with lenient configuration as well.
 #[test]
 fn a_negative_limit_is_an_error_where_it_stops_every_walk_of_git() -> TestResult {
     let dir = gix_testtools::scripted_fixture_read_only("make_deep_trees.sh")?;
@@ -324,15 +326,30 @@ fn a_negative_limit_is_an_error_where_it_stops_every_walk_of_git() -> TestResult
         !git_succeeds(&dir, 0, "ls-tree -r main")?,
         "the first subtree is too deep"
     );
-    let output = gix_testtools::git_command(&dir)
-        .args(["-c", "core.maxTreeDepth=-1", "ls-tree", "main"])
-        .output()?;
-    assert!(!output.status.success(), "even the root tree is too deep");
+    for args in ["ls-tree main", "archive main"] {
+        let output = gix_testtools::git_command(&dir)
+            .args(["-c", "core.maxTreeDepth=-1"])
+            .args(args.split_whitespace())
+            .output()?;
+        assert!(
+            !output.status.success() && output.stderr.contains_str(TOO_DEEP),
+            "git {args}: even the root tree is too deep"
+        );
+    }
 
-    let options = gix::open::Options::isolated()
-        .strict_config(true)
-        .config_overrides(["core.maxTreeDepth=-1"]);
-    let repo = gix::open_opts(&dir, options)?;
-    assert!(repo.max_tree_depth().is_err());
+    for strict in [false, true] {
+        let options = gix::open::Options::isolated()
+            .strict_config(strict)
+            .config_overrides(["core.maxTreeDepth=-1"]);
+        let repo = gix::open_opts(&dir, options)?;
+        assert_outcome(repo.max_tree_depth(), false, "the limit");
+        let tree = tree(&repo, "main")?;
+        assert_outcome(
+            tree.traverse().breadthfirst(&mut Recorder::default()),
+            false,
+            "a breadth-first traversal",
+        );
+        assert_outcome(repo.index_from_tree(&tree.id), false, "an index of a tree");
+    }
     Ok(())
 }
