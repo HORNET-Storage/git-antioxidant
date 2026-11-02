@@ -94,38 +94,37 @@ impl Ignore {
         case: Case,
     ) -> Option<gix_ignore::search::Match<'_>> {
         let groups = self.match_groups();
-        let mut dir_match = None;
-        for (source, mapping) in self
-            .matched_directory_patterns_stack
-            .iter()
+        let directory_matches = || {
+            self.matched_directory_patterns_stack
+                .iter()
+                .filter_map(|v| *v)
+                .map(|(gidx, plidx, pidx)| {
+                    let list = &groups[gidx].patterns[plidx];
+                    let mapping = &list.patterns[pidx];
+                    gix_ignore::search::Match {
+                        pattern: &mapping.pattern,
+                        sequence_number: mapping.sequence_number,
+                        kind: mapping.value,
+                        source: list.source.as_deref(),
+                    }
+                })
+        };
+        // An excluded directory excludes all of its descendants, and Git reports the outermost one for them, as it
+        // doesn't read the ignore files inside it. Precious files can be declared below an expendable directory though,
+        // so the nearest excluded directory decides the kind, and the outermost one of that kind provides the match.
+        if let Some(kind) = directory_matches()
             .rev()
-            .filter_map(|v| *v)
-            .map(|(gidx, plidx, pidx)| {
-                let list = &groups[gidx].patterns[plidx];
-                (list.source.as_deref(), &list.patterns[pidx])
-            })
+            .find(|m| !m.pattern.is_negative())
+            .map(|m| m.kind)
         {
-            let match_ = gix_ignore::search::Match {
-                pattern: &mapping.pattern,
-                sequence_number: mapping.sequence_number,
-                kind: mapping.value,
-                source,
-            };
-            if mapping.pattern.is_negative() {
-                dir_match.get_or_insert(match_);
-            } else {
-                // An excluded ancestor excludes all descendants, even if a nearer directory matches a negation.
-                // For example, `tld/` in the root `.gitignore` still excludes `tld/sd/file` when
-                // `tld/.gitignore` contains `!sd/`. Our stack records that negation for `tld/sd`,
-                // but Git doesn't consult ignore files inside the excluded `tld` directory.
-                return match_.into();
-            }
+            return directory_matches().find(|m| !m.pattern.is_negative() && m.kind == kind);
         }
         groups
             .iter()
             .rev()
             .find_map(|group| group.pattern_matching_relative_path(relative_path, is_dir, case))
-            .or(dir_match)
+            // The nearest negation becomes the match of a path that no pattern matches, which Git doesn't report.
+            .or_else(|| directory_matches().rev().find(|m| m.pattern.is_negative()))
     }
 
     /// Like `matching_exclude_pattern()` but without checking if the current directory is excluded.

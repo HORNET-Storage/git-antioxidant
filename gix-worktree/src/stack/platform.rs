@@ -38,7 +38,11 @@ impl<'a> Platform<'a> {
 
     /// Check all exclude patterns to see if the currently set path matches any of them.
     ///
-    /// Note that this pattern might be negated, and means this path in included.
+    /// Note that this pattern might be negated, and means this path is included. Below excluded directories, the nearest
+    /// of them decides whether the path is expendable or precious, and the match is the pattern that excludes the
+    /// outermost one of that kind: without precious patterns, the one Git reports. If none of its directories is excluded
+    /// and no pattern matches the path itself, the innermost directory that a negation matched supplies that negation,
+    /// which Git doesn't report.
     ///
     /// # Panics
     ///

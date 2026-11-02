@@ -10,6 +10,9 @@ make_ignore_and_attributes_setup_sha256.tar
 # Bakes `git check-attr` baseline output, which may vary by git version.
 make_attributes_baseline.tar
 make_attributes_baseline_sha256.tar
+# Bakes `git check-ignore -vn` baseline output, which may vary by git version.
+make_nested_directory_excludes.tar
+make_nested_directory_excludes_sha256.tar
 # Sparse flags and diagnostics are recorded from the host Git, not archived.
 make_sparse_baseline*.tar*
 # Uses `ln -s` (including a symlink to the base directory); symlinks do not

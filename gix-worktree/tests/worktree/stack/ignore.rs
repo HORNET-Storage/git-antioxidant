@@ -211,6 +211,74 @@ fn exclude_by_dir_is_handled_just_like_git() -> TestResult {
     Ok(())
 }
 
+/// Below a directory that a pattern excludes, Git reports that pattern for every path: the outermost excluded directory
+/// ends its search, and it doesn't read the ignore files inside that directory. With precious files, the nearest excluded
+/// directory decides whether a path is precious.
+#[test]
+fn paths_below_excluded_directories_report_the_outermost_one() -> TestResult {
+    let dir = crate::scripted_fixture_read_only("make_nested_directory_excludes.sh")?;
+    let baseline = std::fs::read(dir.join("git-check-ignore.baseline"))?;
+    assert_eq!(
+        baseline.as_bstr(),
+        ".gitignore:1:tld/\ttld/sub/file\n\
+         .gitignore:1:tld/\ttld/sub/deeper/file\n\
+         .gitignore:1:tld/\ttld/sub/precious/file\n\
+         .gitignore:1:tld/\ttld/file\n\
+         .gitignore:2:sub/\tother/sub/file\n\
+         .gitignore:2:sub/\tkeep/sub/file\n\
+         ::\tother/file\n",
+        "the outermost excluded directory decides, and a negated one doesn't"
+    );
+
+    let stack_with = |parse: gix_ignore::search::Ignore| -> gix_testtools::Result<Stack> {
+        let mut buf = Vec::new();
+        let state = gix_worktree::stack::State::IgnoreStack(gix_worktree::stack::state::Ignore::new(
+            Default::default(),
+            gix_ignore::Search::from_git_dir(&dir.join(".git"), None, &mut buf, parse)?,
+            None,
+            Source::WorktreeThenIdMappingIfNotSkipped,
+            parse,
+        ));
+        Ok(Stack::new(
+            &dir,
+            state,
+            gix_glob::pattern::Case::Sensitive,
+            buf,
+            Default::default(),
+        ))
+    };
+    let mut stack = stack_with(Default::default())?;
+    let expectations = IgnoreExpectations {
+        lines: baseline.lines(),
+    };
+    for (path, expected) in expectations {
+        let platform = stack.at_entry(path, Some(Mode::FILE), &gix_object::find::Never)?;
+        match (platform.matching_exclude_pattern(), expected) {
+            (Some(actual), Some((source, line, pattern))) => {
+                assert_eq!(actual.pattern.to_string(), pattern, "{path}");
+                assert_eq!(actual.sequence_number, line, "{path}");
+                assert_eq!(
+                    actual.source.map(std::path::Path::canonicalize).transpose()?,
+                    Some(dir.join(source.to_str()?).canonicalize()?),
+                    "{path}"
+                );
+            }
+            (None, None) => {}
+            (actual, expected) => panic!("{path}: {actual:?} where Git reports {expected:?}"),
+        }
+    }
+
+    let mut stack = stack_with(gix_ignore::search::Ignore { support_precious: true })?;
+    let platform = stack.at_entry("tld/sub/precious/file", Some(Mode::FILE), &gix_object::find::Never)?;
+    let actual = platform.matching_exclude_pattern().expect("excluded");
+    assert_eq!(
+        (actual.pattern.to_string(), actual.sequence_number, actual.kind),
+        ("precious/".to_owned(), 2, gix_ignore::Kind::Precious),
+        "the precious directory below expendable ones keeps its contents precious"
+    );
+    Ok(())
+}
+
 fn metadata_to_mode(meta: Metadata) -> Mode {
     if meta.is_dir() {
         gix_index::entry::Mode::DIR
