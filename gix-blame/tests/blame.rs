@@ -736,6 +736,42 @@ mod rename_tracking {
     }
 }
 
+mod attributes {
+    use gix_blame::BlameRanges;
+
+    use crate::{Baseline, Fixture};
+
+    /// Git's blame converts each version of a file with the attributes of its path in that commit. `-diff` makes the
+    /// versions of `renamed.bin` binary, which would lose their lines, but not those of `first.txt` and `second.txt`
+    /// before the renames.
+    #[test]
+    fn each_version_is_converted_with_the_attributes_of_its_path() -> gix_testtools::TestResult {
+        let worktree_path = gix_testtools::scripted_fixture_read_only("make_blame_attributes_repo.sh")?;
+        let mut fixture = Fixture::for_worktree_path(worktree_path.to_path_buf())?;
+        let source_file_name = "renamed.bin";
+        let lines_blamed = fixture
+            .blame_file(
+                source_file_name.into(),
+                gix_blame::Options {
+                    diff_algorithm: gix_diff::blob::Algorithm::Histogram,
+                    ranges: BlameRanges::default(),
+                    since: None,
+                    rewrites: Some(gix_diff::Rewrites::default()),
+                    debug_track_path: false,
+                },
+            )?
+            .entries;
+        assert_eq!(lines_blamed.len(), 3, "the lines of each commit before the last rename");
+
+        let baseline = Baseline::collect(
+            worktree_path.join(".git").join("renamed.baseline"),
+            source_file_name.into(),
+        )?;
+        pretty_assertions::assert_eq!(lines_blamed, baseline);
+        Ok(())
+    }
+}
+
 mod untracked_changes {
     use gix_blame::BlameRanges;
 

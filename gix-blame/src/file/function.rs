@@ -382,8 +382,8 @@ pub fn file(
                         resource_cache,
                         id,
                         previous_id,
-                        file_path,
-                        file_path,
+                        current_file_path.as_ref(),
+                        current_file_path.as_ref(),
                         options.diff_algorithm,
                         &mut stats,
                     )?;
@@ -414,7 +414,7 @@ pub fn file(
                         resource_cache,
                         id,
                         source_id,
-                        file_path,
+                        current_file_path.as_ref(),
                         source_location.as_ref(),
                         options.diff_algorithm,
                         &mut stats,
@@ -940,6 +940,9 @@ impl<O: gix_object::FindObjectOrHeader> gix_diff::rewrites::rename::Blobs for Re
     }
 }
 
+/// Find the changes from the blob `previous_oid` at `previous_file_path` in the parent to the blob `oid` at `file_path`
+/// in the suspect. Each blob is converted with the attributes of its own path, as Git's blame converts each version of
+/// the file.
 #[expect(clippy::too_many_arguments)]
 fn blob_changes(
     odb: impl gix_object::Find + gix_object::FindHeader,
