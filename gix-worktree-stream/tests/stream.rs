@@ -49,6 +49,101 @@ fn impossible_path_allocation_preserves_its_source() {
     assert!(!err.can_retry());
 }
 
+/// The bytes of an entry with `body` at `path`, of a known length or in chunks of unknown length, in the format of
+/// [`gix_worktree_stream::Stream::into_read()`].
+fn entry(path: &[u8], body: &[u8], known_length: bool) -> Vec<u8> {
+    let hash = gix_testtools::object_hash();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&path.len().to_le_bytes());
+    bytes.extend_from_slice(&(if known_length { body.len() } else { usize::MAX }).to_le_bytes());
+    bytes.push(1); // a blob
+    bytes.push(match hash {
+        gix_hash::Kind::Sha1 => 0,
+        gix_hash::Kind::Sha256 => 1,
+        _ => unimplemented!(),
+    });
+    bytes.extend_from_slice(hash.null().as_bytes());
+    bytes.extend_from_slice(path);
+    if !known_length && !body.is_empty() {
+        bytes.extend_from_slice(&(body.len() as u16).to_le_bytes());
+    }
+    bytes.extend_from_slice(body);
+    if !known_length {
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+    }
+    bytes
+}
+
+/// A stream may only end before an entry. If it ends within the information of an entry or before its body does, it was
+/// cut short.
+#[test]
+fn streams_that_end_within_an_entry_were_cut_short() -> gix_testtools::TestResult {
+    use std::io::{Cursor, ErrorKind, Read};
+    assert!(
+        gix_worktree_stream::Stream::from_read(Cursor::new(Vec::new()))
+            .next_entry()?
+            .is_none(),
+        "a stream may end before an entry"
+    );
+    for known_length in [true, false] {
+        let bytes = entry(b"f", b"abc", known_length);
+        let body = if known_length { 3 } else { 2 + 3 + 2 };
+        let information = bytes.len() - body;
+        for end in 1..information {
+            let err = gix_worktree_stream::Stream::from_read(Cursor::new(bytes[..end].to_vec()))
+                .next_entry()
+                .expect_err("the information is incomplete");
+            let kind = err.downcast_any_ref::<std::io::Error>().expect("an I/O error").kind();
+            assert_eq!(kind, ErrorKind::UnexpectedEof, "cut after {end} bytes");
+        }
+        for end in information..bytes.len() {
+            let mut stream = gix_worktree_stream::Stream::from_read(Cursor::new(bytes[..end].to_vec()));
+            let mut entry = stream.next_entry()?.expect("the information is complete");
+            let err = entry.read_to_end(&mut Vec::new()).expect_err("the body is incomplete");
+            assert_eq!(err.kind(), ErrorKind::UnexpectedEof, "cut after {end} bytes");
+        }
+    }
+    Ok(())
+}
+
+/// Reading into an empty buffer reads nothing, and leaves the entry and the entries after it as they are.
+#[test]
+fn empty_reads_leave_the_entry_as_it_is() -> gix_testtools::TestResult {
+    use std::io::{Cursor, Read};
+    for known_length in [true, false] {
+        let mut bytes = entry(b"f", b"abc", known_length);
+        bytes.extend(entry(b"g", b"de", known_length));
+        let mut stream = gix_worktree_stream::Stream::from_read(Cursor::new(bytes));
+        for (path, body) in [("f", "abc"), ("g", "de")] {
+            let mut entry = stream.next_entry()?.expect("two entries");
+            assert_eq!(entry.relative_path(), path);
+            let remaining = entry.bytes_remaining();
+            assert_eq!(entry.read(&mut [])?, 0);
+            assert_eq!(entry.bytes_remaining(), remaining, "nothing was read");
+            let mut read = Vec::new();
+            entry.read_to_end(&mut read)?;
+            assert_eq!(read, body.as_bytes());
+        }
+        assert!(stream.next_entry()?.is_none());
+    }
+    Ok(())
+}
+
+/// Bytes that name no mode or kind of hash are an error, as a stream can come from anywhere.
+#[test]
+fn unknown_modes_and_kinds_of_hash_are_errors() {
+    let header = 2 * std::mem::size_of::<usize>();
+    for (field, value) in [(0, 5), (0, u8::MAX), (1, 2), (1, u8::MAX)] {
+        let mut bytes = entry(b"f", b"", true);
+        bytes[header + field] = value;
+        let err = gix_worktree_stream::Stream::from_read(std::io::Cursor::new(bytes))
+            .next_entry()
+            .expect_err("the information names no mode or kind of hash");
+        let kind = err.downcast_any_ref::<std::io::Error>().expect("an I/O error").kind();
+        assert_eq!(kind, std::io::ErrorKind::InvalidData, "{value} in field {field}");
+    }
+}
+
 mod from_tree {
     use gix_error::Result;
     use std::{
@@ -347,6 +442,135 @@ mod from_tree {
         Ok(())
     }
 
+    /// The bytes of a stream whose walk failed end with the walk's error, so that they can't pass for a complete stream.
+    #[test]
+    fn raw_bytes_end_with_the_error_of_the_walk() -> gix_testtools::TestResult {
+        let failed_walks = || -> gix_testtools::Result<Vec<(gix_worktree_stream::Stream, &'static str)>> {
+            let (_dir, head_tree, odb, mut cache) = basic()?;
+            Ok(vec![
+                (
+                    gix_worktree_stream::from_tree(
+                        gix_testtools::object_hash().null(),
+                        FailObjectRetrieval,
+                        mutating_pipeline(false),
+                        gix_object::tree::DEFAULT_MAX_DEPTH,
+                        |_, _, _| -> std::result::Result<_, Infallible> { unreachable!("must not be called") },
+                    ),
+                    "object retrieval failed",
+                ),
+                (
+                    gix_worktree_stream::from_tree(
+                        head_tree,
+                        odb.clone(),
+                        mutating_pipeline(false),
+                        gix_object::tree::DEFAULT_MAX_DEPTH,
+                        |_, _, _| Err(Error::other("attribute retrieval failed")),
+                    ),
+                    "attribute retrieval failed",
+                ),
+                (
+                    gix_worktree_stream::from_tree(
+                        head_tree,
+                        odb.clone(),
+                        mutating_pipeline(false),
+                        0,
+                        move |rela_path, mode, attrs| {
+                            cache
+                                .at_entry(rela_path, Some(mode.into()), &odb)
+                                .map(|entry| entry.matching_attributes(attrs))
+                                .map(|_| ())
+                        },
+                    ),
+                    "exceeded maximum allowed tree depth",
+                ),
+            ])
+        };
+        for as_read_mut in [false, true] {
+            for (mut stream, cause) in failed_walks()? {
+                let mut bytes = Vec::new();
+                let err = if as_read_mut {
+                    stream.as_read_mut().read_to_end(&mut bytes)
+                } else {
+                    stream.into_read().read_to_end(&mut bytes)
+                }
+                .expect_err("the walk failed");
+                let message = format!("{err:?}");
+                assert!(message.contains(cause), "{message}");
+            }
+        }
+        Ok(())
+    }
+
+    /// A walk that fails within an entry makes the read of the entry fail with the walk's error, rather than with the end
+    /// of the bytes or the walk's cancellation.
+    #[test]
+    fn entries_cut_short_by_the_walk_fail_with_its_error() -> gix_testtools::TestResult {
+        let (_dir, head_tree, odb, mut cache) = basic()?;
+        let mut pipeline = mutating_pipeline(false);
+        pipeline.options_mut().drivers.push(gix_filter::Driver {
+            name: "arrow".into(),
+            clean: None,
+            smudge: Some(driver_command("smudge fail")),
+            process: None,
+            required: true,
+        });
+        let mut stream = gix_worktree_stream::from_tree(
+            head_tree,
+            odb.clone(),
+            pipeline,
+            gix_object::tree::DEFAULT_MAX_DEPTH,
+            move |rela_path, mode, attrs| {
+                cache
+                    .at_entry(rela_path, Some(mode.into()), &odb)
+                    .map(|entry| entry.matching_attributes(attrs))
+                    .map(|_| ())
+            },
+        );
+        // The walk has its own thread, so its error may reach the start of the entry or the read of its body.
+        let message = loop {
+            match stream.next_entry() {
+                Ok(Some(mut entry)) => {
+                    if let Err(err) = std::io::copy(&mut entry, &mut std::io::sink()) {
+                        break format!("{err:?}");
+                    }
+                }
+                Ok(None) => panic!("the filter of 'dir/subdir/streamed' fails"),
+                Err(err) => break format!("{err:?}"),
+            }
+        };
+        assert!(message.contains("Could not write stream data"), "{message}");
+        Ok(())
+    }
+
+    /// A walk that panics has its panic passed on where its bytes end, so that they can't pass for a complete stream.
+    #[test]
+    fn panics_of_the_walk_reach_its_reader() -> gix_testtools::TestResult {
+        for raw in [false, true] {
+            let (_dir, head_tree, odb, _cache) = basic()?;
+            let mut stream = gix_worktree_stream::from_tree(
+                head_tree,
+                odb,
+                mutating_pipeline(false),
+                gix_object::tree::DEFAULT_MAX_DEPTH,
+                |_, _, _| -> std::result::Result<_, Infallible> { panic!("the attributes of the walk panicked") },
+            );
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if raw {
+                    stream.as_read_mut().read_to_end(&mut Vec::new()).map(drop).ok()
+                } else {
+                    stream.next_entry().map(|entry| entry.is_some()).ok().map(drop)
+                }
+            }))
+            .expect_err("the panic of the walk is passed on");
+            assert_eq!(
+                panic.downcast_ref::<&str>(),
+                Some(&"the attributes of the walk panicked"),
+                "raw: {raw}"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn can_drop_entry_without_reading_it() -> gix_testtools::TestResult {
         let (_dir, head_tree, odb, mut cache) = basic()?;
@@ -404,16 +628,21 @@ mod from_tree {
         )
     }
 
-    pub(crate) fn driver_with_process(extra_args: &str) -> gix_filter::Driver {
+    /// The command line of the test driver with `args`.
+    fn driver_command(args: &str) -> gix_object::bstr::BString {
         let mut exe = DRIVER.to_string_lossy().into_owned();
         if cfg!(windows) {
             exe = exe.replace('\\', "/");
         }
+        (exe + " " + args).into()
+    }
+
+    pub(crate) fn driver_with_process(extra_args: &str) -> gix_filter::Driver {
         gix_filter::Driver {
             name: "arrow".into(),
             clean: None,
             smudge: None,
-            process: Some((exe + " process " + extra_args).into()),
+            process: Some(driver_command(&format!("process {extra_args}"))),
             required: true,
         }
     }

@@ -31,6 +31,7 @@ use crate::{AdditionalEntry, SharedErrorSlot, Stream, entry, protocol};
 ///
 /// This function spawns a thread that will access the tree data in the background, synchronized through
 /// `Stream` so that it will not be faster than the consumer, with at most one file in flight at any time.
+/// Its error ends the stream, and if it panics, reading the stream passes its panic on where its bytes end.
 ///
 /// ### Limitations
 ///
@@ -52,8 +53,8 @@ where
     Find: gix_object::Find + Clone + Send + 'static,
     E: std::error::Error + Send + Sync + 'static,
 {
-    let (stream, mut write, additional_entries) = Stream::new();
-    std::thread::spawn(gix_trace::in_thread({
+    let (mut stream, mut write, additional_entries) = Stream::new();
+    let producer = std::thread::spawn(gix_trace::in_thread({
         let slot = stream.err.clone();
         move || {
             if let Err(err) = run(
@@ -78,6 +79,7 @@ where
             }
         }
     }));
+    stream.producer = Some(producer);
     stream
 }
 

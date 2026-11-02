@@ -11,6 +11,9 @@ use crate::{Entry, Stream, protocol};
 
 impl Stream {
     /// Access the next entry of the stream or `None` if there is nothing more to read.
+    ///
+    /// The error of the producer is returned as soon as it is known. If the producer panicked, its panic is passed on
+    /// where its bytes end.
     pub fn next_entry(&mut self) -> Result<Option<Entry<'_>>> {
         assert!(
             self.path_buf.is_some(),
@@ -22,8 +25,8 @@ impl Stream {
             self.path_buf.as_mut().expect("set while producing an entry"),
         );
         match res {
-            Ok((remaining, mode, id)) => {
-                if let Some(err) = self.err.lock().take() {
+            Ok(Some((remaining, mode, id))) => {
+                if let Some(err) = self.producer_error() {
                     return Err(err);
                 }
                 Ok(Some(Entry {
@@ -34,16 +37,11 @@ impl Stream {
                     remaining,
                 }))
             }
-            Err(err) => {
-                if let Some(err) = self.err.lock().take() {
-                    return Err(err);
-                }
-                // unexpected EOF means the other side dropped. We handled potential errors already.
-                if err.kind() == ErrorKind::UnexpectedEof {
-                    return Ok(None);
-                }
-                Err(err.and_raise(gix_error::message("Could not read stream entry")))
-            }
+            // The error of the producer, if it failed, is why the stream ended or broke off.
+            Ok(None) => self.end_of_bytes_error().map_or(Ok(None), Err),
+            Err(err) => Err(self
+                .producer_error_for(&err)
+                .unwrap_or_else(|| err.and_raise(gix_error::message("Could not read stream entry")))),
         }
     }
 }
@@ -103,27 +101,38 @@ impl Drop for Entry<'_> {
 
 impl Entry<'_> {
     fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-        if self.parent.pos >= self.parent.filled {
+        let parent = &mut *self.parent;
+        if parent.pos >= parent.filled {
             let mut u16_buf = [0; 2];
-            self.parent.read.read_exact(&mut u16_buf)?;
+            parent
+                .read
+                .read_exact(&mut u16_buf)
+                .map_err(|err| parent.producer_error_for(&err).map_or(err, std::io::Error::other))?;
             let nb = u16::from_le_bytes(u16_buf) as usize;
 
             if nb != 0 {
-                self.parent.read.read_exact(&mut self.parent.buf[..nb])?;
+                parent
+                    .read
+                    .read_exact(&mut parent.buf[..nb])
+                    .map_err(|err| parent.producer_error_for(&err).map_or(err, std::io::Error::other))?;
             }
-            self.parent.filled = nb;
-            self.parent.pos = 0;
+            parent.filled = nb;
+            parent.pos = 0;
         }
-        Ok(&self.parent.buf[self.parent.pos..self.parent.filled])
+        Ok(&parent.buf[parent.pos..parent.filled])
     }
 }
 
 impl std::io::Read for Entry<'_> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let buf_len = buf.len();
-        if let Some(err) = self.parent.err.lock().take() {
+        if let Some(err) = self.parent.producer_error() {
             return Err(std::io::Error::other(err));
         }
+        // Reading nothing must leave the entry as it is.
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let buf_len = buf.len();
         let bytes_read = match self.remaining.as_mut() {
             None => {
                 // We expect a zero-read to indicate the end of stream, which is the default way of streams to end.
@@ -134,8 +143,18 @@ impl std::io::Read for Entry<'_> {
                 self.parent.pos += nb;
                 nb
             }
+            Some(0) => 0,
             Some(remaining) => {
-                let bytes_read = self.parent.read.read(&mut buf[..buf_len.min(*remaining)])?;
+                let bytes_read = match self.parent.read.read(&mut buf[..buf_len.min(*remaining)]) {
+                    Ok(0) => {
+                        return Err(self.parent.end_of_bytes_error().map_or_else(
+                            || std::io::Error::new(ErrorKind::UnexpectedEof, "The stream ended before the entry did"),
+                            std::io::Error::other,
+                        ));
+                    }
+                    Ok(len) => len,
+                    Err(err) => return Err(self.parent.producer_error_for(&err).map_or(err, std::io::Error::other)),
+                };
                 *remaining -= bytes_read;
                 bytes_read
             }

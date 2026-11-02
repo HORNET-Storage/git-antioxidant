@@ -20,8 +20,9 @@ use gix_object::bstr::BString;
 pub struct Stream {
     read: utils::Read,
     err: SharedErrorSlot,
+    /// The thread that produces the bytes, if there is one, so its panic can be passed on once its bytes end.
+    producer: Option<std::thread::JoinHandle<()>>,
     extra_entries: Option<std::sync::mpsc::Sender<AdditionalEntry>>,
-    // additional_entries: Vec,
     /// `None` if currently held by an entry.
     path_buf: Option<BString>,
     /// Another buffer to partially act like a buf-reader.
@@ -83,16 +84,22 @@ impl Stream {
     ///
     /// Note that the format is unspecified, and its sole use is for transport, not for persistence.
     /// Can be used with [`Self::from_read()`] to decode the contained entries.
-    pub fn into_read(self) -> impl std::io::Read {
-        self.read
+    ///
+    /// If the producer of the stream fails, the bytes that it wrote are followed by its error rather than the end of the
+    /// stream, so a failed walk can't pass for a complete one. If it panics, reading passes its panic on where its bytes
+    /// end.
+    pub fn into_read(mut self) -> impl std::io::Read {
+        self.extra_entries.take();
+        self
     }
 
     /// Return our internal byte stream from which entries would be generated.
     ///
-    /// Note that the stream must then be consumed in its entirety.
+    /// Note that the stream must then be consumed in its entirety. Like [`Self::into_read()`], it ends with the error of
+    /// the producer if that failed, or passes its panic on.
     pub fn as_read_mut(&mut self) -> &mut impl std::io::Read {
         self.extra_entries.take();
-        &mut self.read
+        self
     }
 
     /// Create a new instance from a stream of bytes in our format.
@@ -105,6 +112,7 @@ impl Stream {
             extra_entries: None,
             path_buf: Some(Vec::with_capacity(1024).into()),
             err: Default::default(),
+            producer: None,
             buf: std::iter::repeat_n(0, u16::MAX as usize).collect(),
             pos: 0,
             filled: 0,
@@ -200,6 +208,7 @@ impl Stream {
                 extra_entries: Some(tx_entries),
                 path_buf: Some(Vec::with_capacity(1024).into()),
                 err: Default::default(),
+                producer: None,
                 buf: std::iter::repeat_n(0, u16::MAX as usize).collect(),
                 pos: 0,
                 filled: 0,
@@ -207,6 +216,53 @@ impl Stream {
             write,
             rx_entries,
         )
+    }
+
+    /// Return the error of the producer if it failed, as it explains why its bytes ended or broke off.
+    pub(crate) fn producer_error(&self) -> Option<gix_error::Error> {
+        self.err.lock().take()
+    }
+
+    /// Like [`Self::producer_error()`], for use where the bytes ended, as the producer has then stopped: if it panicked,
+    /// its panic is passed on, as that is why they ended.
+    pub(crate) fn end_of_bytes_error(&mut self) -> Option<gix_error::Error> {
+        if let Some(err) = self.producer_error() {
+            return Some(err);
+        }
+        if let Some(producer) = self.producer.take()
+            && let Err(panic) = producer.join()
+        {
+            std::panic::resume_unwind(panic);
+        }
+        None
+    }
+
+    /// Return the error of the producer that explains `err`, a failure to read its bytes, if it failed. Bytes that ended
+    /// early are where a producer that panicked stopped, so its panic is then passed on.
+    pub(crate) fn producer_error_for(&mut self, err: &std::io::Error) -> Option<gix_error::Error> {
+        if err.kind() == std::io::ErrorKind::UnexpectedEof {
+            self.end_of_bytes_error()
+        } else {
+            self.producer_error()
+        }
+    }
+}
+
+/// The bytes of the stream, as [`Stream::into_read()`] and [`Stream::as_read_mut()`] provide them: all that the producer
+/// wrote, then its error if it failed, as it may end the bytes without one, or its panic if it panicked.
+impl std::io::Read for Stream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // Reading nothing says nothing about the end of the bytes, so the error stays for the read that reaches it.
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        match std::io::Read::read(&mut self.read, buf) {
+            Ok(0) => self
+                .end_of_bytes_error()
+                .map_or(Ok(0), |err| Err(std::io::Error::other(err))),
+            Ok(len) => Ok(len),
+            Err(err) => Err(self.producer_error_for(&err).map_or(err, std::io::Error::other)),
+        }
     }
 }
 
